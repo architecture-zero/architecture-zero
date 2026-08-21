@@ -1,6 +1,8 @@
 # Environments and secrets - nothing env-shaped is ever committed
 .env
 .env.*
+# ...except the documented template, which holds placeholders only
+!.env.example
 *.pem
 *.key
 

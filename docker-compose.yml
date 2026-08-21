@@ -1,0 +1,42 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+    container_name: az_backend
+    # Secrets and per-instance config live in .env on the HOST, never in this
+    # file or the repo. Optional so a fresh clone starts with pure defaults;
+    # copy .env.example to .env before real use (JWT_SECRET_KEY especially -
+    # auth fails closed on the placeholder value).
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      KNOWLEDGE_DIR: /knowledge
+      DOCS_DIR: /app/docs
+      EVAL_SEED_PATH: /app/eval-questions.json
+    ports:
+      - "8000:8000"
+    volumes:
+      # The one persistent volume: SQLite DBs, the chroma index, ingest state,
+      # backups. Everything else is read-only views of the repo.
+      - ./backend/data:/app/data
+      # The shipped corpus: help docs + demo company KB. The file watcher
+      # live-ingests edits; the startup sync catches offline changes.
+      - ./knowledge:/knowledge:ro
+      # Operator docs (the runbook) ingest as docs/ sources - the assistant
+      # can answer questions about running itself.
+      - ./docs:/app/docs:ro
+      # The eval seed also ships inside the image; this ro mount lets an
+      # edited seed land with a restart instead of a rebuild.
+      - ./backend/eval-questions.json:/app/eval-questions.json:ro
+    extra_hosts:
+      # Lets OLLAMA_BASE / EMBED_BASE reach an Ollama server on the host with
+      # the default http://host.docker.internal:11434 on Linux too.
+      - "host.docker.internal:host-gateway"
+    # Uvicorn's graceful shutdown drains, and the shutdown hook flushes
+    # chroma's un-flushed HNSW tail. Compose's default 10s grace kills
+    # through both - that is the vector-loss class. Keep this at 45s.
+    stop_grace_period: 45s
+    restart: unless-stopped
