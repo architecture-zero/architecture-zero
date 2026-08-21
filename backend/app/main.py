@@ -6,6 +6,7 @@ import time
 import shutil
 import asyncio
 import pathlib
+import threading
 import uuid
 import datetime as _dt
 
@@ -395,8 +396,6 @@ def _ingest_file(name: str, text: str) -> int:
         desired[doc_id] = (i, part)
     existing = set(get_source_ids(name, dept))
     stale = existing - desired.keys()
-    if stale:
-        delete_documents(sorted(stale), dept)
     # BATCHED: the new chunks go through add_documents_batch - the SAME gate
     # per chunk, then one embed call + one upsert per EMBED_BATCH_SIZE slice
     # (one embed round trip PER CHUNK makes a boot re-ingest serial and
@@ -409,7 +408,22 @@ def _ingest_file(name: str, text: str) -> int:
         if part["entry_date"]:
             meta["entry_date"] = part["entry_date"]
         new_entries.append((doc_id, part["text"], meta))
+    # ADD FIRST, PRUNE LAST - the same order the upload path uses.
+    #
+    # The prune used to run here, above the batch. For a MODIFIED file the
+    # stale set is the previous text of the chunks that changed, so deleting
+    # it before the replacement embeds meant an embed timeout or a Chroma
+    # error left the file with neither generation indexed. Content-addressed
+    # ids make the reverse order safe: the worst case is both generations
+    # present for the length of one batch, and the fingerprint below is only
+    # written when everything landed, so the next boot re-runs the diff.
+    #
+    # The upload path was fixed for this earlier today and this one was not -
+    # two replacement algorithms in one codebase, one of them safe. They agree
+    # now, and test_replacement_durability covers both.
     added = add_documents_batch(new_entries, department=dept) if new_entries else 0
+    if stale:
+        delete_documents(sorted(stale), dept)
     log("kb_delta_ingest", file=name, chunks=len(parts), added=added,
         removed=len(stale), unchanged=len(desired) - added)
     # INVARIANT: the fingerprint is written ONLY after every chunk landed. A
@@ -533,8 +547,14 @@ def _sync_docs(force: bool = True) -> dict:
     try:
         for d in _prune_orphan_docs()["deleted"]:
             results[d["source"]] = {"status": "pruned", "chunks": d.get("count")}
-    except Exception:
-        pass
+    except Exception as e:
+        # `except: pass` here meant the one job this block exists to do could
+        # fail and still report a clean sync. The whole point of the prune is
+        # removing documentation that was DELETED from disk but is still
+        # retrievable - so a silent failure leaves the assistant answering from
+        # files the operator believes are gone, and says nothing.
+        results["docs/_prune"] = {"status": "error", "error": str(e)}
+        log_error("docs_orphan_prune_failed", error=str(e))
     return results
 
 
@@ -722,7 +742,20 @@ async def startup_tasks():
         _startup_ingest_active = False
         asyncio.create_task(_watch_knowledge_dir())
 
-    asyncio.create_task(_bg())
+    async def _bg_guarded():
+        """The flag is armed before the task exists, so only a finally can be
+        trusted to disarm it. _bg clears it on its own happy path; this covers
+        the rest - an escape from outside the per-stage try blocks, or a
+        cancellation. A stuck True flag is not cosmetic: the eval runner reads
+        it to refuse a run mid-ingest, so it would block every eval until the
+        process restarted, with nothing in the logs naming why."""
+        global _startup_ingest_active
+        try:
+            await _bg()
+        finally:
+            _startup_ingest_active = False
+
+    asyncio.create_task(_bg_guarded())
 
 
 @app.on_event("shutdown")
@@ -1182,7 +1215,20 @@ def change_permissions(user_id: int, body: dict, current_user: dict = Depends(re
 
 @app.post("/api/admin/users/{user_id}/mfa-reset")
 def admin_mfa_reset(user_id: int, current_user: dict = Depends(require_permission("manage_users"))):
-    """Admin: disable MFA for a user (e.g. lost authenticator)."""
+    """Admin: disable MFA for a user (e.g. lost authenticator).
+
+    Owner targets are Owner-only. Stripping a principal's second factor is a
+    write to THEIR authentication boundary, not to your own - an Admin who can
+    do it to the Owner has turned an Owner takeover from "needs the password
+    and the device" into "needs the password". change_role and can_grant both
+    already refuse to let an Admin act on an Owner; this is the same rule on
+    the authentication axis, which was the one path still missing it.
+    """
+    from app.permissions import is_owner
+    target = get_user_by_id(user_id)
+    if target and target.get("role") == "owner" and not is_owner(current_user):
+        raise HTTPException(status_code=403,
+                            detail="Only an Owner can reset an Owner's MFA")
     disable_mfa(user_id)
     log("admin_mfa_reset", admin_id=current_user["id"], target_user_id=user_id)
     return {"status": "MFA disabled"}
@@ -1279,12 +1325,14 @@ def admin_release_quarantine(item_id: int,
                              usedforsecurity=False).hexdigest()
         desired.setdefault(doc_id, (i, chunk))
     existing = set(get_source_ids(source, department))
+    added_ids: list[str] = []
     try:
         for doc_id, (i, chunk) in desired.items():
             if doc_id in existing:
                 continue
             add_document(doc_id, chunk, {"source": source, "chunk": i, **meta},
                          department=department, quarantine_exempt=True)
+            added_ids.append(doc_id)
         stale = sorted(existing - desired.keys())
         if stale:
             delete_documents(stale, department)
@@ -1292,6 +1340,21 @@ def admin_release_quarantine(item_id: int,
         # Stay held and say why. A failed release that reports success is the
         # worst outcome here: the operator believes reviewed content is live
         # and searchable when it is neither.
+        #
+        # And UNDO the adds. "Held" is a claim that this content is not
+        # searchable; add-then-prune means a failure in the prune leaves the
+        # new chunks already indexed, so without this rollback the panel would
+        # say held while the quarantined text was live in retrieval - the
+        # exact inversion the quarantine exists to prevent. Add-then-prune is
+        # the right order for durability of content the user WANTS indexed;
+        # withheld content wants the opposite guarantee.
+        if added_ids:
+            try:
+                delete_documents(added_ids, department)
+            except Exception:
+                logger.exception(
+                    "quarantine release rollback FAILED for %s - %d chunks may be "
+                    "indexed while the item reads held", source, len(added_ids))
         with get_session() as db:
             r = db.get(QuarantinedDoc, item_id)
             if r:
@@ -3201,6 +3264,11 @@ def _parse_retrieved(raw: str | None) -> list[dict]:
 # In-memory progress registry for background eval runs (single uvicorn
 # worker).
 _eval_runs: dict = {}
+# The progress tick is a read-modify-write (`get(...)+1`) executed on the eval
+# worker thread while the run-status endpoint reads the same dict on the event
+# loop. The GIL makes each dict operation atomic but not the sequence, so two
+# ticks can interleave and lose a count. Cheap to hold, so hold it.
+_eval_runs_lock = threading.Lock()
 
 # Pause between eval questions. The eval is a measurement job - per-question
 # it embeds + reranks back-to-back, and an unthrottled run can freeze a
@@ -3502,7 +3570,8 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                     run_at=run_at,
                 )
                 db.add(result)
-            _eval_runs.setdefault(run_id, {})["done"] = _eval_runs.get(run_id, {}).get("done", 0) + 1
+            with _eval_runs_lock:
+                _eval_runs.setdefault(run_id, {})["done"] = _eval_runs.get(run_id, {}).get("done", 0) + 1
             time.sleep(EVAL_QUESTION_PAUSE_SECONDS)
     except Exception as e:
         # This job runs on a worker thread, so an escaping exception dies with

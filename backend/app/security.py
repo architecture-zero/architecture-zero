@@ -11,13 +11,43 @@ RATE_LIMIT_REQUESTS  = int(os.getenv("RATE_LIMIT_REQUESTS", "20"))
 RATE_LIMIT_WINDOW    = int(os.getenv("RATE_LIMIT_WINDOW",   "60"))   # seconds
 
 _rate_store: dict[str, list[float]] = defaultdict(list)
+# Keys are never removed by the per-IP prune below - that only trims one IP's
+# timestamps, and only for an IP currently making a request. Every address that
+# ever hit this process keeps its entry forever, so on a public endpoint the
+# dict grows with the count of distinct source IPs seen since boot: scanners,
+# crawlers, one-shot probes. Small per key, unbounded in total.
+#
+# The Redis path never had this - its keys carry an EXPIRE. This is the
+# memory-store fallback catching up, which matters because that fallback is
+# exactly what runs when Redis is down.
+_RATE_SWEEP_EVERY = 1000
+_rate_calls_since_sweep = 0
+
+
+def _sweep_rate_store(now: float) -> int:
+    """Drop IPs with nothing left inside the window. Returns how many went."""
+    cutoff = now - RATE_LIMIT_WINDOW
+    dead = [ip for ip, ts in _rate_store.items() if not ts or max(ts) <= cutoff]
+    for ip in dead:
+        _rate_store.pop(ip, None)
+    return len(dead)
 
 
 def _check_rate_limit_memory(client_ip: str) -> None:
+    global _rate_calls_since_sweep
     now = time.time()
     cutoff = now - RATE_LIMIT_WINDOW
+    # Amortized sweep rather than a background timer: no extra thread, and the
+    # cost lands on the traffic that caused the growth.
+    _rate_calls_since_sweep += 1
+    if _rate_calls_since_sweep >= _RATE_SWEEP_EVERY:
+        _rate_calls_since_sweep = 0
+        _sweep_rate_store(now)
     timestamps = [t for t in _rate_store[client_ip] if t > cutoff]
     if len(timestamps) >= RATE_LIMIT_REQUESTS:
+        # Refused requests still count - do not let the store grow a key for an
+        # IP being actively rejected without it also being sweepable.
+        _rate_store[client_ip] = timestamps
         raise HTTPException(
             status_code=429,
             detail=f"Rate limit exceeded: max {RATE_LIMIT_REQUESTS} requests per {RATE_LIMIT_WINDOW}s",

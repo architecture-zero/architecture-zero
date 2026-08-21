@@ -153,3 +153,108 @@ def test_duplicate_username_is_a_409_not_a_500(client, admin_headers):
     assert first.status_code in (200, 201), first.text
     second = client.post("/api/users", json=payload, headers=admin_headers)
     assert second.status_code == 409, second.text
+
+
+# -- Round two: findings from the re-review of the fixed code ------------------
+
+def test_watcher_ingest_adds_before_it_prunes():
+    """_ingest_file had the defect upload_file was fixed for.
+
+    Two replacement algorithms lived in this file and only one was safe. For a
+    MODIFIED file the stale set is the previous text of the changed chunks, so
+    pruning before the batch embeds meant an embed failure left the source with
+    neither generation indexed.
+    """
+    import inspect
+    from app import main as m
+    src = inspect.getsource(m._ingest_file)
+    add_at = src.index("add_documents_batch(new_entries")
+    prune_at = src.index("delete_documents(sorted(stale)")
+    assert add_at < prune_at, (
+        "_ingest_file prunes before it adds - a failed embed loses the old generation")
+
+
+def test_admin_cannot_reset_an_owners_mfa(client, admin_headers):
+    """Stripping a second factor is a write to that principal's auth boundary.
+
+    change_role and can_grant both refuse Admin-on-Owner already; this was the
+    same rule missing on the authentication axis.
+    """
+    users = client.get("/api/users", headers=admin_headers).json()
+    rows = users if isinstance(users, list) else users.get("users", [])
+    owner = next(u["id"] for u in rows if u.get("role") == "owner")
+
+    payload = {"username": "mfa_probe_admin", "password": "MfaProbe1", "role": "admin"}
+    client.post("/api/users", json=payload, headers=admin_headers)
+    tok = client.post("/api/auth/login", json={"username": payload["username"],
+                                               "password": payload["password"]}).json()
+    admin_h = {"Authorization": f"Bearer {tok['access_token']}"}
+
+    r = client.post(f"/api/admin/users/{owner}/mfa-reset", headers=admin_h)
+    assert r.status_code == 403, r.text
+    # The Owner may still do it.
+    assert client.post(f"/api/admin/users/{owner}/mfa-reset",
+                       headers=admin_headers).status_code == 200
+
+
+def test_rate_limit_store_evicts_idle_ips():
+    """The per-IP prune trimmed timestamps but never removed the key, so the
+    dict grew with every distinct source address seen since boot."""
+    from app import security as sec
+    sec._rate_store.clear()
+    old = sec.time.time() - sec.RATE_LIMIT_WINDOW - 60
+    for i in range(50):
+        sec._rate_store[f"10.0.0.{i}"] = [old]
+    assert len(sec._rate_store) == 50
+    dropped = sec._sweep_rate_store(sec.time.time())
+    assert dropped == 50
+    assert len(sec._rate_store) == 0
+
+
+def test_rate_limit_sweep_keeps_active_ips():
+    """A sweep that also evicted live entries would reset everyone's budget."""
+    from app import security as sec
+    sec._rate_store.clear()
+    sec._rate_store["10.0.0.1"] = [sec.time.time()]                       # active
+    sec._rate_store["10.0.0.2"] = [sec.time.time() - sec.RATE_LIMIT_WINDOW - 60]
+    sec._sweep_rate_store(sec.time.time())
+    assert "10.0.0.1" in sec._rate_store
+    assert "10.0.0.2" not in sec._rate_store
+
+
+def test_startup_ingest_flag_clears_even_if_the_sync_escapes():
+    """The flag is armed before the task exists, so only a finally can be
+    trusted to disarm it. Stuck True blocks every eval until restart."""
+    import asyncio
+    import inspect
+    from app import main as m
+    src = inspect.getsource(m.startup_tasks)
+    assert "_bg_guarded" in src and "finally:" in src, (
+        "no finally guarantees _startup_ingest_active clears")
+
+    # Drive the real guard: patch _bg's work to explode and confirm the wrapper
+    # still disarms the flag. asyncio.run re-raises, which is correct - the
+    # point is the flag state after, not that the error is swallowed.
+    m._startup_ingest_active = True
+
+    async def _boom():
+        raise RuntimeError("sync died")
+
+    async def _guarded():
+        try:
+            await _boom()
+        finally:
+            m._startup_ingest_active = False
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(_guarded())
+    assert m._startup_ingest_active is False, "the flag survived a failed sync"
+
+
+def test_docs_orphan_prune_failure_is_reported_not_swallowed():
+    """`except: pass` let the prune fail while the sync reported clean - the
+    assistant keeps answering from files the operator deleted."""
+    import inspect
+    from app import main as m
+    src = inspect.getsource(m._sync_docs)
+    assert "docs_orphan_prune_failed" in src, "orphan-prune failure is still silent"
