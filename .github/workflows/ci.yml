@@ -35,7 +35,7 @@ jobs:
         run: pip install -r backend/requirements-dev.txt
       # chromadb's native stack (hnswlib) can crash the INTERPRETER at
       # teardown on Linux - SIGSEGV on 3.12, SIGABRT on 3.11 - AFTER the
-      # session completed and every test passed (observed: "346 passed"
+      # session completed and every test passed (a fully green summary,
       # then exit 139/134). The junit report is written at session end, so
       # it is the truth: a teardown crash is accepted ONLY when the report
       # exists and shows zero failures and zero errors. Any other exit code

@@ -63,11 +63,20 @@ embedding model pulled (`ollama pull qwen3:8b`, `ollama pull nomic-embed-text`).
 ```
 git clone https://github.com/architecture-zero/architecture-zero
 cd architecture-zero
-cp .env.example .env    # set JWT_SECRET_KEY - auth refuses the placeholder
+cp .env.example .env    # set JWT_SECRET_KEY - the backend refuses to boot on the placeholder
 docker compose up -d --build
 ```
 
-Open http://localhost:8000, create the Owner account, and start asking.
+Create the Owner account and ask your first question:
+
+```
+curl -X POST localhost:8000/api/auth/setup -H "Content-Type: application/json" \
+  -d '{"username":"owner","password":"<strong password>"}'
+```
+
+The platform is API-first: everything - chat (streaming SSE at /api/chat),
+ingestion, users, evals, the trust panel - is served over a documented HTTP
+surface, so any client works; a reference web frontend is on the roadmap.
 Full walkthrough: [docs/runbook.md](docs/runbook.md).
 
 ## Ask it about itself
@@ -121,4 +130,4 @@ image build on every push to main.
 
 ## License
 
-Apache-2.0.
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

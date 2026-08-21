@@ -33,7 +33,9 @@ Owner - private until deliberately shared.
 
 Access tiers say who may READ a document. Trust tiers say how much
 AUTHORITY its content carries in an answer - who wrote it. Four tiers:
-"system" (generated from the live database - the current-state authority),
+"system" (reserved for records generated from the live database - the
+current-state authority; the core ships the tier's full machinery but no
+producer yet, so it stays dormant until a generator module lands),
 "curated" (the owner's own authored content), "external" (content arriving
 live from federated peer instances), and "untrusted" (third-party content:
 non-owner uploads and anything a connector would bring in). Higher tiers
@@ -53,8 +55,9 @@ the RAG toggle or a retrieval gap, both diagnosable.
 Groups are providers. Local (Ollama) models appear automatically from
 whatever the Ollama server has pulled. Cloud providers appear only when
 their API key is configured - an unkeyed provider is dormant and hidden.
-A few local models are hidden deliberately for license reasons: their
-weights are not clean to redistribute in a client deployment.
+A short baked-in blocklist also hides local models whose weights are not
+clean to redistribute in a client deployment - a license decision, not a
+capability one.
 
 ## What is guest mode?
 
@@ -70,9 +73,10 @@ Federation between Architecture Zero instances. With peers configured and
 the peers toggle on, a question also queries each enabled peer's knowledge
 base; their chunks arrive labeled as EXTERNAL PEER CONTENT, are scanned at
 the boundary like any untrusted input, and supplement your own corpus in
-the same answer. A down peer is skipped by a circuit breaker instead of
-stalling every chat, and peer health is visible per peer in the admin
-panel.
+the same answer. Serving your OWN knowledge base to peers is a deliberate
+opt-in (ECO_EXPOSE_KB plus per-peer keys, each scoped to public-only or
+all departments). A down peer is skipped by a circuit breaker instead of
+stalling every chat, and per-peer health is visible at /api/peers/status.
 
 ## Can the assistant browse the web?
 

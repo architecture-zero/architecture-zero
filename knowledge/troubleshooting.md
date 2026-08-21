@@ -31,11 +31,13 @@ server's JWT secret changed (every session invalidates when it rotates).
 The ingestion gate scanned the document and found content shaped like an
 attack on the assistant - instruction overrides ("ignore all previous
 instructions"), hidden text, exfiltration directives, or similar - in a
-document from an untrusted source. Nothing was indexed. Review it under
-Admin > KB Quarantine: the findings list says exactly what fired. If the
-document is legitimate, Release re-ingests it with the block waived - it
-stays labeled untrusted at retrieval and the assistant still treats its
-content as data, never instructions. Only the Owner can release.
+document from an untrusted source. Nothing was indexed. Review it via the
+quarantine queue (GET /api/admin/kb/quarantine): the findings list says
+exactly what fired. If the document is legitimate, release it (POST
+/api/admin/kb/quarantine/{id}/release) - it re-ingests with the block
+waived, stays labeled untrusted at retrieval, and the assistant still
+treats its content as data, never instructions. Only the Owner can
+release.
 
 ## "MFA is required on this instance and this account has no TOTP enrolled"
 
@@ -47,31 +49,34 @@ every password account enroll BEFORE flipping REQUIRE_MFA.
 ## "Account locked. Try again in N minutes"
 
 Too many failed password attempts. Wait out the lockout window, or an admin
-can unlock immediately (Admin > Users > Unlock). If this fires without
+can unlock immediately (POST /api/admin/users/{id}/unlock). If this fires without
 failed attempts by the real user, treat it as someone guessing at the
 account's password and review the audit log.
 
 ## Answers are slow
 
 Almost always the reranker: scoring the candidate pool with a
-cross-encoder on a small CPU takes seconds per answer. Check Admin > KB >
-Rerank Status - it shows which provider actually served and a live
-self-test. Options, fastest first: point rerank_provider=remote-http at a
-GPU box running a scoring endpoint; use hosted-api (Cohere/Voyage - only
-if the operator set the RERANK_HOSTED_ALLOWED host latch, since it sends
-chunk text to the vendor); or disable reranking (rerank_enabled=false) and
-accept retriever-order results. All of these are live config flips, no
-restart needed.
+cross-encoder on a small CPU takes seconds per answer. Check the rerank
+status surface (GET /api/admin/kb/rerank-status) - it shows which provider
+actually served and a live self-test. Options, fastest first: point
+rerank_provider=remote-http at a GPU box running a scoring endpoint; use
+hosted-api (Cohere/Voyage - only if the operator set the
+RERANK_HOSTED_ALLOWED host latch, since it sends chunk text to the
+vendor); or disable reranking (rerank_enabled=false) and accept
+retriever-order results. All of these are live config flips via PATCH
+/api/admin/config - no restart needed; only the hosted latch itself is
+host-env-only by design.
 
-## Rerank status says "reranker load failed" or provider "none"
+## Rerank status reports an error, or answers serve without reranking
 
 The scoring model could not load (first-run download blocked, missing
 model cache) or the configured remote endpoint is unreachable. The system
 degrades gracefully - answers still flow using the retriever's own order -
 but ranking quality drops silently, which is why the status surface
-exists. Fix the named error, or flip rerank_provider to a working leg. A
-non-local provider that fails falls back to the local encoder
-automatically before giving up.
+exists (and why per-answer audit receipts record which provider actually
+served, including "none"). Fix the named error, or flip rerank_provider to
+a working leg. A non-local provider that fails falls back to the local
+encoder automatically before giving up.
 
 ## The evaluation refused to run: "Startup ingest is still re-embedding"
 

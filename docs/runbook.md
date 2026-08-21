@@ -18,7 +18,7 @@ model pulled (`ollama pull qwen3:8b` and `ollama pull nomic-embed-text`).
    reranker models into the image).
 4. Open http://localhost:8000/api/health - expect status healthy (or
    degraded if Ollama is not up yet; cloud-only deployments can ignore it).
-5. Create the Owner account - the first-run setup screen, or:
+5. Create the Owner account:
    `curl -X POST localhost:8000/api/auth/setup -H "Content-Type: application/json" -d "{\"username\":\"owner\",\"password\":\"<strong password>\"}"`
 6. Sign in. The shipped corpus (help docs + demo company KB) ingests on
    first boot; watch for the `startup_sync_done` lines in
@@ -46,13 +46,21 @@ vector index, ingest state). Two mechanisms:
   archive under `backend/data/backups/` - SQLite is snapshotted via the
   backup API, safe against live writers; retention prunes old archives.
 - Scheduled: run a host cron that calls the endpoint (or archives the data
-  directory while the container is stopped), and have it write a
-  `backup-status.json` heartbeat if you want the probe below to watch it.
+  directory while the container is stopped).
 
 GET /api/backup-status is an unauthenticated probe that returns 503 when
 backups are missing, stale, or failed - point an uptime monitor at it so a
 backup job that silently stops running alarms instead of being discovered
-during a restore.
+during a restore. The probe reads TWO heartbeat files from the data
+directory, and neither is written by the backup endpoint itself - your
+scheduled job writes them as its success receipts:
+- `backup-status.json` - the backup job's heartbeat
+- `drill-status.json` - the restore DRILL's heartbeat, so "we take
+  backups" and "we have restored one recently" are separately proven
+Each is JSON like `{"ok": true, "last_success": "2026-08-21T090000Z"}`;
+missing, stale (BACKUP_MAX_AGE_HOURS), or ok=false trips the probe. If you
+do not run restore drills yet, write both files from the backup job - and
+start running drills.
 
 ## Monitoring
 
@@ -79,7 +87,7 @@ every push.
 
 ## Running an evaluation
 
-Admin > Evals, or the API: retrieval-only runs are fast and free (recall +
+POST /api/admin/evals/run: retrieval-only runs are fast and free (recall +
 the Knowledge Gaps list); answer-mode runs need a writer model and the
 pinned judge (different provider families - the run refuses same-family
 pairs). The run refuses to start while the boot ingest is still embedding,

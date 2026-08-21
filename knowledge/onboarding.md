@@ -14,21 +14,23 @@ part of its knowledge base.
 ## First run: create the Owner account
 
 On a fresh install no accounts exist. The very first step is creating the
-Owner: open the app (or POST to /api/auth/setup) and register the first
-account - it automatically becomes the Owner, the highest access tier. The
+Owner: POST to /api/auth/setup with a username and password - that first
+account automatically becomes the Owner, the highest access tier. The
 setup endpoint disables itself permanently the moment an Owner exists, so
 there is no window for someone else to claim an unconfigured instance. If
-you see "Owner already exists", setup already ran; sign in instead.
+you see "Owner already exists", setup already ran; sign in instead. The
+platform is API-first: every surface in this guide is an HTTP endpoint,
+usable from any client (a reference web frontend is on the roadmap).
 
 ## Signing in and staying signed in
 
-Sign in with username and password at the login screen (POST
-/api/auth/login). You receive a short-lived access token and a refresh
-token; the app refreshes silently in the background. If your session
-expires you get "Session expired - sign in again" - just sign in again.
-After too many wrong passwords the account locks temporarily ("Too many
-failed attempts") and unlocks itself after the lockout window, or an admin
-can unlock it immediately from the user admin panel.
+Sign in with username and password (POST /api/auth/login). You receive a
+short-lived access token and a refresh token; clients refresh silently via
+POST /api/auth/refresh. If your session expires you get "Session expired -
+sign in again" - just sign in again. After too many wrong passwords the
+account locks temporarily ("Too many failed attempts") and unlocks itself
+after the lockout window, or an admin can unlock it immediately (POST
+/api/admin/users/{id}/unlock).
 
 ## Setting up two-factor authentication (MFA)
 
@@ -45,24 +47,25 @@ enrolling locks that account out until an admin resets its MFA.
 
 Out of the box the backend expects a local Ollama server (OLLAMA_BASE,
 default http://host.docker.internal:11434) - install Ollama, pull a model,
-and it appears in the model picker automatically. Cloud providers activate
-the moment their API key is configured: open Settings (Owner only) and add
-keys for Anthropic, OpenAI, Gemini, Mistral, Groq, xAI, or DeepSeek. A
-provider with no key stays dormant and out of the picker entirely. Keys can
-also come from the host environment (ANTHROPIC_API_KEY and friends).
+and it appears in the model list automatically. Cloud providers activate
+the moment their API key is configured: the Owner sets keys via PUT
+/api/settings (Anthropic, OpenAI, Gemini, Mistral, Groq, xAI, DeepSeek), or
+they come from the host environment (ANTHROPIC_API_KEY and friends). A
+provider with no key stays dormant and out of the model list entirely.
 
 ## Adding your first documents
 
 Three ways in, all passing the same ingestion gate:
-1. Upload - the admin KB screen or POST /api/ingest/upload accepts
-   markdown, text, PDF, docx, and common code files.
+1. Upload - POST /api/ingest/upload accepts markdown, text, PDF, docx, and
+   common code files; uploads are chunked in fixed windows.
 2. The knowledge directory - drop files into the mounted knowledge folder;
    a file watcher ingests changes live, and a startup sync catches anything
-   added while the server was down.
-3. The API - POST /api/ingest for programmatic single-document writes.
-Documents are chunked on markdown section headings, embedded, and become
-retrievable immediately. Re-saving a file re-ingests only the sections
-that actually changed.
+   added while the server was down. These files are chunked on markdown
+   section headings (the best-retrieving shape), and re-saving a file
+   re-ingests only the sections that actually changed.
+3. The API - POST /api/ingest indexes the posted text as one document, for
+   programmatic writes that manage their own chunking.
+Everything becomes retrievable immediately after ingest.
 
 ## Departments and user tiers
 
@@ -73,17 +76,19 @@ with a higher clearance floor (like the built-in "restricted" and
 "history") are only retrievable by tiers cleared for them. Retrieval, the
 assistant's file tools, and the answer layer all enforce the same tiers, so
 a lower tier cannot pull higher-tier content into an answer by any path.
-Add users from the admin panel and set their role and department there.
+Add users via POST /api/users, and set role, department, and permissions
+through the same users API.
 
 ## Running your first evaluation
 
 The instance ships with a seeded evaluation set (synced from the repo's
-eval-questions.json on every boot). From the admin evals screen, run a
-retrieval-only pass first - it is fast, costs no model calls, and tells you
-whether retrieval finds the right documents (recall, with a ranked miss
-list). Then run a full answer-mode pass to have the judges score answer
-quality, groundedness, freshness, and honesty. The writer and judge models
-are pinned in admin config and must come from different provider families -
+eval-questions.json on every boot). Kick off a retrieval-only pass first
+(POST /api/admin/evals/run) - it is fast, costs no model calls, and tells
+you whether retrieval finds the right documents (recall, with a ranked
+miss list at /api/admin/evals/recall). Then run a full answer-mode pass
+(retrieval_only=false) to have the judges score answer quality,
+groundedness, freshness, and honesty. The writer and judge models are
+pinned in admin config and must come from different provider families -
 the system refuses to let a model family grade its own answers.
 
 ## Reading the trust panel

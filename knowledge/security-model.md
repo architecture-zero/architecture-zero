@@ -23,7 +23,7 @@ surface inherits the scan by construction.
 ## Quarantine review and release
 
 Quarantined content never touched the index - its full text waits in a
-review queue (Admin > KB Quarantine) with the exact findings listed.
+review queue (GET /api/admin/kb/quarantine) with the exact findings listed.
 Releasing is an Owner-only trust decision: the document re-ingests with
 the block waived but the injection tag preserved, so it stays visibly
 flagged and its content is still handled as data, never instructions.

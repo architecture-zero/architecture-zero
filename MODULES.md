@@ -10,14 +10,14 @@ can deploy, measure, and extend. There is no license key, no crippled
 feature, no "community edition" ceiling. Extension happens through the
 platform's own seams, which are ordinary code paths, not a plugin API:
 
-- the ingestion gate choke point (`app/database.py`): every write path
-  runs the same scan-and-tier gate, so new ingestion surfaces inherit the
-  security model by construction;
-- the rerank provider seam (`app/rerank.py`): any endpoint speaking the
-  scoring contract - POST {query, texts, model} -> {scores} - can serve
+- the ingestion gate choke point (`backend/app/database.py`): every write
+  path runs the same scan-and-tier gate, so new ingestion surfaces inherit
+  the security model by construction;
+- the rerank provider seam (`backend/app/rerank.py`): any endpoint speaking
+  the scoring contract - POST {query, texts, model} -> {scores} - can serve
   ranking;
-- the provider registry (`app/providers.py`): any OpenAI-dialect model API
-  is a registry entry plus a key.
+- the provider registry (`backend/app/providers.py`): any OpenAI-dialect
+  model API is a registry entry plus a key.
 
 Commercial modules are private packages that install into these seams. No
 fork, no patched core: a module is code the core already has a socket for.
