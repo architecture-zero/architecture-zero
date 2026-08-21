@@ -289,6 +289,11 @@ class QuarantinedDoc(Base):
     status      = Column(String(20),  nullable=False, default="held")  # held | released | deleted
     created_at  = Column(String(50),  nullable=False)
     reviewed_at = Column(String(50),  nullable=True)
+    # Why the last release attempt failed, when one did. Release only flips
+    # status AFTER the re-ingest lands, so a held row carrying this is the
+    # signal that someone tried and the corpus refused - otherwise the failure
+    # is visible only in the logs, and the panel shows an ordinary held item.
+    release_error = Column(Text, nullable=True)
 
 
 Index("idx_quarantine_status", QuarantinedDoc.status)

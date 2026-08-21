@@ -48,9 +48,15 @@ def get_session():
 
 def _run_migrations():
     """Idempotent column additions for tables that predate schema changes."""
-    # Empty in the core chassis - instance forks append their own idempotent
-    # column additions here for tables that predate a schema change.
-    stmts: list[str] = []
+    # Instance forks append their own idempotent column additions here for
+    # tables that predate a schema change. Each statement must be safe to run
+    # against a database that already has the column - the except below is the
+    # idempotency, so ALTER ... ADD COLUMN is the only shape that belongs here.
+    stmts: list[str] = [
+        # quarantined_docs.release_error - a release that fails now stays held
+        # and records why, instead of reporting success it did not achieve.
+        "ALTER TABLE quarantined_docs ADD COLUMN release_error TEXT",
+    ]
     with engine.connect() as conn:
         for sql in stmts:
             try:

@@ -235,3 +235,16 @@ def get_analytics() -> dict:
         "top_model": top_model,
         "feedback": {"total": fb_total, "thumbs_up": fb_up, "thumbs_down": fb_down},
     }
+
+
+def session_belongs_to(session: str, user_id: int | None) -> bool:
+    """Does this session hold at least one message owned by this caller?
+
+    The ownership question the write paths need. A session id is client-chosen
+    and travels in the request body, so any endpoint that accepts one and acts
+    on it is trusting the caller about whose conversation it is. Absence of
+    rows reads as "not yours": a session with no messages under your ownership
+    is either someone else's or does not exist, and both answer the same way.
+    """
+    with get_session() as db:
+        return _scope(db.query(Message.id), session, user_id).first() is not None

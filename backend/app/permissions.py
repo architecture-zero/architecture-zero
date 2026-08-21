@@ -66,3 +66,34 @@ def is_owner(user: dict | None) -> bool:
     check. Everyone else, admin included, is bounded by their preset and
     clearance level."""
     return bool(user) and user.get("role") == "owner"
+
+
+def can_grant(actor: dict | None, target: dict | None,
+              permissions: list[str]) -> str | None:
+    """Authority ceiling on permission WRITES. Returns None when the grant is
+    allowed, or the refusal reason.
+
+    One rule: nobody hands out authority they do not hold themselves.
+
+    Without this, manage_users IS a superuser bootstrap. The role presets
+    carefully withhold manage_system from admin, and change_role guards the
+    role axis so an Admin cannot promote itself to Owner - but
+    effective_permissions treats a non-empty stored list as an override that
+    REPLACES the preset. So an Admin with manage_users could PATCH itself
+    manage_system, and walk straight through the Owner-only door to
+    /api/admin/config, where provider API keys live in cleartext. Locking one
+    axis while the other can override it locks nothing.
+
+    Self-targeting needs no separate case: under 'only what you hold' a write
+    to your own row can narrow or preserve your authority, never raise it.
+    """
+    if is_owner(actor):
+        return None
+    if target and target.get("role") == "owner":
+        # Mirrors change_role: an Owner's authority is Owner-managed only.
+        return "Only an Owner can change an Owner's permissions"
+    held = set(effective_permissions(actor or {}))
+    over = sorted(p for p in permissions if p not in held)
+    if over:
+        return f"Cannot grant permissions you do not hold: {over}"
+    return None

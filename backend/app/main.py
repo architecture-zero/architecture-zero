@@ -6,6 +6,7 @@ import time
 import shutil
 import asyncio
 import pathlib
+import uuid
 import datetime as _dt
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ from app.metrics import increment, record_request, get_last_request_at, get_snap
 from app.alerting import fire as fire_alert, get_config as get_alert_config, DISK_ALERT_THRESHOLD_PCT
 from app.chunking import chunk_plain, chunk_dated_markdown, chunk_markdown_sections, CHUNKER_VERSION
 from app import corpus_scan as _corpus_scan
-from app.peers import get_peers, save_peers, check_peer_health, query_peer_kb, get_peers_with_health, reset_peer_circuit_breaker
+from app.peers import get_peers, save_peers, check_peer_health, query_peer_kb, get_peers_with_health, reset_peer_circuit_breaker, validate_peer_url, PeerURLRefused
 
 EVAL_SEED_PATH         = os.getenv("EVAL_SEED_PATH", "")
 # Answer-mode judge: pinned CLOUD model (not the opportunistic local tier, not
@@ -86,6 +87,9 @@ ENABLE_AUDIT_LOG             = os.getenv("ENABLE_AUDIT_LOG", "true").lower() == 
 AUDIT_RETENTION_DAYS         = int(os.getenv("AUDIT_RETENTION_DAYS", "365"))
 ENCRYPTION_AT_REST_VERIFIED  = os.getenv("ENCRYPTION_AT_REST_VERIFIED", "false").lower() == "true"
 MAX_UPLOAD_MB                = int(os.getenv("MAX_UPLOAD_MB", "50"))
+# Read granularity for uploads. Bounds how far past MAX_UPLOAD_MB a rejected
+# body can push memory: at most one chunk beyond the limit, not the whole file.
+_UPLOAD_CHUNK_BYTES          = 1024 * 1024
 KNOWLEDGE_DIR                = os.path.abspath(os.getenv("KNOWLEDGE_DIR", "../knowledge"))
 _DOCS_DIR                    = pathlib.Path(os.getenv("DOCS_DIR", "/app/docs"))
 # Extra root-level files ingested alongside docs/ (comma-separated absolute
@@ -648,9 +652,15 @@ _startup_ingest_active = False
 
 @app.on_event("startup")
 async def startup_tasks():
+    # Set BEFORE create_task, not as the first line inside the coroutine. A
+    # task is only scheduled by create_task, so the flag stayed False from
+    # here until the loop first ran _bg - and the eval runner reads this flag
+    # to refuse a run mid-ingest. Narrow window, wrong side of the guard.
+    global _startup_ingest_active
+    _startup_ingest_active = True
+
     async def _bg():
         global _startup_ingest_active
-        _startup_ingest_active = True
 
         def _report_sync(stage: str, res: dict):
             """Startup syncs must not discard their results dict - a per-file
@@ -1081,7 +1091,14 @@ def add_user(request: CreateUserRequest, current_user: dict = Depends(require_pe
     errors = validate_password(request.password)
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))
-    user_id = create_user(request.username, hash_password(request.password), role=request.role, department=request.department)
+    # users.username is UNIQUE, and a bare IntegrityError from the flush
+    # surfaces as a 500 with a SQL traceback - an operator retyping an existing
+    # name reads that as "the server is broken", not "pick another name".
+    from sqlalchemy.exc import IntegrityError
+    try:
+        user_id = create_user(request.username, hash_password(request.password), role=request.role, department=request.department)
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail="That username is already taken")
     log("auth_create_user", admin_id=current_user["id"], new_user_id=user_id, username=request.username, department=request.department)
     return {"status": "created", "user_id": user_id}
 
@@ -1141,7 +1158,16 @@ def change_department(user_id: int, body: dict, current_user: dict = Depends(req
 
 @app.patch("/api/users/{user_id}/permissions")
 def change_permissions(user_id: int, body: dict, current_user: dict = Depends(require_permission("manage_users"))):
+    from app.permissions import can_grant
+    target = get_user_by_id(user_id)
     perms = body.get("permissions")
+    # Authority ceiling BEFORE any write - manage_users alone must not be a
+    # route to manage_system (and from there to the provider keys in config).
+    # Reset-to-defaults is checked too: it is still a write to the target's
+    # authority, and an Owner's row stays Owner-managed.
+    refusal = can_grant(current_user, target, perms or [])
+    if refusal:
+        raise HTTPException(status_code=403, detail=refusal)
     if perms is None:
         # Reset to role defaults
         update_user_permissions(user_id, [])
@@ -1233,18 +1259,54 @@ def admin_release_quarantine(item_id: int,
             raise HTTPException(status_code=404, detail="No held quarantine item with that id.")
         source, department, text = row.source, row.department, row.text
         findings = json.loads(row.findings) if row.findings else []
-        row.status = "released"
-        row.reviewed_at = _dt.datetime.utcnow().isoformat()
     # Re-ingest OUTSIDE the txn (embedding is slow); tag preserved, block
     # waived.
-    delete_source(source, department)
+    #
+    # The row is NOT marked released yet. It used to be flipped inside the
+    # block above, which commits on exit - so an embed or upsert failure below
+    # left the review record saying "released" with the content deleted and
+    # never re-indexed, and this path had no exception handling at all. The
+    # status is a claim about the corpus, so it may only be written once the
+    # corpus actually says it.
     chunks = chunk_plain(text)
     meta = {"trust": "untrusted", "injection_flagged": "true",
             "injection_types": finding_types(findings)}
+    # Add-then-prune, same reasoning as the upload path: never leave a window
+    # where the source is absent from the index.
+    desired: dict[str, tuple[int, str]] = {}
     for i, chunk in enumerate(chunks):
-        doc_id = hashlib.md5(f"{department}::{source}::{i}".encode(), usedforsecurity=False).hexdigest()
-        add_document(doc_id, chunk, {"source": source, "chunk": i, **meta},
-                     department=department, quarantine_exempt=True)
+        doc_id = hashlib.md5(f"{department}::{source}::{chunk}".encode(),
+                             usedforsecurity=False).hexdigest()
+        desired.setdefault(doc_id, (i, chunk))
+    existing = set(get_source_ids(source, department))
+    try:
+        for doc_id, (i, chunk) in desired.items():
+            if doc_id in existing:
+                continue
+            add_document(doc_id, chunk, {"source": source, "chunk": i, **meta},
+                         department=department, quarantine_exempt=True)
+        stale = sorted(existing - desired.keys())
+        if stale:
+            delete_documents(stale, department)
+    except Exception as e:
+        # Stay held and say why. A failed release that reports success is the
+        # worst outcome here: the operator believes reviewed content is live
+        # and searchable when it is neither.
+        with get_session() as db:
+            r = db.get(QuarantinedDoc, item_id)
+            if r:
+                r.release_error = str(e)[:500]
+        log_error("quarantine_release_failed", quarantine_id=item_id,
+                  source=source, admin_id=current_user["id"], error=str(e))
+        raise HTTPException(status_code=500,
+                            detail="Release failed; item remains held. See logs.")
+    # Indexed. Only now is it released.
+    with get_session() as db:
+        r = db.get(QuarantinedDoc, item_id)
+        if r:
+            r.status = "released"
+            r.reviewed_at = _dt.datetime.utcnow().isoformat()
+            r.release_error = None
     log("quarantine_released", quarantine_id=item_id, source=source,
         admin_id=current_user["id"], chunks=len(chunks))
     return {"status": "released", "source": source, "chunks": len(chunks)}
@@ -1943,7 +2005,13 @@ def run_backup(current_user: dict = Depends(require_owner)):
             # sidecars are then redundant and deliberately skipped.
             if item.endswith(("-wal", "-shm")):
                 continue
-            if item.endswith(".db"):
+            # `.sqlite3` is here because CHROMA_PATH resolves to this same
+            # directory, and chroma names its store chroma.sqlite3. Matching
+            # only `.db` sent it down the copy2 branch below - copied live and
+            # mid-write, while the skip above dropped the -wal holding its most
+            # recent commits. That backup restored to a torn index missing its
+            # tail, and nothing said so until a restore was attempted.
+            if item.endswith((".db", ".sqlite3")):
                 import sqlite3
                 src_conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
                 dst_conn = sqlite3.connect(dst)
@@ -2450,8 +2518,14 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
             yield "data: [DONE]\n\n"
         except Exception as e:
             increment("chat_errors_total")
-            log_error("chat_error", session_id=request.session_id, error=str(e))
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            # The full exception goes to the log, where operators read it. What
+            # crosses the wire is a stable code: str(e) on a provider or DB
+            # failure carries connection strings, file paths and internal
+            # hostnames, and this stream reaches any authenticated caller.
+            error_id = uuid.uuid4().hex[:12]
+            log_error("chat_error", session_id=request.session_id,
+                      error_id=error_id, error=str(e))
+            yield f"data: {json.dumps({'error': 'The assistant failed to complete this answer.', 'error_id': error_id})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -2462,10 +2536,19 @@ class FeedbackRequest(BaseModel):
     value: int  # 1 = thumbs up, -1 = thumbs down
 
 
-@app.post("/api/feedback", dependencies=[Depends(get_current_user)])
-def feedback(request: FeedbackRequest):
+@app.post("/api/feedback")
+def feedback(request: FeedbackRequest, current_user: dict = Depends(get_current_user)):
     if request.value not in (1, -1):
         raise HTTPException(status_code=400, detail="value must be 1 or -1")
+    # Authenticated is not the same as entitled. The session id arrives in the
+    # request body, so without this any logged-in caller could rate any other
+    # user's turns - not a content leak, but it poisons the aggregate the
+    # analytics and eval lanes read as a quality signal. Declared as a
+    # parameter rather than in `dependencies=[]` on purpose: the identity has
+    # to be IN SCOPE to be checked against.
+    from app.history import session_belongs_to
+    if not session_belongs_to(request.session_id, current_user["id"]):
+        raise HTTPException(status_code=404, detail="No such session for this user")
     save_feedback(request.session_id, request.turn_index, request.value)
     log("feedback", session_id=request.session_id, turn_index=request.turn_index, value=request.value)
     return {"status": "ok"}
@@ -2575,11 +2658,19 @@ def reset_peer_breaker(peer_id: str, current_user: dict = Depends(require_owner)
 
 @app.post("/api/peers")
 def add_peer(body: PeerCreateRequest, current_user: dict = Depends(require_owner)):
+    # Refuse the SSRF shapes at write time so the operator gets a 400 at the
+    # panel instead of a silent per-chat failure later. The fetch path
+    # re-checks: this gate cannot see a name that re-resolves inward after it
+    # was saved.
+    try:
+        url = validate_peer_url(body.url)
+    except PeerURLRefused as e:
+        raise HTTPException(status_code=400, detail=str(e))
     peers = [p for p in get_peers() if p.get("id") != body.id]
     peers.append({
         "id":      body.id,
         "name":    body.name,
-        "url":     body.url.rstrip("/"),
+        "url":     url,
         "model":   body.model,
         "enabled": body.enabled,
     })
@@ -2589,11 +2680,16 @@ def add_peer(body: PeerCreateRequest, current_user: dict = Depends(require_owner
 
 @app.patch("/api/peers/{peer_id}")
 def update_peer(peer_id: str, body: PeerUpdateRequest, current_user: dict = Depends(require_owner)):
+    if body.url is not None:
+        try:
+            body.url = validate_peer_url(body.url)
+        except PeerURLRefused as e:
+            raise HTTPException(status_code=400, detail=str(e))
     peers = get_peers()
     for p in peers:
         if p.get("id") == peer_id:
             if body.name    is not None: p["name"]    = body.name
-            if body.url     is not None: p["url"]     = body.url.rstrip("/")
+            if body.url     is not None: p["url"]     = body.url
             if body.model   is not None: p["model"]   = body.model
             if body.enabled is not None: p["enabled"] = body.enabled
             break
@@ -2713,9 +2809,22 @@ async def upload_file(
     _check_department_write(current_user, department or "general")
     name = file.filename or "upload"
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-    data = await file.read()
-    if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
-        raise HTTPException(status_code=413, detail=f"File too large (max {MAX_UPLOAD_MB} MB)")
+    # Read in chunks and stop AT the limit. `await file.read()` pulled the
+    # whole body into RAM first and checked the size after, so the limit only
+    # ever described files small enough not to need one - a body larger than
+    # the container's memory took the process down via the OOM killer before
+    # the 413 could be raised. The cap is enforced on the way in now.
+    limit = MAX_UPLOAD_MB * 1024 * 1024
+    buf = bytearray()
+    while True:
+        piece = await file.read(_UPLOAD_CHUNK_BYTES)
+        if not piece:
+            break
+        buf.extend(piece)
+        if len(buf) > limit:
+            await file.close()
+            raise HTTPException(status_code=413, detail=f"File too large (max {MAX_UPLOAD_MB} MB)")
+    data = bytes(buf)
 
     # Shared extractor - a file type behaves identically whether it arrives
     # by upload or any future batch path.
@@ -2770,19 +2879,50 @@ async def upload_file(
 
     chunk_meta = {"trust": trust, **inj_meta, **pii_meta}
 
-    delete_source(name, department)
     chunks = chunk_plain(text)
+    # ADD-THEN-PRUNE, the same set-diff _ingest_file uses. Chunk ids are
+    # CONTENT-ADDRESSED - md5(dept::name::chunk-text) - so the new version's
+    # chunks are written first and only the chunks whose text is genuinely gone
+    # are deleted, last.
+    #
+    # This replaces a delete_source() that ran BEFORE the embed loop. Any
+    # failure after that delete - an embed timeout, a Chroma upsert error, the
+    # process dying - turned "update this document" into "delete this
+    # document", and the try only caught QuarantinedContent, so ordinary
+    # infrastructure failures escaped with the old copy already gone. There is
+    # now no window in which the source is absent: worst case the index briefly
+    # holds both versions' chunks, which retrieval reads as the same document.
+    #
+    # Positional ids from before this change match nothing in the desired set,
+    # so a source's first upload after this ships prunes its whole old
+    # generation in the same pass - one full swap, then deltas forever.
+    desired: dict[str, tuple[int, str]] = {}
+    for i, chunk in enumerate(chunks):
+        doc_id = hashlib.md5(f"{department}::{name}::{chunk}".encode(),
+                             usedforsecurity=False).hexdigest()
+        desired.setdefault(doc_id, (i, chunk))
+    existing = set(get_source_ids(name, department))
     try:
-        for i, chunk in enumerate(chunks):
-            doc_id = hashlib.md5(f"{department}::{name}::{i}".encode(), usedforsecurity=False).hexdigest()
-            add_document(doc_id, chunk, {"source": name, "chunk": i, **chunk_meta}, department=department)
+        for doc_id, (i, chunk) in desired.items():
+            if doc_id in existing:
+                continue
+            add_document(doc_id, chunk, {"source": name, "chunk": i, **chunk_meta},
+                         department=department)
     except corpus_scan.QuarantinedContent as q:
         # Backstop for a pattern that anchors at a chunk boundary and fires
-        # chunk-level-only: unwind the partial index and quarantine the WHOLE
-        # document (full text, not the chunk) instead of 500ing mid-loop.
-        delete_source(name, department)
+        # chunk-level-only: drop what this upload added and quarantine the
+        # WHOLE document (full text, not the chunk) instead of 500ing mid-loop.
+        # The previous version stays indexed - nothing was deleted.
+        added = [d for d in desired if d not in existing]
+        if added:
+            delete_documents(added, department)
         return _write_quarantine_row(name, department, q.trust_tier, text,
                                      q.findings)
+    # Every chunk of the new version is indexed. Only now do the chunks that
+    # this version no longer contains get dropped.
+    stale = sorted(existing - desired.keys())
+    if stale:
+        delete_documents(stale, department)
 
     increment("ingest_total")
     log("ingest_upload", source=name, chunks=len(chunks), ext=ext, department=department)
@@ -3073,41 +3213,46 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                   use_rag: bool, n_results: int, retrieval_only: bool):
     """Run the eval in a background thread so a large set can't hit the HTTP
     timeout. Writes each EvalResult as it goes and ticks progress."""
-    from app.models import EvalResult
-    from app.permissions import OWNER_LEVEL
-    # + grounding/safety rules to mirror the chat path (the eval must measure
-    # the prompt the real system sends; identity card deliberately omitted -
-    # it doesn't affect grading and pads every question).
-    base_system_prompt = (get_system_prompt()
-                          + _GROUNDING_RULES + _SAFETY_RULES
-                          + _CONTEXT_DATA_RULES + _NO_WEB_NOTICE)
-    tools = get_active_tools() if supports_tools(model) else []
-    # Stamp the CORPUS this run measures, ONCE - the third leg of a score
-    # alongside the pinned writer and the pinned question set. Taken here
-    # rather than per row so every row of a run carries the same value: a
-    # corpus that shifts mid-run (the watcher re-ingests on file change) must
-    # not produce rows that disagree about what they measured.
-    from app.database import corpus_fingerprint
-    corpus_fp = corpus_fingerprint()
-    log("eval_corpus_stamp", run_id=run_id, corpus_fingerprint=corpus_fp)
-    # Stamp the JUDGE INSTRUMENT once per run (None on retrieval-only runs -
-    # nothing was judged). The trust panel bands only within one instrument
-    # era, so a judge swap can never masquerade as a score movement.
-    run_judge_instrument = (None if retrieval_only else
-                            _config_or_default("eval_judge_model", EVAL_JUDGE_MODEL_DEFAULT))
-
-    # INJECTION COHORT: its questions run LAST, with the poisoned fixture
-    # planted into the REAL general collection only for that tail - planted
-    # any earlier it would sit in every other cohort's retrieval pool,
-    # breaking like-for-like with history and feeding poisoned grounding to
-    # the faithfulness judge. The corpus stamp above is taken BEFORE the
-    # plant on purpose: it identifies the corpus this run measures, and the
-    # finally below restores it (delete-and-verify, residual logged loudly).
-    inj_tail = [q for q in questions if q["category"] == "injection"]
-    if inj_tail:
-        questions = [q for q in questions if q["category"] != "injection"] + inj_tail
     _inj_planted = False
+    # Everything is inside the try, setup included. Corpus fingerprinting, the
+    # judge-instrument pin and the tool lookup all touch the DB or a provider,
+    # so a failure there is as likely as one in the loop - and outside the try
+    # it would escape on a worker thread, leaving this run marked incomplete
+    # forever with nobody to report to.
     try:
+        from app.models import EvalResult
+        from app.permissions import OWNER_LEVEL
+        # + grounding/safety rules to mirror the chat path (the eval must measure
+        # the prompt the real system sends; identity card deliberately omitted -
+        # it doesn't affect grading and pads every question).
+        base_system_prompt = (get_system_prompt()
+                              + _GROUNDING_RULES + _SAFETY_RULES
+                              + _CONTEXT_DATA_RULES + _NO_WEB_NOTICE)
+        tools = get_active_tools() if supports_tools(model) else []
+        # Stamp the CORPUS this run measures, ONCE - the third leg of a score
+        # alongside the pinned writer and the pinned question set. Taken here
+        # rather than per row so every row of a run carries the same value: a
+        # corpus that shifts mid-run (the watcher re-ingests on file change) must
+        # not produce rows that disagree about what they measured.
+        from app.database import corpus_fingerprint
+        corpus_fp = corpus_fingerprint()
+        log("eval_corpus_stamp", run_id=run_id, corpus_fingerprint=corpus_fp)
+        # Stamp the JUDGE INSTRUMENT once per run (None on retrieval-only runs -
+        # nothing was judged). The trust panel bands only within one instrument
+        # era, so a judge swap can never masquerade as a score movement.
+        run_judge_instrument = (None if retrieval_only else
+                                _config_or_default("eval_judge_model", EVAL_JUDGE_MODEL_DEFAULT))
+
+        # INJECTION COHORT: its questions run LAST, with the poisoned fixture
+        # planted into the REAL general collection only for that tail - planted
+        # any earlier it would sit in every other cohort's retrieval pool,
+        # breaking like-for-like with history and feeding poisoned grounding to
+        # the faithfulness judge. The corpus stamp above is taken BEFORE the
+        # plant on purpose: it identifies the corpus this run measures, and the
+        # finally below restores it (delete-and-verify, residual logged loudly).
+        inj_tail = [q for q in questions if q["category"] == "injection"]
+        if inj_tail:
+            questions = [q for q in questions if q["category"] != "injection"] + inj_tail
         for q in questions:
             if q["category"] == "injection" and not _inj_planted and use_rag:
                 # First injection row: plant now (the tail ordering above
@@ -3359,8 +3504,24 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                 db.add(result)
             _eval_runs.setdefault(run_id, {})["done"] = _eval_runs.get(run_id, {}).get("done", 0) + 1
             time.sleep(EVAL_QUESTION_PAUSE_SECONDS)
-        _eval_runs.setdefault(run_id, {})["complete"] = True
+    except Exception as e:
+        # This job runs on a worker thread, so an escaping exception dies with
+        # the thread and reaches no caller. Record the failure ON the run
+        # before it goes, then let it propagate to the thread's logger.
+        st = _eval_runs.setdefault(run_id, {})
+        st["failed"] = True
+        st["error"] = str(e)[:500]
+        log_error("eval_run_crashed", run_id=run_id, error=str(e))
+        raise
     finally:
+        # complete=True belongs in the finally, not at the end of the try. A
+        # run that died mid-loop used to leave complete=False in this dict
+        # forever, and run-status reported it running indefinitely - the
+        # operator waits on a job that is not coming back. Terminal either way;
+        # `failed` tells the two apart.
+        st = _eval_runs.setdefault(run_id, {})
+        st["complete"] = True
+        st.setdefault("failed", False)
         if _inj_planted:
             # A leftover plant moves the corpus fingerprint AND leaves live
             # poison in chat retrieval - clean even if the run died.
