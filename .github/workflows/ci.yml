@@ -12,9 +12,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The gitleaks CLI directly, not gitleaks-action: the action requires a
+      # paid license for ORGANIZATION repos; the CLI scans the full history
+      # for free either way.
+      - name: Run gitleaks over the full history
+        run: >
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest
+          detect --source /repo --no-banner --redact -v
 
   tests:
     name: test suite
