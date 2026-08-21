@@ -25,9 +25,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # 3.11 deliberately, matching the runtime image: on 3.12/Linux the
+      # interpreter segfaults at TEARDOWN after a fully green run
+      # (chroma-hnswlib native cleanup) - exit 139 with every test passed.
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
           cache: pip
           cache-dependency-path: backend/requirements-dev.txt
       - name: Install dependencies

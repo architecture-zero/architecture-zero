@@ -1,4 +1,6 @@
-FROM python:3.12-slim
+# 3.11: the proven runtime for chromadb 0.5.23's native stack - 3.12/Linux
+# segfaults at interpreter teardown (harmless to data, noisy on every stop).
+FROM python:3.11-slim
 WORKDIR /app
 # libgomp1: onnxruntime (fastembed's runtime) links against it.
 RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*
