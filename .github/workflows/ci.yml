@@ -25,9 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # 3.11 deliberately, matching the runtime image: on 3.12/Linux the
-      # interpreter segfaults at TEARDOWN after a fully green run
-      # (chroma-hnswlib native cleanup) - exit 139 with every test passed.
+      # 3.11 matches the runtime image.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -35,9 +33,31 @@ jobs:
           cache-dependency-path: backend/requirements-dev.txt
       - name: Install dependencies
         run: pip install -r backend/requirements-dev.txt
+      # chromadb's native stack (hnswlib) can crash the INTERPRETER at
+      # teardown on Linux - SIGSEGV on 3.12, SIGABRT on 3.11 - AFTER the
+      # session completed and every test passed (observed: "346 passed"
+      # then exit 139/134). The junit report is written at session end, so
+      # it is the truth: a teardown crash is accepted ONLY when the report
+      # exists and shows zero failures and zero errors. Any other exit code
+      # fails, and a mid-run crash leaves no report, which also fails.
       - name: Run the suite
         working-directory: backend
-        run: python -m pytest tests -q
+        shell: bash
+        run: |
+          set +e
+          python -m pytest tests -q --junitxml=pytest-report.xml
+          rc=$?
+          set -e
+          if [ $rc -ne 0 ] && [ $rc -ne 134 ] && [ $rc -ne 139 ]; then exit $rc; fi
+          if [ $rc -ne 0 ]; then echo "interpreter teardown crash (exit $rc) after session end - verifying junit report"; fi
+          python - <<'EOF'
+          import sys, xml.etree.ElementTree as ET
+          root = ET.parse("pytest-report.xml").getroot()
+          s = root if root.tag == "testsuite" else root.find("testsuite")
+          tests = int(s.get("tests", 0)); fail = int(s.get("failures", 0)); err = int(s.get("errors", 0))
+          print(f"junit verdict: {tests} tests, {fail} failures, {err} errors")
+          sys.exit(0 if tests and not fail and not err else 1)
+          EOF
 
   image:
     name: docker image builds
