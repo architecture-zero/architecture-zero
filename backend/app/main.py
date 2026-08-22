@@ -1909,7 +1909,11 @@ def health_ready():
             s.execute(_text("SELECT 1"))
         checks["db"] = "ok"
     except Exception as e:
-        checks["db"] = f"error: {e}"
+        # /api/health/ready is UNAUTHENTICATED (auth.py EXCLUDED_PATHS) so the
+        # monitoring prober can reach it - which makes an interpolated exception
+        # disclosure to anyone. Body says pass/fail; detail goes to the log.
+        logging.getLogger("uvicorn.error").error("readiness: db check failed: %s", e)
+        checks["db"] = "error"
         ready = False
 
     # Redis check (non-critical - optional)
@@ -1921,7 +1925,8 @@ def health_ready():
             r.ping()
             checks["redis"] = "ok"
         except Exception as e:
-            checks["redis"] = f"error: {e}"
+            logging.getLogger("uvicorn.error").warning("readiness: redis check failed: %s", e)
+            checks["redis"] = "error"
             # Redis failure is not fatal - backend falls back to DB-only mode
     else:
         checks["redis"] = "skipped"
