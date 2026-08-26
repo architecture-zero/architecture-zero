@@ -1,8 +1,8 @@
 """THE DEPARTMENT-LIST INVARIANT.
 
 A department list holds only REAL departments - ones that actually hold
-documents. The bug class this closes (found live on a derived instance,
-2026-08-25): a probe's cleanup honestly reported zero residual DOCUMENTS
+documents. The bug class this closes (found live on a derived instance): a
+probe's cleanup honestly reported zero residual DOCUMENTS
 (delete_source removes documents) while its empty COLLECTIONS survived, and
 list_departments() - which enumerates collections - served them as invented
 departments on /api/ingest/departments. Worse, _get_collection's
@@ -137,19 +137,18 @@ class _MintTrackingClient:
 
 
 def test_deleting_from_an_absent_department_mints_nothing(monkeypatch):
-    """The 2026-08-26 root cause, pinned.
+    """The root cause, pinned.
 
-    kb_autogen's generators call delete_source on their NO-DATA path
-    ("if not rows: delete_source('health-current', 'health')"). delete_source
-    used to reach through _get_collection, which is get_or_create - so a module
-    with nothing to say minted an empty kb_health at every boot, and
-    list_departments() advertised it as a real department. Ordinary
-    application code, not a probe: the live instance's first boot report named
-    dj, health, schedule and tasks.
+    A maintenance path that calls delete_source when it has nothing to write
+    ("if not rows: delete_source('metrics-current', 'metrics')") used to reach
+    through _get_collection, which is get_or_create - so a module with nothing
+    to say minted an empty collection on every run, and list_departments()
+    advertised it as a real department. Ordinary application code, not a
+    probe: that is what a derived instance's boot report actually found.
     """
     client = _MintTrackingClient([_Col("kb_real", 5)])
     monkeypatch.setattr(database, "client", client)
-    database.delete_source("health-current", "health")
+    database.delete_source("metrics-current", "metrics")
     assert client.minted == [], f"delete minted collections: {client.minted}"
     assert database.list_departments() == ["general", "real"]
 
@@ -166,10 +165,11 @@ def test_deleting_from_a_present_department_still_deletes(monkeypatch):
 
     client = _MintTrackingClient([_DelCol("kb_present", 3)])
     monkeypatch.setattr(database, "client", client)
-    # raising=False: only az-personal and the public core carry the BM25
-    # lexical index. This test is otherwise identical across the fleet, and a
-    # setattr that assumes Kin's shape ERRORS on the forks rather than failing
-    # honestly - a ported test must not require machinery the port lacks.
+    # raising=False: this core carries the BM25 lexical index, but a derived
+    # instance may not. This test is otherwise identical across derivations,
+    # and a setattr that assumes the core's shape ERRORS on a derivation
+    # rather than failing honestly - a ported test must not require machinery
+    # the port lacks.
     monkeypatch.setattr(database, "_invalidate_lexical_index",
                         lambda *a, **k: None, raising=False)
     database.delete_source("s", "present")

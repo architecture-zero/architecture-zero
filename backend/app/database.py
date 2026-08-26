@@ -132,17 +132,17 @@ def _existing_collection(department: str | None = None):
 
     The delete-side counterpart to _get_collection, which is get_or_create and
     therefore MINTS an empty collection as a side effect of being asked about
-    one. That side effect is how ORDINARY code invented departments, not just
-    probes: kb_autogen's generators call delete_source on their no-data path
-    ("if not rows: delete_source('health-current', 'health')"), so a module
-    with nothing to say minted an empty kb_health at every boot, which
-    list_departments() then advertised as a real department.
+    one. That side effect is how ORDINARY code invents departments, not just
+    probes: any maintenance path that calls delete_source when it has nothing
+    to write ("if not rows: delete_source('metrics-current', 'metrics')")
+    mints an empty collection on every run, which list_departments() then
+    advertises as a real department.
 
-    Found 2026-08-26 by the department-list invariant's FIRST boot report on
-    the live instance, which named dj, health, schedule and tasks - none of
-    them probe residue. Without this, that report would fire at ERROR on every
-    boot for a benign condition, and a guard that cries wolf every boot is one
-    nobody reads.
+    Found by the department-list invariant's boot report on a derived
+    instance, whose residue turned out to come from exactly such ordinary
+    paths - none of it probe residue. Without this helper, that report would
+    fire at ERROR on every boot for a benign condition, and a guard that
+    cries wolf every boot is one nobody reads.
 
     Deleting from a collection that does not exist is a no-op, so declining to
     create one is strictly better than creating it to find nothing inside.
@@ -160,8 +160,8 @@ def _existing_collection(department: str | None = None):
     # Existence settled, hand off to the ONE place collection objects are
     # produced. Going straight to client.get_collection here would fork that
     # seam - and _get_collection is what the suite patches to stub collection
-    # access, so a second path would quietly drop those stubs (the 2026-08-26
-    # BM25 test caught exactly that). get_or_create on a collection already
+    # access, so a second path would quietly drop those stubs (the BM25 suite
+    # caught exactly that). get_or_create on a collection already
     # proven to exist creates nothing.
     return _get_collection(department)
 

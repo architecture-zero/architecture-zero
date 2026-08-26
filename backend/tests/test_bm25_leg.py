@@ -68,7 +68,7 @@ def _clean_lexical_cache():
 def _use(monkeypatch, col):
     # BOTH collection seams. _get_collection is the get-or-create one;
     # _existing_collection is the read/delete one that declines to create an
-    # absent collection (2026-08-26). A stub that patched only the first left
+    # absent collection. A stub that patched only the first left
     # delete_source reaching the real client, finding nothing, and returning
     # before it could invalidate the index - the test failed for a reason that
     # had nothing to do with what it asserts. Stub the access, not one door.
