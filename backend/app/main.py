@@ -739,6 +739,26 @@ async def startup_tasks():
             _report_sync("docs", res)
         except Exception as e:
             log_error("startup_sync_crashed", stage="docs", error=str(e))
+        # DEPARTMENT-LIST INVARIANT: report residue at every boot, not just
+        # when someone happens to call the endpoint. An empty kb_* collection
+        # here means some tool created it and cleaned up imperfectly -
+        # list_departments() already excludes it BY CONSTRUCTION; this is what
+        # keeps it from being invisible. The clean line is emitted too: a guard
+        # silent when healthy is indistinguishable from one that is not
+        # running. It rides the BACKGROUND task rather than an awaited startup
+        # hook on purpose - every chroma-touching boot task here does, so a
+        # wedged metadata read cannot sit in front of the first health check.
+        try:
+            from app.database import department_residue
+            residue = await asyncio.get_running_loop().run_in_executor(
+                None, department_residue)
+            if residue:
+                log_error("department_residue_found", departments=residue)
+            else:
+                log("department_residue_clean")
+        except Exception as e:
+            log_error("department_residue_check_crashed", error=str(e))
+
         _startup_ingest_active = False
         asyncio.create_task(_watch_knowledge_dir())
 

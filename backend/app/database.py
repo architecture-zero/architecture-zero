@@ -668,13 +668,63 @@ def delete_documents(ids: list[str], department: str | None = None):
     _invalidate_lexical_index(col.name)
 
 
-def list_departments() -> list[str]:
-    """Return all department names that have collections."""
-    depts = ["general"]
+def _department_partition() -> tuple[list[str], list[str]]:
+    """Split kb_* collections into (real, residue) by whether they hold documents.
+
+    The residue class: delete_source removes DOCUMENTS while the collection
+    object survives, so an empty leftover is invisible to an honest
+    "residual entries = 0" AND to corpus_fingerprint() (which hashes
+    (source, department, count) triples and sees nothing for an empty one) -
+    yet it used to surface as an invented department on /api/ingest/departments.
+    A collection whose count cannot be read is not provably real, so it goes to
+    residue too (fail-closed) rather than riding a department list on faith.
+    """
+    real, residue = [], []
     for col in client.list_collections():
-        if col.name.startswith("kb_") and col.name != GLOBAL_COLLECTION:
-            depts.append(col.name[3:])
-    return sorted(depts)
+        if not col.name.startswith("kb_") or col.name == GLOBAL_COLLECTION:
+            continue
+        try:
+            n = col.count()
+        except Exception:
+            n = 0
+        (real if n > 0 else residue).append(col.name[3:])
+    return sorted(real), sorted(residue)
+
+
+def department_residue() -> list[str]:
+    """Department names whose collections exist but hold ZERO documents.
+
+    The observable half of the department-list invariant: residue never
+    appears in list_departments(), but it is never silently swallowed either -
+    startup reports it, and this seam is what tests and operators check.
+    Deleting it is NOT this function's job: a non-empty collection is evidence
+    (something other than a clean run put content there), and even an empty one
+    is a fact about which tool cleaned up imperfectly. Report, don't destroy.
+    """
+    return _department_partition()[1]
+
+
+def list_departments() -> list[str]:
+    """Return the REAL departments: "general" plus every kb_* collection that
+    actually holds documents.
+
+    THE DEPARTMENT-LIST INVARIANT: a department list holds only real
+    departments. Enumerating COLLECTIONS while delete_source removes DOCUMENTS
+    is how an internal probe's empty leftovers can end up advertised on an
+    admin surface - and _get_collection's get_or_create means even a delete or
+    query naming a novel department mints an empty collection as a side
+    effect. Empty collections are excluded here BY CONSTRUCTION, so no surface
+    derived from this list - the /api/ingest/departments endpoint included -
+    can advertise one, and the exclusion is logged loudly rather than silently
+    applied.
+    """
+    real, residue = _department_partition()
+    if residue:
+        log.warning(
+            "department-list invariant: excluded %d empty kb_* collection(s) "
+            "(residue, not real departments): %s",
+            len(residue), ", ".join(residue))
+    return sorted(["general"] + real)
 
 
 def count_documents(department: str | None = None) -> int:
