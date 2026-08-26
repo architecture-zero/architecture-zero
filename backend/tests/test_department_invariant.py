@@ -102,3 +102,76 @@ def test_the_endpoint_stays_authenticated(client):
     """The list is operator surface, not public - route-level auth holds even
     with ENABLE_AUTH=false, which is how conftest runs."""
     assert client.get("/api/ingest/departments").status_code == 401
+
+
+# -- The root cause: a delete must not MINT the collection it deletes from ----
+
+class _MintTrackingClient:
+    """Records get_or_create calls so the test can prove none happened."""
+    def __init__(self, cols):
+        self._cols = list(cols)
+        self.minted = []
+
+    def list_collections(self):
+        return list(self._cols)
+
+    def get_collection(self, name):
+        for c in self._cols:
+            if c.name == name:
+                return c
+        raise ValueError(f"no such collection: {name}")
+
+    def get_or_create_collection(self, name, metadata=None):
+        # Faithful to chroma: get_or_create on an EXISTING collection creates
+        # nothing and returns it. Recording every call as a "mint" would
+        # conflate asking with creating - the exact confusion this whole fix
+        # is about - and would fail the present-department case for a reason
+        # that has nothing to do with the property under test.
+        for c in self._cols:
+            if c.name == name:
+                return c
+        self.minted.append(name)
+        col = _Col(name, 0)
+        self._cols.append(col)
+        return col
+
+
+def test_deleting_from_an_absent_department_mints_nothing(monkeypatch):
+    """The 2026-08-26 root cause, pinned.
+
+    kb_autogen's generators call delete_source on their NO-DATA path
+    ("if not rows: delete_source('health-current', 'health')"). delete_source
+    used to reach through _get_collection, which is get_or_create - so a module
+    with nothing to say minted an empty kb_health at every boot, and
+    list_departments() advertised it as a real department. Ordinary
+    application code, not a probe: the live instance's first boot report named
+    dj, health, schedule and tasks.
+    """
+    client = _MintTrackingClient([_Col("kb_real", 5)])
+    monkeypatch.setattr(database, "client", client)
+    database.delete_source("health-current", "health")
+    assert client.minted == [], f"delete minted collections: {client.minted}"
+    assert database.list_departments() == ["general", "real"]
+
+
+def test_deleting_from_a_present_department_still_deletes(monkeypatch):
+    """The fix must not turn a real delete into a no-op."""
+    deleted = {}
+
+    class _DelCol(_Col):
+        def get(self, where=None, include=None):
+            return {"ids": ["a1"], "metadatas": [{"source": "s"}]}
+        def delete(self, ids=None):
+            deleted["ids"] = ids
+
+    client = _MintTrackingClient([_DelCol("kb_present", 3)])
+    monkeypatch.setattr(database, "client", client)
+    # raising=False: only az-personal and the public core carry the BM25
+    # lexical index. This test is otherwise identical across the fleet, and a
+    # setattr that assumes Kin's shape ERRORS on the forks rather than failing
+    # honestly - a ported test must not require machinery the port lacks.
+    monkeypatch.setattr(database, "_invalidate_lexical_index",
+                        lambda *a, **k: None, raising=False)
+    database.delete_source("s", "present")
+    assert deleted.get("ids") == ["a1"]
+    assert client.minted == []

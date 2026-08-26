@@ -113,13 +113,57 @@ def _get_collection(department: str | None = None) -> chromadb.Collection:
     None / "general" -> global knowledge_base collection.
     Any other value  -> kb_<department> collection (created on first use).
     """
+    return client.get_or_create_collection(
+        name=_collection_name(department), metadata=collection_metadata())
+
+
+def _collection_name(department: str | None = None) -> str:
+    """The collection name for a department - ONE derivation, shared by the
+    get-or-create path and the does-it-exist path so they cannot disagree."""
     if not department or department == "general":
-        name = GLOBAL_COLLECTION
-    else:
-        # Sanitize: lowercase, replace spaces/special chars with underscore
-        safe = re.sub(r"[^a-z0-9_-]", "_", department.lower())
-        name = f"kb_{safe}"
-    return client.get_or_create_collection(name=name, metadata=collection_metadata())
+        return GLOBAL_COLLECTION
+    # Sanitize: lowercase, replace spaces/special chars with underscore
+    safe = re.sub(r"[^a-z0-9_-]", "_", department.lower())
+    return f"kb_{safe}"
+
+
+def _existing_collection(department: str | None = None):
+    """The department's collection, or None if it does not exist yet.
+
+    The delete-side counterpart to _get_collection, which is get_or_create and
+    therefore MINTS an empty collection as a side effect of being asked about
+    one. That side effect is how ORDINARY code invented departments, not just
+    probes: kb_autogen's generators call delete_source on their no-data path
+    ("if not rows: delete_source('health-current', 'health')"), so a module
+    with nothing to say minted an empty kb_health at every boot, which
+    list_departments() then advertised as a real department.
+
+    Found 2026-08-26 by the department-list invariant's FIRST boot report on
+    the live instance, which named dj, health, schedule and tasks - none of
+    them probe residue. Without this, that report would fire at ERROR on every
+    boot for a benign condition, and a guard that cries wolf every boot is one
+    nobody reads.
+
+    Deleting from a collection that does not exist is a no-op, so declining to
+    create one is strictly better than creating it to find nothing inside.
+    """
+    name = _collection_name(department)
+    # DELIBERATELY NOT wrapped in try/except. "chroma cannot answer" is not
+    # "this department does not exist", and collapsing the two would fail
+    # OPEN on the delete path: DELETE /api/ingest/source would report success
+    # and unlink the on-disk source while every chunk stayed indexed and
+    # retrievable. Letting the error propagate is also exactly what happened
+    # before this helper existed - _get_collection would have raised too - so
+    # callers' error handling is unchanged.
+    if not any(c.name == name for c in client.list_collections()):
+        return None
+    # Existence settled, hand off to the ONE place collection objects are
+    # produced. Going straight to client.get_collection here would fork that
+    # seam - and _get_collection is what the suite patches to stub collection
+    # access, so a second path would quietly drop those stubs (the 2026-08-26
+    # BM25 test caught exactly that). get_or_create on a collection already
+    # proven to exist creates nothing.
+    return _get_collection(department)
 
 
 def _embed(text: str, retries: int = 2) -> list[float]:
@@ -506,7 +550,9 @@ def query_similar(query: str, n_results: int = 5,
     for dept in departments:
         if not dept or dept == "general":
             continue
-        col = _get_collection(dept)
+        col = _existing_collection(dept)
+        if col is None:
+            continue  # nothing indexed there; asking must not create it
         if col.name not in seen_names:
             seen_names.add(col.name)
             collections_to_query.append(col)
@@ -580,7 +626,9 @@ def list_sources(department: str | None = None) -> list[dict]:
     with a dept label."""
     if department is not None:
         # List only the specified department's collection
-        col = _get_collection(department)
+        col = _existing_collection(department)
+        if col is None:
+            return []
         results = col.get(include=["metadatas"])
         counts: dict[str, int] = {}
         for meta in results["metadatas"]:
@@ -643,7 +691,9 @@ def corpus_fingerprint() -> str:
 
 
 def delete_source(source: str, department: str | None = None):
-    col = _get_collection(department)
+    col = _existing_collection(department)
+    if col is None:
+        return  # nothing to delete from, and asking must not create one
     results = col.get(where={"source": source}, include=["metadatas"])
     if results["ids"]:
         col.delete(ids=results["ids"])
@@ -654,7 +704,9 @@ def get_source_ids(source: str, department: str | None = None) -> list[str]:
     """All chunk ids currently indexed for a source. The read half of delta
     ingestion: ids are content-addressed, so comparing this set against the
     desired set yields exactly what to embed and what to drop."""
-    col = _get_collection(department)
+    col = _existing_collection(department)
+    if col is None:
+        return []
     return list(col.get(where={"source": source}).get("ids") or [])
 
 
@@ -663,7 +715,9 @@ def delete_documents(ids: list[str], department: str | None = None):
     delete_source stays for whole-source removal (watcher deletes, purges)."""
     if not ids:
         return
-    col = _get_collection(department)
+    col = _existing_collection(department)
+    if col is None:
+        return  # nothing to delete from, and asking must not create one
     col.delete(ids=ids)
     _invalidate_lexical_index(col.name)
 
@@ -730,7 +784,8 @@ def list_departments() -> list[str]:
 def count_documents(department: str | None = None) -> int:
     """Count total documents, optionally scoped to a department."""
     if department is not None:
-        return _get_collection(department).count()
+        col = _existing_collection(department)
+        return col.count() if col is not None else 0
     total = 0
     for col in client.list_collections():
         try:

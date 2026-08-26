@@ -50,6 +50,9 @@ def real_collection(monkeypatch):
     col = cl.create_collection(name="knowledge_base", metadata={"hnsw:space": "cosine"})
     database._LEX_INDEX.clear()
     monkeypatch.setattr(database, "_get_collection", lambda department=None: col)
+    # Both seams: get_source_ids reads through _existing_collection, which
+    # would otherwise escape this fixture and consult the real module client.
+    monkeypatch.setattr(database, "_existing_collection", lambda department=None: col)
     monkeypatch.setattr(database, "_embed", _toy_embed)
     yield col
     database._LEX_INDEX.clear()
