@@ -53,12 +53,13 @@ def get_system_prompt() -> str:
     """The served persona: DB row first, environment only as its seed.
 
     CHANGED 2026-08-27. This used to return the env value outright whenever
-    SYSTEM_PROMPT was set, which made the admin panel's persona editor a no-op
-    on every deployment whose environment sets it - and .env.example ships that
-    variable uncommented, so that was all of them. The editor saved the row,
-    reported "Saved", and the server never read it. A control that reports
-    success and changes nothing is worse than one that is absent: it stops the
-    operator looking.
+    SYSTEM_PROMPT was set, which made the stored persona row - the one
+    PATCH /api/admin/config writes and reports "Saved" - dead on any deployment
+    whose environment sets that variable. A write path that reports success and
+    changes nothing is worse than one that is absent: it stops the operator
+    looking. (This repo's .env.example does not set SYSTEM_PROMPT, so a default
+    deployment was never affected; the fix matters the moment an operator
+    exports the variable.)
 
     Nothing changes for a never-edited deployment. init_config_db() seeds the
     row from _DEFAULTS["system_prompt"], which is itself
@@ -66,9 +67,10 @@ def get_system_prompt() -> str:
     exactly what the environment set. What the environment no longer does is
     override a deliberate edit made afterwards.
 
-    The one deployment class this MOVES - env edited after first boot - is
-    reported rather than hidden: system_prompt_divergence() is the observable
-    seam and a startup hook names it at every boot.
+    The deployment class this MOVES - env set AND disagreeing with the stored
+    row (env edited after first boot, or a row saved while the env override
+    kept it unread) - is reported rather than hidden: system_prompt_divergence()
+    is the observable seam and a startup hook names it at every boot.
     """
     return get_config("system_prompt", _DEFAULTS["system_prompt"])
 

@@ -1,7 +1,6 @@
 """THE CONFIG WRITE CONTRACT - three controls that reported success and did nothing.
 
-Found 2026-08-27 while mapping the seams a guided first-run setup would write
-to. All three share one failure shape: a write path that answers "fine" whether
+All three share one failure shape: a write path that answers "fine" whether
 or not it wrote, so nobody looking at the response, the log, or the source could
 tell. That shape is worse than a missing control, because it stops the operator
 looking.
@@ -9,7 +8,7 @@ looking.
 1. PERSONA. get_system_prompt() read `env_val or get_config(...)`, so
    SYSTEM_PROMPT in the environment beat the stored row. .env.example ships
    that variable uncommented, so on every instance cloned from the template the
-   admin panel's persona editor saved a row the server never read, and said
+   persona editor saved a row the server never read, and said
    "Saved".
 
 2. ALLOWLIST. PATCH /api/admin/config dropped any key outside its allowlist
@@ -59,17 +58,16 @@ def test_untouched_instance_still_serves_its_environment(monkeypatch):
 def test_served_prompt_always_carries_the_rails(monkeypatch):
     """Persona is editable; the rails appended to it are not.
 
-    WHERE the rails are appended diverges across the fleet on purpose: some
-    instances append them inside get_system_prompt (config.PROMPT_RAILS), others
-    at the single LLM-facing call site in main.py (_GROUNDING_RULES /
-    _SAFETY_RULES), where that repo's own test_prompt_rails.py pins them. This
-    file is kept byte-identical in every repo, so it asserts the property only
-    where this seam owns it and defers to test_prompt_rails.py otherwise -
-    rather than hardcoding one architecture and failing everywhere else.
+    WHERE the rails are appended differs between builds: some append them
+    inside get_system_prompt (config.PROMPT_RAILS), others at the single
+    LLM-facing call site in main.py (_GROUNDING_RULES / _SAFETY_RULES). This
+    asserts the property only where get_system_prompt owns it; where rails are
+    appended at the call site, that build's own prompt-rails test pins them
+    instead - rather than hardcoding one architecture and failing elsewhere.
     """
     rails = getattr(config, "PROMPT_RAILS", None)
     if rails is None:
-        pytest.skip("rails are appended at the call site here - see test_prompt_rails.py")
+        pytest.skip("rails are appended at the call site here; that build's prompt-rails test pins them")
     monkeypatch.setattr(config, "get_config",
                         lambda key, default="": "anything at all")
     assert config.get_system_prompt().endswith(rails)
@@ -144,14 +142,14 @@ def test_suggestions_must_be_a_list(client, admin_headers):
 
 def test_allowlisted_keys_still_write(client, admin_headers):
     """The contract cuts both ways - refusing unknown keys must not break the
-    admin panel, which only ever sends allowlisted ones."""
+    config UI, which only ever sends allowlisted ones."""
     original = client.get("/api/admin/config", headers=admin_headers).json()
     try:
         r = client.patch("/api/admin/config",
-                         json={"instance_name": "Northwind Traders Assistant"},
+                         json={"instance_name": "Renamed Assistant"},
                          headers=admin_headers)
         assert r.status_code == 200
-        assert r.json()["instance_name"] == "Northwind Traders Assistant"
+        assert r.json()["instance_name"] == "Renamed Assistant"
     finally:
         # Restore: the client fixture is session-scoped, so a stray write here
         # would follow every test that runs after this file.
@@ -194,7 +192,7 @@ def test_throttle_is_not_gated_on_the_rate_limit_flag(client, monkeypatch):
 
 
 def test_closed_setup_is_throttled_too(client, monkeypatch):
-    """The throttle runs BEFORE admin_exists(). An unthrottled 403 answers
+    """The throttle runs BEFORE the first-owner check. An unthrottled 403 answers
     'has this instance been claimed yet' for free, and forever."""
     monkeypatch.setattr(security, "SETUP_MAX_ATTEMPTS", 2)
     body = {"username": "claimant", "password": "ClaimPass1"}
@@ -211,8 +209,8 @@ def test_closed_setup_is_throttled_too(client, monkeypatch):
 
 def test_the_setup_store_does_not_grow_without_bound():
     """Swept in full on every call: the dict is tiny by construction except
-    under exactly the attack that makes pruning worth doing. _rate_store carried
-    this defect for months before its amortized sweep landed."""
+    under exactly the attack that makes pruning worth doing. This mirrors the
+    amortized sweep on _rate_store."""
     security._setup_store["10.0.0.1"] = [0.0]          # long expired
     security._setup_store["10.0.0.2"] = []             # never populated
 
@@ -221,3 +219,52 @@ def test_the_setup_store_does_not_grow_without_bound():
     assert "10.0.0.1" not in security._setup_store
     assert "10.0.0.2" not in security._setup_store
     assert "10.0.0.3" in security._setup_store
+
+
+# -- 2b. The refusal arrives BEFORE the write loop, and the audit line is honest -
+
+def test_a_bad_suggestions_value_does_not_partially_write(client, admin_headers):
+    """The 400 must arrive BEFORE any write. Until 2026-08-27 the suggestions
+    type check sat INSIDE the write loop, so a body carrying a good key and a
+    bad suggestions value wrote the good key, then 400'd - a partial write the
+    caller was told did not happen, and the audit line never ran."""
+    before = client.get("/api/admin/config", headers=admin_headers).json()
+
+    r = client.patch("/api/admin/config",
+                     json={"instance_name": "Half Landed",
+                           "suggestions": "not a list"},
+                     headers=admin_headers)
+
+    assert r.status_code == 400
+    after = client.get("/api/admin/config", headers=admin_headers).json()
+    assert after["instance_name"] == before["instance_name"]
+
+
+def test_the_audit_line_records_what_was_written(client, admin_headers,
+                                                 monkeypatch):
+    """The log is the record of what CHANGED. The old line logged
+    list(body.keys()) - what the caller SENT - so the audit record agreed with
+    the caller that a discarded write had happened."""
+    from app import main as main_module
+
+    captured = []
+    real_log = main_module.log
+
+    def spy(event, **kw):
+        if event == "admin_config_update":
+            captured.append(kw)
+        return real_log(event, **kw)
+
+    monkeypatch.setattr(main_module, "log", spy)
+    original = client.get("/api/admin/config", headers=admin_headers).json()
+    try:
+        r = client.patch("/api/admin/config",
+                         json={"instance_name": "Audit Probe"},
+                         headers=admin_headers)
+        assert r.status_code == 200
+        assert captured, "admin_config_update was never logged"
+        assert captured[-1]["keys"] == ["instance_name"]
+    finally:
+        client.patch("/api/admin/config",
+                     json={"instance_name": original["instance_name"]},
+                     headers=admin_headers)

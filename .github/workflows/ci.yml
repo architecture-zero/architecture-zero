@@ -5,6 +5,32 @@ on:
   pull_request:
 
 jobs:
+  residue:
+    name: private-residue guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # This template is derived from private deployments. Nothing from that
+      # lineage - names, hosts, workspace paths - may appear in the tree. The
+      # patterns live in .github/residue-denylist.txt (excluded from its own
+      # scan); a hit prints the offending lines and fails the job. Added
+      # 2026-08-27, the day a private system's name shipped in a test comment
+      # HOURS after a hand scrub of exactly that class - hands lose this game,
+      # so a machine plays it.
+      #
+      # The list here is deliberately SHORT: only terms this repo's own public
+      # record already carries, because a public denylist that names things
+      # not yet public would itself be the leak it guards against. A fuller
+      # private-side list runs in the maintainer's port tooling before pushes.
+      - name: Forbid private-infrastructure residue
+        shell: bash
+        run: |
+          if git grep -nIiE -f .github/residue-denylist.txt -- . ':!.github/residue-denylist.txt'; then
+            echo "::error::private-infrastructure residue found (patterns: .github/residue-denylist.txt)"
+            exit 1
+          fi
+          echo "tree is clean of denylisted residue"
+
   gitleaks:
     name: gitleaks (secret scanning)
     runs-on: ubuntu-latest

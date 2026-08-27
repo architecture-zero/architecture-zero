@@ -175,6 +175,10 @@ def check_setup_rate_limit(client_ip: str) -> None:
 # the token they track, swept on every call. Running multi-worker or
 # multi-replica requires moving this to Redis, or the per-challenge bound weakens
 # to per-worker (the per-ACCOUNT lock is shared through the DB and would hold).
+# A restart also forgets burned jtis and attempt counts, so a completed or
+# exhausted challenge token is honoured fresh for what remains of its 5-minute
+# life after a redeploy - bounded by the TTL, accepted until this state moves
+# to Redis.
 MFA_MAX_ATTEMPTS  = int(os.getenv("MFA_MAX_ATTEMPTS",  "5"))
 MFA_CHALLENGE_TTL = int(os.getenv("MFA_CHALLENGE_TTL", "300"))  # matches the token's exp
 

@@ -49,7 +49,7 @@ EVAL_SEED_PATH         = os.getenv("EVAL_SEED_PATH", "")
 EVAL_JUDGE_MODEL_DEFAULT = os.getenv("EVAL_JUDGE_MODEL", "claude-sonnet-4-6")
 OLLAMA_BASE            = os.getenv("OLLAMA_BASE",   "http://localhost:11434")
 DEFAULT_MODEL          = os.getenv("DEFAULT_MODEL", "qwen3:8b")
-CORS_ORIGIN            = os.getenv("CORS_ORIGIN",   "*")
+CORS_ORIGIN            = os.getenv("CORS_ORIGIN",   "http://localhost:5173")
 RAG_ONLY_MODE          = os.getenv("RAG_ONLY_MODE", "false").lower() == "true"
 
 
@@ -675,11 +675,12 @@ async def _system_prompt_divergence_on_startup():
     """Report a persona that the 2026-08-27 DB-first change moved.
 
     get_system_prompt() used to let env SYSTEM_PROMPT beat the stored row, which
-    made the admin panel's persona editor a no-op. Inverting it fixes the editor
-    and changes nothing for a never-edited deployment - init_config_db() seeds
-    the row from the same env var - EXCEPT where the env was edited after first
-    boot. That deployment has been served the env value and is now served its
-    row, invisibly. This names it. The clean line is emitted too, so a guard that
+    made the persona row PATCH /api/admin/config writes a no-op. Inverting it
+    fixes the write path and changes nothing for a never-edited deployment -
+    init_config_db() seeds the row from the same env var - EXCEPT where env and
+    row disagree (env edited after first boot, or a row saved while the env
+    override kept it unread). That deployment has been served the env value and
+    is now served its row, invisibly. This names it. The clean line is emitted too, so a guard that
     is silent when healthy cannot be mistaken for a guard that is not running.
 
     Lengths only, never the text: a persona can carry deployment-specific
@@ -914,8 +915,6 @@ def login(request: LoginRequest):
                 raise HTTPException(status_code=429, detail=f"Too many failed attempts. Account locked for {LOCKOUT_DURATION_MINUTES} minutes.")
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    reset_failed_attempts(user["id"])
-
     # The REQUIRE_MFA refusal (see the comment block above the lockout check).
     if REQUIRE_MFA and not user.get("mfa_enabled"):
         log("auth_mfa_required_refusal", user_id=user["id"], username=user["username"])
@@ -924,12 +923,18 @@ def login(request: LoginRequest):
             detail="MFA is required on this instance and this account has no "
                    "TOTP enrolled. Enroll from an existing session, then retry.")
 
-    # MFA check
+    # MFA check. Deliberately NO reset_failed_attempts before this branch: the
+    # password is only half of an MFA login, and clearing the counter when the
+    # challenge was minted let a password-holding attacker zero the account
+    # lock with every re-login, so MFA failures could never accumulate (fixed
+    # 2026-08-27; the re-login test in test_mfa_challenge_guard.py pins it).
+    # The counter clears in mfa_complete, on full success.
     if user.get("mfa_enabled"):
         mfa_token = create_mfa_challenge_token(user["id"])
         log("auth_mfa_challenge", user_id=user["id"], username=user["username"])
         return {"mfa_required": True, "mfa_token": mfa_token}
 
+    reset_failed_attempts(user["id"])
     access_token = create_access_token(user["id"], user["username"], user["role"])
     raw_refresh, expires_at = create_refresh_token(user["id"])
     store_refresh_token(user["id"], hash_token(raw_refresh), expires_at)
@@ -987,6 +992,7 @@ def mfa_complete(request: MFACompleteRequest):
     totp = pyotp.TOTP(user["mfa_secret"])
     if not totp.verify(request.code, valid_window=1):
         record_mfa_failure(jti)
+        increment("auth_failures_total")
         attempts = increment_failed_attempts(user["id"])
         if attempts >= MAX_LOGIN_ATTEMPTS:
             until = (datetime.now(timezone.utc) + timedelta(minutes=LOCKOUT_DURATION_MINUTES)).isoformat()
@@ -1624,21 +1630,26 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
     # bare `continue`: a key outside the allowlist, and a non-list `suggestions`,
     # were dropped in silence and answered 200 - and the audit line logged the
     # keys SUBMITTED rather than the keys WRITTEN, so the record agreed with the
-    # caller that a discarded write had happened. The admin panel only ever
-    # sends allowlisted keys, so it never saw this; the first caller to send a
-    # new key would have gotten a silent no-op with no way to find out.
+    # caller that a discarded write had happened. A well-behaved client only
+    # sends allowlisted keys, so the drop was invisible in normal use; the first
+    # caller to send a new key would have gotten a silent no-op with no way to
+    # find out.
     unknown = sorted(k for k in body if k not in allowed)
     if unknown:
         raise HTTPException(
             status_code=400,
             detail=f"Unknown config key(s): {', '.join(unknown)}")
+    # Validated BEFORE the write loop (moved 2026-08-27): a mid-loop 400 left
+    # every earlier key in the body already written and the audit line skipped -
+    # a partial write reported as refused, the same lying-response class as the
+    # bare `continue` this endpoint was cured of the same day.
+    if "suggestions" in body and not isinstance(body["suggestions"], list):
+        raise HTTPException(
+            status_code=400,
+            detail="suggestions must be a list of strings")
     written = []
     for key, value in body.items():
         if key == "suggestions":
-            if not isinstance(value, list):
-                raise HTTPException(
-                    status_code=400,
-                    detail="suggestions must be a list of strings")
             value = json.dumps([s for s in value if isinstance(s, str) and s.strip()])
         elif key in ("allow_model_selection", "allow_rag_toggle", "default_rag_enabled", "guest_mode_enabled"):
             value = "true" if value else "false"

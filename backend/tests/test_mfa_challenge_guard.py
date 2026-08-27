@@ -1,7 +1,6 @@
 """MFA challenge guard - the strongest door was the only one with no lock counter.
 
-Found 2026-08-27 by an outside review of the repo and verified in code before
-being believed. /api/auth/mfa/complete had NO attempt counter, NO lockout, and
+Verified in code before being believed: /api/auth/mfa/complete had NO attempt counter, NO lockout, and
 NO invalidation of the challenge after use - while /api/auth/login, twenty lines
 above it, has all three.
 
@@ -36,10 +35,9 @@ def mfa_user(client, admin_headers):
 
     existing = get_user_by_username(_MFA_USER["username"])
     if not existing:
-        # The lowest-privilege role name diverges across the fleet on purpose:
-        # Kin's ladder is owner/admin/member, the forks' is admin/manager/user.
-        # This file is kept identical in all four repos, so it asks for whichever
-        # the instance accepts rather than hardcoding one and erroring on three.
+        # The lowest-privilege role name differs between builds: some use
+        # owner/admin/member, others admin/manager/user. Ask for whichever the
+        # instance accepts rather than hardcoding one and erroring on the rest.
         for role in ("user", "member"):
             r = client.post("/api/users", json={**_MFA_USER, "role": role},
                             headers=admin_headers)
@@ -112,18 +110,31 @@ def test_exhausted_challenge_refuses_even_the_CORRECT_code(client, mfa_user,
 
 # ── 3. Per-account lockout - the bound that survives fresh challenges ────────
 
-def test_failures_drive_the_SAME_account_lockout_as_the_password_path(
+def test_relogin_for_a_fresh_challenge_still_walks_into_the_account_lock(
         client, mfa_user, monkeypatch):
-    """Per-challenge limits alone are defeated by requesting a new challenge.
-    MFA failures must count on the ACCOUNT, using the existing machinery."""
+    """Per-challenge limits alone are defeated by requesting a new challenge, so
+    MFA failures must count on the ACCOUNT. This drives the vector through the
+    REAL path: the only way to mint a challenge is /api/auth/login, so the test
+    re-logs-in for a fresh challenge each round, exactly as an attacker who
+    knows the password would.
+
+    The regression this pins is subtle: login must NOT clear the failure
+    counter when it hands out an MFA challenge (the password is only half the
+    login), or every re-login zeroes the account lock and the per-account bound
+    never accumulates. An earlier version of this test minted challenge tokens
+    directly, which bypassed login's reset and hid exactly that bug while the
+    test passed."""
     monkeypatch.setattr(main, "MAX_LOGIN_ATTEMPTS", 3)
     monkeypatch.setattr(security, "MFA_MAX_ATTEMPTS", 1)
 
-    # A fresh challenge each time - exactly the move a per-challenge cap misses.
+    # A fresh login (hence a fresh challenge) each round - the move a
+    # per-challenge cap misses, and the move login's reset used to reward.
     last = None
     for _ in range(3):
-        tok = create_mfa_challenge_token(mfa_user["id"])
-        last = _complete(client, tok, "000000")
+        login = client.post("/api/auth/login", json=_MFA_USER)
+        assert login.status_code == 200, login.text
+        assert login.json().get("mfa_required") is True
+        last = _complete(client, login.json()["mfa_token"], "000000")
 
     assert last.status_code == 429
     assert "locked" in last.json()["detail"].lower()
