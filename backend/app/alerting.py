@@ -58,6 +58,21 @@ def _email(subject: str, body: str) -> None:
         log_error("alert_email_failed", error=str(e))
 
 
+_POOL = None
+_POOL_GUARD = threading.Lock()
+
+
+def _pool():
+    """Lazily built so importing this module starts no threads - alerting is
+    dormant on an instance with no webhook or SMTP configured."""
+    global _POOL
+    with _POOL_GUARD:
+        if _POOL is None:
+            from concurrent.futures import ThreadPoolExecutor
+            _POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="alert")
+        return _POOL
+
+
 def _send_all(title: str, body: str) -> None:
     _webhook(title, body)
     _email(title, body)
@@ -68,15 +83,21 @@ def fire(key: str, title: str, body: str) -> None:
 
     daemon=False on purpose: daemon threads die with the process, so an exit
     right after a disk-threshold alert drops it silently - the alert path is
-    least reliable exactly when the box is in trouble. A non-daemon thread makes interpreter
-    shutdown wait for the send, and both channels are timeout-bounded (5s
-    webhook + 10s SMTP) so the wait is too. Still off the caller's thread -
-    a health-check request never blocks on SMTP."""
+    least reliable exactly when the box is in trouble. Non-daemon delivery
+    makes interpreter shutdown wait for the send, and both channels are
+    timeout-bounded (5s webhook + 10s SMTP) so the wait is too. Still off the
+    caller's thread - a health-check request never blocks on SMTP.
+
+    BOUNDED: spawning a thread per alert traded one silent failure for an
+    unbounded one - nothing capped how many delivery threads could exist at
+    once. The ThreadPoolExecutor caps the workers and keeps the property
+    daemon=False was chosen for: pool workers are non-daemon and
+    concurrent.futures registers an atexit join, so interpreter shutdown
+    still waits for an in-flight send. Two workers is enough for two
+    channels; the per-key cooldown is what keeps the submit queue short."""
     if not _cooldown_ok(key):
         return
-    threading.Thread(
-        target=_send_all, args=(title, body), daemon=False, name=f"alert-{key}"
-    ).start()
+    _pool().submit(_send_all, title, body)
 
 
 def get_config() -> dict:
