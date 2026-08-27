@@ -125,8 +125,10 @@ cd backend && ../.venv/bin/python -m pytest tests -q
 ```
 
 The suite mocks the vector store and embedder: no network, no keys, no
-GPU. CI runs the same suite plus a full-history secret scan and a Docker
-image build on every push to main.
+GPU. CI runs the same suite plus a full-history secret scan, a
+private-residue guard (a denylist grep that fails the build if lineage
+from the private deployments this template descends from appears in the
+tree), and a Docker image build on every push to main.
 
 ## License
 
