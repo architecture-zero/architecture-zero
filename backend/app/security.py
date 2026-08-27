@@ -110,6 +110,115 @@ def check_rate_limit(client_ip: str) -> None:
     else:
         _check_rate_limit_memory(client_ip)
 
+# -- First-owner claim throttle (2026-08-27) ----------------------------------
+# Deliberately NOT routed through check_rate_limit() above, and deliberately not
+# gated on ENABLE_RATE_LIMIT: that flag defaults to "false", so a claim endpoint
+# "protected" by it would read as guarded in the source and be entirely absent in
+# a default deployment. This one has no off switch.
+#
+# Until 2026-08-27, check_rate_limit was wired to exactly ONE route in this
+# application (/api/chat). POST /api/auth/setup - unauthenticated, and the
+# endpoint that hands out ownership of the instance - had no throttle at all.
+SETUP_MAX_ATTEMPTS = int(os.getenv("SETUP_MAX_ATTEMPTS", "5"))
+SETUP_WINDOW       = int(os.getenv("SETUP_WINDOW",       "900"))  # seconds
+
+_setup_store: dict[str, list[float]] = defaultdict(list)
+
+
+def check_setup_rate_limit(client_ip: str) -> None:
+    """Bound attempts against the first-owner claim endpoint. Always on.
+
+    SCOPE THIS HONESTLY - it is not a fix for the claim race. /api/auth/setup is
+    open until an owner exists, so on a fresh deployment reachable before its
+    operator finishes setup, ONE request wins it and no throttle can help.
+    Closing that needs a claim secret the deployer holds, which is a deploy-UX
+    decision rather than a patch.
+
+    What it does buy, all of it real: password-policy probing and username
+    enumeration are bounded, a bulk-reachable endpoint has a bounded blast
+    radius, and the "has this instance been claimed yet" oracle costs something
+    to ask. The throttle runs BEFORE the owner_exists() check so the closed path
+    is bounded too - otherwise the 403 answers that question for free.
+    """
+    now = time.time()
+    cutoff = now - SETUP_WINDOW
+    for ip in [ip for ip, ts in _setup_store.items() if not ts or max(ts) <= cutoff]:
+        _setup_store.pop(ip, None)
+    timestamps = [t for t in _setup_store[client_ip] if t > cutoff]
+    if len(timestamps) >= SETUP_MAX_ATTEMPTS:
+        raise HTTPException(
+            status_code=429,
+            detail=(f"Too many setup attempts: max {SETUP_MAX_ATTEMPTS} "
+                    f"per {SETUP_WINDOW}s"),
+        )
+    timestamps.append(now)
+    _setup_store[client_ip] = timestamps
+
+
+# -- MFA challenge guard (2026-08-27) -----------------------------------------
+# /api/auth/mfa/complete had NO attempt counter, NO lockout, and NO invalidation
+# of the challenge token after use - while the password path right next to it has
+# all three. A valid mfa_token was therefore an unbounded guessing permit for its
+# full 5-minute life against a 6-digit code, and valid_window=1 means three codes
+# are acceptable at any instant. Re-login minted a fresh window, and the token
+# stayed usable after a successful login.
+#
+# Two bounds, deliberately different in kind:
+#   PER CHALLENGE (here) - one sign-in attempt gets a small number of tries, then
+#   that challenge is dead. Burned outright on success so it cannot be replayed.
+#   PER ACCOUNT (main.py, reusing the EXISTING lockout) - failures also count
+#   toward the same failed_attempts/locked_until the password path uses, so
+#   grinding fresh challenges walks into the account lock instead of resetting a
+#   counter every time.
+#
+# In-process by design: a single uvicorn process, entries living no longer than
+# the token they track, swept on every call. Running multi-worker or
+# multi-replica requires moving this to Redis, or the per-challenge bound weakens
+# to per-worker (the per-ACCOUNT lock is shared through the DB and would hold).
+MFA_MAX_ATTEMPTS  = int(os.getenv("MFA_MAX_ATTEMPTS",  "5"))
+MFA_CHALLENGE_TTL = int(os.getenv("MFA_CHALLENGE_TTL", "300"))  # matches the token's exp
+
+_mfa_challenges: dict[str, dict] = {}
+
+
+def _sweep_mfa_challenges(now: float) -> None:
+    for jti in [j for j, v in _mfa_challenges.items()
+                if now - v["ts"] > MFA_CHALLENGE_TTL]:
+        _mfa_challenges.pop(jti, None)
+
+
+def check_mfa_challenge(jti: str) -> None:
+    """Refuse a burned or exhausted MFA challenge. Raises 401/429, else returns."""
+    now = time.time()
+    _sweep_mfa_challenges(now)
+    ch = _mfa_challenges.get(jti)
+    if ch is None:
+        return                                   # first use of this challenge
+    if ch["used"]:
+        raise HTTPException(
+            status_code=401,
+            detail="This sign-in has already been completed. Sign in again.")
+    if ch["attempts"] >= MFA_MAX_ATTEMPTS:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many codes tried for this sign-in. Sign in again.")
+
+
+def record_mfa_failure(jti: str) -> int:
+    """Count a wrong code against this challenge. Returns the new attempt count."""
+    now = time.time()
+    ch = _mfa_challenges.setdefault(jti, {"attempts": 0, "used": False, "ts": now})
+    ch["attempts"] += 1
+    return ch["attempts"]
+
+
+def burn_mfa_challenge(jti: str) -> None:
+    """Mark a challenge spent so it can never be replayed."""
+    now = time.time()
+    ch = _mfa_challenges.setdefault(jti, {"attempts": 0, "used": False, "ts": now})
+    ch["used"] = True
+
+
 
 # ── Daily global guest budget (public-demo wallet backstop) ───────────────────
 # Per-IP rate limits don't stop distributed traffic / a busy day; this caps total guest

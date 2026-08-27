@@ -63,3 +63,20 @@ def admin_headers(client):
     r = client.post("/api/auth/login", json=_ADMIN)
     assert r.status_code == 200, f"Admin login failed: {r.text}"
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+@pytest.fixture(autouse=True)
+def _reset_setup_throttle():
+    """Clear the always-on auth-abuse counters between tests (2026-08-27).
+
+    Two stores: the first-owner claim throttle, and the MFA challenge guard.
+    Both are process-global by design, and several test files post to
+    /api/auth/setup - without this reset the later ones start colliding with the
+    limit as the suite grows. Isolation, not a weakened control.
+    """
+    from app import security
+    security._setup_store.clear()
+    security._mfa_challenges.clear()
+    yield
+    security._setup_store.clear()
+    security._mfa_challenges.clear()

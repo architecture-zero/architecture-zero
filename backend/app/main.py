@@ -33,7 +33,7 @@ from app.agent import get_active_tools, execute_tool, get_tool_config
 from app.providers import stream_chat, stream_chat_events, non_stream_tool_call, get_provider_config, supports_tools
 from app.logger import log, log_error
 from app.redis_client import redis_status
-from app.security import check_rate_limit, check_injection, get_security_config, client_ip_from_request
+from app.security import check_rate_limit, check_setup_rate_limit, check_mfa_challenge, record_mfa_failure, burn_mfa_challenge, check_injection, get_security_config, client_ip_from_request
 from app.feedback import save_feedback, get_feedback_summary
 from app.audit import log_audit_entry, get_audit_log, export_audit_csv, purge_old_entries
 from app.metrics import increment, record_request, get_last_request_at, get_snapshot, prometheus_text
@@ -671,6 +671,37 @@ _startup_ingest_active = False
 
 
 @app.on_event("startup")
+async def _system_prompt_divergence_on_startup():
+    """Report a persona that the 2026-08-27 DB-first change moved.
+
+    get_system_prompt() used to let env SYSTEM_PROMPT beat the stored row, which
+    made the admin panel's persona editor a no-op. Inverting it fixes the editor
+    and changes nothing for a never-edited deployment - init_config_db() seeds
+    the row from the same env var - EXCEPT where the env was edited after first
+    boot. That deployment has been served the env value and is now served its
+    row, invisibly. This names it. The clean line is emitted too, so a guard that
+    is silent when healthy cannot be mistaken for a guard that is not running.
+
+    Lengths only, never the text: a persona can carry deployment-specific
+    instructions and this line lands in ordinary logs.
+    """
+    try:
+        from app.config import system_prompt_divergence
+        diverged = system_prompt_divergence()
+        if diverged:
+            env_val, served = diverged
+            log_error("system_prompt_env_divergence",
+                      note=("env SYSTEM_PROMPT differs from the served row; the "
+                            "ROW is served. Clear the row to adopt the env value, "
+                            "or unset the env var to stop the mismatch."),
+                      env_chars=len(env_val), served_chars=len(served))
+        else:
+            log("system_prompt_source_agrees")
+    except Exception as e:
+        log_error("system_prompt_divergence_check_crashed", error=str(e))
+
+
+@app.on_event("startup")
 async def startup_tasks():
     # Set BEFORE create_task, not as the first line inside the coroutine. A
     # task is only scheduled by create_task, so the flag stayed False from
@@ -918,16 +949,54 @@ class MFACompleteRequest(BaseModel):
 
 @app.post("/api/auth/mfa/complete")
 def mfa_complete(request: MFACompleteRequest):
-    """Exchange MFA challenge token + TOTP code for full access/refresh
-    tokens."""
+    """Exchange MFA challenge token + TOTP code for full access/refresh tokens.
+
+    HARDENED 2026-08-27. This endpoint had no attempt counter, no lockout, and
+    no invalidation of the challenge after use - while /api/auth/login has all
+    three. A valid mfa_token was therefore an unbounded guessing permit for its
+    full lifetime against a 6-digit code, with valid_window=1 making three codes
+    acceptable at any instant, and it stayed replayable after a successful login.
+
+    Three bounds now, in the order they can fail:
+      1. SINGLE USE - the challenge carries a jti and is burned on success.
+      2. PER CHALLENGE - a small number of wrong codes kills that challenge.
+      3. PER ACCOUNT - failures also drive the SAME failed_attempts/locked_until
+         the password path uses, so grinding fresh challenges walks into the
+         account lock rather than resetting a per-challenge counter each time.
+         The lockout check below is a copy of login's and not a new policy: two
+         different lockout rules on one account is how one of them ends up being
+         the weaker one nobody remembers.
+    """
+    from datetime import datetime, timezone, timedelta
     import pyotp
-    user_id = decode_mfa_challenge_token(request.mfa_token)
+    user_id, jti = decode_mfa_challenge_token(request.mfa_token)
+    check_mfa_challenge(jti)
     user = get_user_by_id(user_id)
     if not user or not user.get("mfa_enabled") or not user.get("mfa_secret"):
         raise HTTPException(status_code=400, detail="MFA not configured for this account")
+
+    # Mirrors /api/auth/login - this endpoint used to bypass lockout entirely, so
+    # a locked account holding a live challenge could still walk in.
+    if user.get("locked_until"):
+        locked_until = datetime.fromisoformat(user["locked_until"])
+        if locked_until > datetime.now(timezone.utc):
+            remaining = int((locked_until - datetime.now(timezone.utc)).total_seconds() // 60) + 1
+            raise HTTPException(status_code=429, detail=f"Account locked. Try again in {remaining} minute(s).")
+        unlock_user(user["id"])
+
     totp = pyotp.TOTP(user["mfa_secret"])
     if not totp.verify(request.code, valid_window=1):
+        record_mfa_failure(jti)
+        attempts = increment_failed_attempts(user["id"])
+        if attempts >= MAX_LOGIN_ATTEMPTS:
+            until = (datetime.now(timezone.utc) + timedelta(minutes=LOCKOUT_DURATION_MINUTES)).isoformat()
+            lock_user(user["id"], until)
+            log("auth_lockout", user_id=user["id"], username=user["username"], stage="mfa")
+            raise HTTPException(status_code=429, detail=f"Too many failed attempts. Account locked for {LOCKOUT_DURATION_MINUTES} minutes.")
         raise HTTPException(status_code=401, detail="Invalid authenticator code")
+
+    burn_mfa_challenge(jti)
+    reset_failed_attempts(user["id"])
     access_token = create_access_token(user["id"], user["username"], user["role"])
     raw_refresh, expires_at = create_refresh_token(user["id"])
     store_refresh_token(user["id"], hash_token(raw_refresh), expires_at)
@@ -1110,9 +1179,16 @@ def auth_config():
 
 
 @app.post("/api/auth/setup")
-def setup_admin(request: CreateUserRequest):
+def setup_admin(request: CreateUserRequest, req: Request):
     """One-time endpoint to create the first Owner. Disabled once an Owner
-    exists."""
+    exists.
+
+    Throttled since 2026-08-27, BEFORE the owner_exists() check so the closed
+    path is bounded too. See security.check_setup_rate_limit for what that does
+    and does not buy - notably it does NOT close the claim race on a fresh
+    deployment that is publicly reachable before its operator gets here.
+    """
+    check_setup_rate_limit(client_ip_from_request(req))
     if owner_exists():
         raise HTTPException(status_code=403, detail="Owner already exists")
     errors = validate_password(request.password)
@@ -1544,18 +1620,32 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
                "rerank_remote_url", "rerank_hosted_vendor", "rerank_hosted_model",
                "rag_similarity_threshold",
                "default_rag_enabled", "guest_mode_enabled"}
+    # Refuse unknown keys BY NAME (2026-08-27). Both skips below used to be a
+    # bare `continue`: a key outside the allowlist, and a non-list `suggestions`,
+    # were dropped in silence and answered 200 - and the audit line logged the
+    # keys SUBMITTED rather than the keys WRITTEN, so the record agreed with the
+    # caller that a discarded write had happened. The admin panel only ever
+    # sends allowlisted keys, so it never saw this; the first caller to send a
+    # new key would have gotten a silent no-op with no way to find out.
+    unknown = sorted(k for k in body if k not in allowed)
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown config key(s): {', '.join(unknown)}")
+    written = []
     for key, value in body.items():
-        if key not in allowed:
-            continue
         if key == "suggestions":
-            if isinstance(value, list):
-                value = json.dumps([s for s in value if isinstance(s, str) and s.strip()])
-            else:
-                continue
+            if not isinstance(value, list):
+                raise HTTPException(
+                    status_code=400,
+                    detail="suggestions must be a list of strings")
+            value = json.dumps([s for s in value if isinstance(s, str) and s.strip()])
         elif key in ("allow_model_selection", "allow_rag_toggle", "default_rag_enabled", "guest_mode_enabled"):
             value = "true" if value else "false"
         set_config(key, str(value))
-    log("admin_config_update", admin_id=current_user["id"], keys=list(body.keys()))
+        written.append(key)
+    # written, not submitted: the log is the record of what CHANGED.
+    log("admin_config_update", admin_id=current_user["id"], keys=sorted(written))
     return get_all_config()
 
 

@@ -50,7 +50,40 @@ def get_all_config() -> dict:
 
 
 def get_system_prompt() -> str:
-    env_val = os.getenv("SYSTEM_PROMPT", "")
-    if env_val:
-        return env_val
+    """The served persona: DB row first, environment only as its seed.
+
+    CHANGED 2026-08-27. This used to return the env value outright whenever
+    SYSTEM_PROMPT was set, which made the admin panel's persona editor a no-op
+    on every deployment whose environment sets it - and .env.example ships that
+    variable uncommented, so that was all of them. The editor saved the row,
+    reported "Saved", and the server never read it. A control that reports
+    success and changes nothing is worse than one that is absent: it stops the
+    operator looking.
+
+    Nothing changes for a never-edited deployment. init_config_db() seeds the
+    row from _DEFAULTS["system_prompt"], which is itself
+    os.getenv("SYSTEM_PROMPT", ...) read at import, so a fresh boot serves
+    exactly what the environment set. What the environment no longer does is
+    override a deliberate edit made afterwards.
+
+    The one deployment class this MOVES - env edited after first boot - is
+    reported rather than hidden: system_prompt_divergence() is the observable
+    seam and a startup hook names it at every boot.
+    """
     return get_config("system_prompt", _DEFAULTS["system_prompt"])
+
+
+def system_prompt_divergence() -> tuple[str, str] | None:
+    """(env_value, served_value) when SYSTEM_PROMPT disagrees with the served row.
+
+    Returns None when the environment sets no persona, or when the two agree.
+
+    Report, do not reconcile: which value is the intended one is an operator
+    decision, and silently preferring either is how the original defect got its
+    foothold.
+    """
+    env_val = os.getenv("SYSTEM_PROMPT", "")
+    if not env_val:
+        return None
+    served = get_config("system_prompt", _DEFAULTS["system_prompt"])
+    return None if served == env_val else (env_val, served)

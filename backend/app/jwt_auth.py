@@ -8,6 +8,7 @@ same secret.
 """
 import hashlib
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -105,22 +106,32 @@ def create_mfa_challenge_token(user_id: int) -> str:
     from doubling as an access token (see decode_access_token)."""
     expire = datetime.now(timezone.utc) + timedelta(minutes=5)
     return jwt.encode(
-        {"sub": str(user_id), "type": "mfa", "exp": expire},
+        {"sub": str(user_id), "type": "mfa", "jti": uuid.uuid4().hex, "exp": expire},
         SECRET_KEY,
         algorithm=ALGORITHM,
     )
 
 
-def decode_mfa_challenge_token(token: str) -> int:
-    """Verify an MFA challenge token and return user_id. Raises 401 on any
-    failure - including a plain access token presented in its place."""
+def decode_mfa_challenge_token(token: str) -> tuple[int, str]:
+    """Verify an MFA challenge token and return (user_id, jti). Raises 401 on any
+    failure - including a plain access token presented in its place.
+
+    Returns a TUPLE since 2026-08-27: the caller needs the jti to enforce
+    single-use and per-challenge attempt limits. A token with no jti is REFUSED
+    rather than accepted uncounted - pre-fix tokens can be neither burned nor
+    bounded, so honouring them would leave exactly the hole this closes. Blast
+    radius is one challenge-lifetime window at deploy.
+    """
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
     except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired MFA token")
     if payload.get("type") != "mfa":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type")
-    return int(payload["sub"])
+    jti = payload.get("jti")
+    if not jti:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired MFA token")
+    return int(payload["sub"]), str(jti)
 
 
 def authenticate_user(username: str, password: str) -> dict | None:
