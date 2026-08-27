@@ -23,6 +23,15 @@ model pulled (`ollama pull qwen3:8b` and `ollama pull nomic-embed-text`).
 6. Sign in. The shipped corpus (help docs + demo company KB) ingests on
    first boot; watch for the `startup_sync_done` lines in
    `docker compose logs backend`.
+7. Ask your first question - about the platform itself. Sign in (POST
+   /api/auth/login, same credentials as setup) and use the returned
+   `access_token` as a Bearer token:
+   `curl -N -X POST localhost:8000/api/chat -H "Authorization: Bearer <access_token>" -H "Content-Type: application/json" -d "{\"prompt\":\"How do I add my first documents?\",\"use_rag\":true}"`
+   Set `use_rag` to true - that is what grounds the answer in the shipped
+   corpus with citations; without it the model answers from training
+   memory. The answer streams back as server-sent events. The corpus the
+   instance just booted with is its own manual, so it can onboard and
+   troubleshoot you before you have ingested a single document.
 
 ## Updating
 

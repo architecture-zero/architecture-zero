@@ -11,6 +11,24 @@ grounded in your corpus with citations. This assistant you are talking to
 right now is an Architecture Zero instance, and these help documents are
 part of its knowledge base.
 
+## What can I ask this assistant?
+
+This instance booted with the platform's own documentation already
+ingested, so it can onboard and support you directly - before you have
+added any documents of your own. On record from the start: this
+getting-started guide, a troubleshooting guide keyed to the exact error
+messages the platform shows (paste the error text and ask), the security
+model, a guide to reading the evaluation numbers, a FAQ, the operator
+runbook, and a synthetic demo company for exploring departments and tiers
+safely. Ask things like "how do I set up MFA?", "why was my upload
+withheld?", or "what does the recall number mean?" - answers cite the
+document they came from. Keep retrieval (RAG) on so answers ground in
+these documents. One limit to know: the assistant answers from
+documentation and ingested content, not from this instance's live
+configuration - for the instance's current posture, use the operator
+surfaces (GET /api/status behind auth, and the public trust panel at
+GET /api/trust).
+
 ## First run: create the Owner account
 
 On a fresh install no accounts exist. The very first step is creating the

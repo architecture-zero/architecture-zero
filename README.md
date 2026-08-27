@@ -23,6 +23,10 @@ aspirational.
   tool loop (workspace file tools, clearance-gated, off by default), and
   honest failure modes: an empty model turn gets one retry and then says
   so, never a blank bubble.
+- **A built-in onboarding assistant** - the platform ships pre-loaded
+  with its own documentation, so a fresh install explains, onboards, and
+  troubleshoots itself from the first question. See
+  [the section below](#the-built-in-onboarding-assistant).
 - **Retrieval that earns its rank** - vector + full-corpus BM25 fusion,
   per-source diversity, then a cross-encoder reranker. The reranker is a
   provider seam: in-process ONNX (baked into the image), a remote scoring
@@ -74,20 +78,45 @@ curl -X POST localhost:8000/api/auth/setup -H "Content-Type: application/json" \
   -d '{"username":"owner","password":"<strong password>"}'
 ```
 
+Your first question needs no documents of your own: the instance boots
+already knowing itself (see
+[the built-in onboarding assistant](#the-built-in-onboarding-assistant)),
+and the runbook's deploy steps end with the exact call to make.
+
 The platform is API-first: everything - chat (streaming SSE at /api/chat),
 ingestion, users, evals, the trust panel - is served over a documented HTTP
 surface, so any client works; a reference web frontend is on the roadmap.
 Full walkthrough: [docs/runbook.md](docs/runbook.md).
 
-## Ask it about itself
+## The built-in onboarding assistant
 
-The shipped corpus is the product's own documentation: onboarding, an
-operations-grade troubleshooting guide keyed to the exact errors the code
-emits, the security model, and a guide to what the evaluation numbers
-mean - plus a synthetic demo company so departments, tiers, and history
-routing demonstrate without anyone's real data. A fresh install can
-onboard and support its own users, and the shipped evaluation seed scores
-how well it does that from the very first run.
+Architecture Zero does not just ship with documentation - the assistant
+is its own support channel, pre-loaded with its own manual. The shipped
+corpus is the product's documentation: a getting-started guide, an
+operations troubleshooting guide keyed to the exact error strings the
+code emits (paste the error, retrieve its explanation), the security
+model, and a guide to what the evaluation numbers mean - plus a synthetic
+demo company so departments, tiers, and history routing demonstrate
+without anyone's real data. All of it ingests automatically on first
+boot.
+
+So the moment the Owner account exists, you can ask the instance itself -
+"how do I add my first documents?", "why was my upload withheld?", "what
+does the recall number mean?" - and get a cited answer from its own
+corpus. Send chat requests with `"use_rag": true` so answers ground in
+the documents (the runbook shows the full call). The shipped evaluation
+seed asks the same class of support questions, so the very first eval run
+scores how well the instance onboards its own operator - support quality
+as a measured number from day one.
+
+One honest boundary: the assistant answers from documentation and from
+whatever you ingest, not from the instance's live configuration. "What
+does the ingestion injection scan do?" it answers today; "is the scan
+actually on, on this instance, right now?" belongs to the posture surface
+(GET /api/status, which reports the live state of the fail-open controls)
+until the live-system record generator on the [roadmap](ROADMAP.md) fills
+the dormant `system` trust tier and current-state questions get the same
+grounded treatment.
 
 ## Extending it
 
