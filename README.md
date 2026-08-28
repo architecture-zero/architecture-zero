@@ -71,11 +71,16 @@ cp .env.example .env    # set JWT_SECRET_KEY - the backend refuses to boot on th
 docker compose up -d --build
 ```
 
-Create the Owner account and ask your first question:
+Create the Owner account and ask your first question. Claiming a deployment
+takes a code that the backend prints to its own logs at boot - `docker compose
+logs backend` - so a deployment that is reachable before you finish setup
+cannot be taken by whoever gets there first:
 
 ```
+docker compose logs backend | grep -A2 "claim code"
+
 curl -X POST localhost:8000/api/auth/setup -H "Content-Type: application/json" \
-  -d '{"username":"owner","password":"<strong password>"}'
+  -d '{"username":"owner","password":"<strong password>","claim_code":"<from the logs>"}'
 ```
 
 Your first question needs no documents of your own: the instance boots

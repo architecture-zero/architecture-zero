@@ -54,7 +54,15 @@ _ADMIN = {"username": "testadmin", "password": "AdminPass1"}
 @pytest.fixture(scope="session")
 def client():
     with TestClient(app) as c:
-        c.post("/api/auth/setup", json=_ADMIN)
+        # The claim code is REQUIRED since 2026-08-27 - /api/auth/setup hands
+        # out ownership of the deployment, so it now takes a secret minted at
+        # boot and printed to the container logs. Read here rather than
+        # hard-coded: the generated value is per-process by design, and a
+        # fixture pinning a literal would be asserting the code is predictable,
+        # which is the one property it must not have.
+        from app import security
+        c.post("/api/auth/setup",
+               json={**_ADMIN, "claim_code": security.setup_claim_code()})
         yield c
 
 

@@ -32,13 +32,32 @@ GET /api/trust).
 ## First run: create the Owner account
 
 On a fresh install no accounts exist. The very first step is creating the
-Owner: POST to /api/auth/setup with a username and password - that first
-account automatically becomes the Owner, the highest access tier. The
-setup endpoint disables itself permanently the moment an Owner exists, so
-there is no window for someone else to claim an unconfigured instance. If
-you see "Owner already exists", setup already ran; sign in instead. The
-platform is API-first: every surface in this guide is an HTTP endpoint,
-usable from any client (a reference web frontend is on the roadmap).
+Owner: POST to /api/auth/setup with a username, a password, and a claim
+code - that first account automatically becomes the Owner, the highest
+access tier.
+
+The claim code is what makes the first run safe, and it is worth
+understanding rather than pasting. The setup endpoint disables itself
+permanently the moment an Owner exists - but the window BEFORE that is
+real: a deployment reachable from a network with no Owner yet belongs to
+whoever posts to it first. (This guide used to say there was no such
+window. That was wrong, and it was corrected on 2026-08-27 along with the
+fix.) So the backend now mints a random code at every boot while the
+deployment is unclaimed and prints it to its own logs - `docker compose
+logs backend`. Only someone who can already read your server logs has
+seen it. The code dies the instant the Owner is created, and a restart
+before then mints a new one.
+
+Running multiple workers or replicas? Set SETUP_CLAIM_CODE in the
+environment instead. The generated code lives in one process's memory, so
+with several processes only one of them would accept yours.
+
+If you see "Owner already exists", setup already ran; sign in instead. If
+you see "Invalid or missing claim code", re-read the boot banner in the
+logs - and if the container has restarted since you copied it, take the
+newer one. The platform is API-first: every surface in this guide is an
+HTTP endpoint, usable from any client (a reference web frontend is on the
+roadmap).
 
 ## Signing in and staying signed in
 

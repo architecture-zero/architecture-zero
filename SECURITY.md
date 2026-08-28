@@ -43,9 +43,12 @@ Particularly interesting, because these are where the interesting failures live:
   looking.
 - **Ingest-time content that changes model behavior at answer time**
   (indirect prompt injection through the corpus).
-- **Anything reachable before an instance is claimed.** `POST /api/auth/setup` is
-  open until the first owner exists; that window is deliberately narrow and
-  deliberately documented.
+- **Anything reachable before a deployment is claimed.** `POST /api/auth/setup`
+  answers until the first Owner exists. Since 2026-08-27 it also requires a
+  claim code minted at boot and printed to the container logs, so reaching the
+  endpoint first is no longer enough to take the deployment - you also have to
+  have read its logs. Attempts are throttled independently of
+  `ENABLE_RATE_LIMIT`. Reports that get past both are very much in scope.
 
 Out of scope: findings against a deployment's own configuration choices
 (an operator opting into `CORS_ORIGIN=*`, disabling auth for local development,

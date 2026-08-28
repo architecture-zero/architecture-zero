@@ -2,6 +2,7 @@ import re
 import time
 import os
 import ipaddress
+import secrets
 from collections import defaultdict
 from fastapi import HTTPException, Request
 
@@ -153,6 +154,90 @@ def check_setup_rate_limit(client_ip: str) -> None:
         )
     timestamps.append(now)
     _setup_store[client_ip] = timestamps
+
+
+# ── First-owner CLAIM CODE (2026-08-27) ───────────────────────────────────────
+# The throttle above bounds ATTEMPTS. It cannot close the RACE, and its docstring
+# says so: /api/auth/setup is open until an owner exists, so a deployment that is
+# publicly reachable before its operator finishes setup goes to whoever asks
+# first. One request is all it takes, and one request is under every limit.
+#
+# THIS IS THE TEMPLATE, which is what makes the race matter here more than
+# anywhere. "A fresh deployment, publicly reachable, not yet claimed" is not an
+# edge case for this repo - it is the normal first ten minutes of every single
+# deployment anyone ever makes from it.
+#
+# The shape is Jupyter's: a code minted at boot and printed to the container
+# logs, which only someone who can already read those logs has seen. No env var
+# to forget, no shared default to leak, and it self-disables the moment the
+# deployment is claimed.
+#
+# SETUP_CLAIM_CODE overrides the generated value for operators who provision
+# secrets rather than read logs, and it is REQUIRED under multiple workers or
+# replicas (see below). There is deliberately no way to turn the requirement
+# off: a control whose default state is off reads as guarded in the source and
+# is absent in every real deployment.
+#
+# IN-PROCESS, like the MFA challenge store below and with the same caveat. The
+# shipped container runs a single uvicorn process. Under `--workers N` or several
+# replicas each would mint a different code and only one would match, so those
+# deployments MUST set SETUP_CLAIM_CODE. A restart before the claim mints a fresh
+# code and prints it again - correct, because the old one stops working at the
+# same moment.
+SETUP_CLAIM_CODE_ENV = os.getenv("SETUP_CLAIM_CODE", "").strip()
+
+_claim_code: str | None = None
+_claim_code_burned = False
+
+
+def setup_claim_code() -> str:
+    """This deployment's claim code, minted once per process on first read."""
+    global _claim_code
+    if _claim_code is None:
+        _claim_code = SETUP_CLAIM_CODE_ENV or secrets.token_urlsafe(18)
+    return _claim_code
+
+
+def claim_code_source() -> str:
+    """Where the live code came from - for the boot line, never the value."""
+    return "env" if SETUP_CLAIM_CODE_ENV else "generated"
+
+
+def verify_setup_claim_code(supplied: str) -> None:
+    """Raise 401 unless `supplied` is this deployment's live claim code.
+
+    Compared on BYTES rather than str: secrets.compare_digest raises TypeError
+    on a non-ASCII str, and `supplied` is unauthenticated caller input, so a
+    single multi-byte character would turn a failed claim into a 500.
+
+    Checked AFTER the owner_exists() 403 in the endpoint, deliberately. Putting
+    it first would answer 401 on both a claimed and an unclaimed deployment and
+    weaken the claimed-ness oracle further - a real improvement, but a change to
+    a control that has its own tests, so it belongs in its own decision.
+    """
+    if _claim_code_burned:
+        raise HTTPException(status_code=401, detail=_CLAIM_CODE_DETAIL)
+    expected = setup_claim_code()
+    if not secrets.compare_digest((supplied or "").encode("utf-8"),
+                                  expected.encode("utf-8")):
+        raise HTTPException(status_code=401, detail=_CLAIM_CODE_DETAIL)
+
+
+_CLAIM_CODE_DETAIL = (
+    "Invalid or missing claim code. This deployment prints its code to the "
+    "server logs at startup while it is unclaimed.")
+
+
+def burn_setup_claim_code() -> None:
+    """Retire the code once it has bought an owner.
+
+    Belt and braces beside the owner_exists() check: that check reads the
+    database, this one is process-local and immediate, and the printed code
+    stops working the instant the claim lands rather than the instant the next
+    request re-reads the users table.
+    """
+    global _claim_code_burned
+    _claim_code_burned = True
 
 
 # -- MFA challenge guard (2026-08-27) -----------------------------------------

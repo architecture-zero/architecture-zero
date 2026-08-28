@@ -18,8 +18,17 @@ model pulled (`ollama pull qwen3:8b` and `ollama pull nomic-embed-text`).
    reranker models into the image).
 4. Open http://localhost:8000/api/health - expect status healthy (or
    degraded if Ollama is not up yet; cloud-only deployments can ignore it).
-5. Create the Owner account:
-   `curl -X POST localhost:8000/api/auth/setup -H "Content-Type: application/json" -d "{\"username\":\"owner\",\"password\":\"<strong password>\"}"`
+5. Create the Owner account. This takes a **claim code**, which the backend
+   mints at boot and prints to its own logs while the deployment is unclaimed -
+   run `docker compose logs backend` and look for the banner. Only someone who
+   can already read your server logs has seen it, which is what stops a
+   publicly-reachable deployment being taken by whoever finds it first in the
+   minutes before you get here. The code dies the moment the Owner exists, and
+   a restart before then mints a new one.
+   `curl -X POST localhost:8000/api/auth/setup -H "Content-Type: application/json" -d "{\"username\":\"owner\",\"password\":\"<strong password>\",\"claim_code\":\"<code from the logs>\"}"`
+   Running multiple workers or replicas? Set `SETUP_CLAIM_CODE` in `.env`
+   instead - the generated code lives in ONE process's memory, so with several
+   processes only one of them would accept yours.
 6. Sign in. The shipped corpus (help docs + demo company KB) ingests on
    first boot; watch for the `startup_sync_done` lines in
    `docker compose logs backend`.

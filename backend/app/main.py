@@ -33,7 +33,7 @@ from app.agent import get_active_tools, execute_tool, get_tool_config
 from app.providers import stream_chat, stream_chat_events, non_stream_tool_call, get_provider_config, supports_tools
 from app.logger import log, log_error
 from app.redis_client import redis_status
-from app.security import check_rate_limit, check_setup_rate_limit, check_mfa_challenge, record_mfa_failure, burn_mfa_challenge, check_injection, get_security_config, client_ip_from_request
+from app.security import check_rate_limit, check_setup_rate_limit, check_mfa_challenge, record_mfa_failure, burn_mfa_challenge, check_injection, get_security_config, client_ip_from_request, verify_setup_claim_code, burn_setup_claim_code, setup_claim_code, claim_code_source
 from app.feedback import save_feedback, get_feedback_summary
 from app.audit import log_audit_entry, get_audit_log, export_audit_csv, purge_old_entries
 from app.metrics import increment, record_request, get_last_request_at, get_snapshot, prometheus_text
@@ -671,6 +671,61 @@ _startup_ingest_active = False
 
 
 @app.on_event("startup")
+async def _claim_code_on_startup():
+    """Print the first-Owner claim code while this deployment is UNCLAIMED.
+
+    This is the line that makes the claim gate usable. Without it the operator
+    has a required secret and no way to learn it, so the banner is part of the
+    control rather than a convenience.
+
+    Printed with print(), not log(). The logger fans out to stdout AND to a file
+    under LOG_DIR, and a bootstrap secret does not belong in a file that
+    outlives the ten minutes it is useful for. Docker still captures stdout,
+    which is the surface an operator actually reads.
+
+    The structured line beside it carries the SOURCE and never the value, so
+    "the claim gate is armed" is a positive signal in the JSON logs - the same
+    reason the persona-divergence hook emits its clean line. A guard that is
+    silent when healthy cannot be told apart from a guard that is not running.
+
+    Silent once an Owner exists: there is nothing to claim, setup answers 403,
+    and printing a dead code at every boot would train the operator to scroll
+    past the banner on the one boot where it matters.
+    """
+    try:
+        if owner_exists():
+            log("setup_claim_gate", state="claimed")
+            return
+        code = setup_claim_code()
+        log("setup_claim_gate", state="unclaimed", code_source=claim_code_source())
+        print(
+            "\n"
+            "  ================================================================\n"
+            "   THIS DEPLOYMENT IS UNCLAIMED - whoever reaches it first can\n"
+            "   take it. Claiming it requires the code below.\n"
+            "\n"
+            f"     claim code:  {code}\n"
+            "\n"
+            "   Claim it (see docs/runbook.md step 7):\n"
+            "     curl -X POST localhost:8000/api/auth/setup \\\n"
+            "       -H 'Content-Type: application/json' \\\n"
+            '       -d \'{"username":"owner","password":"<strong password>",\n'
+            "            \"claim_code\":\"<the code above>\"}'\n"
+            "\n"
+            "   The code dies the moment the deployment is claimed, and a\n"
+            "   restart before then mints a new one.\n"
+            "  ================================================================\n",
+            flush=True,
+        )
+    except Exception as e:
+        # Never take the boot down over the banner. A failure here leaves the
+        # gate itself intact - verify_setup_claim_code mints on first read, so
+        # setup still refuses every caller; it just means nobody was handed the
+        # code and the operator needs SETUP_CLAIM_CODE.
+        log_error("setup_claim_gate_crashed", error=str(e))
+
+
+@app.on_event("startup")
 async def _system_prompt_divergence_on_startup():
     """Report a persona that the 2026-08-27 DB-first change moved.
 
@@ -879,6 +934,21 @@ class CreateUserRequest(BaseModel):
     password: str
     role: str = "member"
     department: str = "general"
+
+
+class ClaimDeploymentRequest(BaseModel):
+    """The first-Owner claim. Its own model, NOT CreateUserRequest.
+
+    The claim code is meaningless on POST /api/users (an authenticated Owner
+    creating a colleague), so a shared optional field would document a parameter
+    that route silently ignores. And `role` has no business being
+    caller-supplied here - the first user is the Owner by definition, and the
+    endpoint has always hard-coded that; inheriting a settable `role` on an
+    UNAUTHENTICATED endpoint is a field waiting to be wired up wrong.
+    """
+    username: str
+    password: str
+    claim_code: str = ""
 
 
 @app.post("/api/auth/login")
@@ -1185,22 +1255,39 @@ def auth_config():
 
 
 @app.post("/api/auth/setup")
-def setup_admin(request: CreateUserRequest, req: Request):
+def setup_admin(request: ClaimDeploymentRequest, req: Request):
     """One-time endpoint to create the first Owner. Disabled once an Owner
     exists.
 
     Throttled since 2026-08-27, BEFORE the owner_exists() check so the closed
-    path is bounded too. See security.check_setup_rate_limit for what that does
-    and does not buy - notably it does NOT close the claim race on a fresh
-    deployment that is publicly reachable before its operator gets here.
+    path is bounded too.
+
+    CLAIM CODE REQUIRED since 2026-08-27. The throttle bounds attempts and
+    cannot close the race this endpoint opens - it is unauthenticated and open
+    until an Owner exists, so a deployment that is publicly reachable before its
+    operator finishes setup goes to whoever asks first. That is the normal first
+    ten minutes of every deployment made from this template, which is why the
+    control lands here rather than being left to each operator. The code is
+    minted at boot and printed to the container logs; see
+    security.setup_claim_code for the shape and its multi-worker caveat.
+
+    ORDER IS DELIBERATE: throttle, then the claimed-ness 403, then the code,
+    then the password policy. The code check sits above the policy so an
+    anonymous caller cannot probe password rules without holding the code, and
+    below the 403 so the existing claimed-deployment contract is unchanged.
     """
     check_setup_rate_limit(client_ip_from_request(req))
     if owner_exists():
         raise HTTPException(status_code=403, detail="Owner already exists")
+    verify_setup_claim_code(request.claim_code)
     errors = validate_password(request.password)
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))
     user_id = create_user(request.username, hash_password(request.password), role="owner")
+    # Burned only after the user row exists: a failed create means the claim did
+    # NOT happen, and retiring the code there would strand the operator with a
+    # dead code and no Owner until a container restart.
+    burn_setup_claim_code()
     log("auth_setup_owner", user_id=user_id, username=request.username)
     return {"status": "owner created", "user_id": user_id}
 
