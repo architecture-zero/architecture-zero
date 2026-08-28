@@ -146,7 +146,8 @@ core and how modules graduate into it.
 - `backend/app/` - the platform (FastAPI)
 - `backend/tests/` - the suite CI runs on every push
 - `backend/scripts/` - the measurement harness (retrieval A/B arms, noise
-  bands, answer-layer runs, outside-model holdout authoring)
+  bands, answer-layer runs, outside-model holdout authoring, the live-fire
+  injection probe)
 - `knowledge/` - the shipped corpus (help docs + demo company)
 - `docs/` - operator docs, ingested as corpus
 - `docker-compose.yml`, `backend/Dockerfile` - the single-VM shape

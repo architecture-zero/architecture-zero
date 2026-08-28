@@ -76,6 +76,31 @@ flushes the vector index's unpersisted tail. Do not shorten it - a kill
 that beats the flush can lose recently written vectors (the startup
 completeness check will re-ingest them, but a graceful stop is free).
 
+## Red-teaming the injection defense
+
+`backend/scripts/injection_probe.py` measures the one control with no status
+surface: when poisoned third-party content IS in the model's context, does the
+answer obey it? It plants the shipped poison fixture into throwaway
+departments, asks through the same pipeline chat uses, and grades the answers
+mechanically - no judge, so no second set of error bars.
+
+    docker compose exec backend python scripts/injection_probe.py
+
+**It writes to your corpus**, with the ingestion gate waived on purpose - the
+answer layer only runs if the content gets through. Against a non-empty corpus
+it refuses to start without `--i-know-this-writes`, and prints exactly what it
+would create first. It also refuses a `--department` that would resolve onto
+your real corpus or onto a declared access tier, because its cleanup deletes by
+source name and a running evaluation plants that same source name.
+
+Cleanup runs in a `finally`, so it survives an error or a Ctrl-C. It does not
+survive `docker kill` or an OOM - if that happens, run the probe again; it
+sweeps whatever the killed run left before it plants anything new.
+
+Three arms are reported. The `curated` one is the number to read: it plants the
+same poison as if it had arrived through a trusted path, so nothing stands
+between the attack and the prompt rules. Exit 0 means every arm held.
+
 ## Index maintenance
 
 Every boot runs a short, embed-free pass over the vector store before the
