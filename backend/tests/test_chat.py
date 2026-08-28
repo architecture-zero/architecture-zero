@@ -16,8 +16,8 @@ def _guest_enabled_cfg(key, default=None):
 
 
 def test_chat_streams_sse(client):
-    with patch("app.main.get_config", side_effect=_guest_enabled_cfg), \
-         patch("app.main.stream_chat_events", side_effect=_mock_stream_events):
+    with patch("app.routers.chat.get_config", side_effect=_guest_enabled_cfg), \
+         patch("app.routers.chat.stream_chat_events", side_effect=_mock_stream_events):
         r = client.post("/api/chat", json={"prompt": "Hi", "model": "test-model"})
     assert r.status_code == 200
     assert "text/event-stream" in r.headers.get("content-type", "")
@@ -30,7 +30,7 @@ def test_chat_guest_blocked_when_disabled(client):
     # the test env, but with the admin-config half off the instance must still
     # refuse unauthenticated chat - a stray config row alone can't open the
     # site, and neither can the env var alone.
-    with patch("app.main.get_config", return_value="false"):
+    with patch("app.routers.chat.get_config", return_value="false"):
         r = client.post("/api/chat", json={"prompt": "Hi", "model": "test-model"})
     assert r.status_code == 403
 
@@ -40,7 +40,7 @@ def test_chat_expired_token_gets_401_not_guest_403(client):
     silent-refresh signal - not the guest 403, which the 401-keyed refresh
     never catches and which leaves an idle session dead on its first message.
     A token-less guest still gets the 403 (previous test)."""
-    with patch("app.main.get_config", return_value="false"):
+    with patch("app.routers.chat.get_config", return_value="false"):
         r = client.post("/api/chat", json={"prompt": "Hi", "model": "test-model"},
                         headers={"Authorization": "Bearer not-a-real-token"})
     assert r.status_code == 401
@@ -48,8 +48,8 @@ def test_chat_expired_token_gets_401_not_guest_403(client):
 
 def test_chat_guest_turn_limit(client):
     history = [{"role": "user", "content": f"msg {i}"} for i in range(10)]
-    with patch("app.main.get_config", side_effect=_guest_enabled_cfg), \
-         patch("app.main.stream_chat_events", side_effect=_mock_stream_events):
+    with patch("app.routers.chat.get_config", side_effect=_guest_enabled_cfg), \
+         patch("app.routers.chat.stream_chat_events", side_effect=_mock_stream_events):
         r = client.post("/api/chat", json={
             "prompt": "one more",
             "model": "test-model",
@@ -72,8 +72,8 @@ def test_chat_rag_off_discloses_retrieval_status(client):
     # "not on record" - the miss is otherwise indistinguishable from a
     # retrieval failure.
     captured = {}
-    with patch("app.main.get_config", side_effect=_guest_enabled_cfg), \
-         patch("app.main.stream_chat_events", side_effect=_capturing_stream(captured)):
+    with patch("app.routers.chat.get_config", side_effect=_guest_enabled_cfg), \
+         patch("app.routers.chat.stream_chat_events", side_effect=_capturing_stream(captured)):
         r = client.post("/api/chat", json={"prompt": "what did the last eval round measure?",
                                            "model": "test-model"})
     assert r.status_code == 200
@@ -101,10 +101,10 @@ def test_chat_followup_rewrite_touches_only_the_retrieval_query(client):
         captured["retrieval_query"] = query
         return []
 
-    with patch("app.main.get_config", side_effect=_guest_enabled_cfg), \
-         patch("app.main.stream_chat_events", side_effect=_capturing_stream(captured)), \
+    with patch("app.routers.chat.get_config", side_effect=_guest_enabled_cfg), \
+         patch("app.routers.chat.stream_chat_events", side_effect=_capturing_stream(captured)), \
          patch("app.rerank.retrieve", side_effect=_fake_retrieve), \
-         patch("app.main.save_message", side_effect=lambda *a, **k: saved.append(a)):
+         patch("app.routers.chat.save_message", side_effect=lambda *a, **k: saved.append(a)):
         r = client.post("/api/chat", json={
             "prompt": "current",
             "model": "test-model",
@@ -145,8 +145,8 @@ def test_chat_retrieval_runs_off_the_event_loop(client):
             seen["on_event_loop"] = False
         return []
 
-    with patch("app.main.get_config", side_effect=_guest_enabled_cfg), \
-         patch("app.main.stream_chat_events", side_effect=_mock_stream_events), \
+    with patch("app.routers.chat.get_config", side_effect=_guest_enabled_cfg), \
+         patch("app.routers.chat.stream_chat_events", side_effect=_mock_stream_events), \
          patch("app.rerank.retrieve", side_effect=_fake_retrieve):
         r = client.post("/api/chat", json={"prompt": "what did the last eval round measure?",
                                            "model": "test-model", "use_rag": True})
@@ -158,8 +158,8 @@ def test_chat_retrieval_runs_off_the_event_loop(client):
 
 def test_chat_rag_on_omits_retrieval_status(client):
     captured = {}
-    with patch("app.main.get_config", side_effect=_guest_enabled_cfg), \
-         patch("app.main.stream_chat_events", side_effect=_capturing_stream(captured)), \
+    with patch("app.routers.chat.get_config", side_effect=_guest_enabled_cfg), \
+         patch("app.routers.chat.stream_chat_events", side_effect=_capturing_stream(captured)), \
          patch("app.rerank.retrieve", return_value=[]):
         r = client.post("/api/chat", json={"prompt": "what did the last eval round measure?",
                                            "model": "test-model", "use_rag": True})
@@ -187,8 +187,8 @@ def test_chat_empty_answer_retries_once(client):
         captured["retry_messages"] = list(messages)
         yield {"type": "text", "text": "recovered"}
 
-    with patch("app.main.get_config", side_effect=_guest_enabled_cfg), \
-         patch("app.main.stream_chat_events", side_effect=_stream):
+    with patch("app.routers.chat.get_config", side_effect=_guest_enabled_cfg), \
+         patch("app.routers.chat.stream_chat_events", side_effect=_stream):
         r = client.post("/api/chat", json={"prompt": "Hi", "model": "test-model",
                                            "session_id": "s-empty-retry"})
     assert r.status_code == 200
@@ -209,9 +209,9 @@ def test_chat_empty_answer_fallback_after_tool_round(client):
             yield {"type": "tool_call", "id": "t1", "name": "fake_tool", "args": {}}
         # rounds 2 (post-tool) and 3 (the retry) both yield nothing
 
-    with patch("app.main.get_config", side_effect=_guest_enabled_cfg), \
-         patch("app.main.stream_chat_events", side_effect=_stream), \
-         patch("app.main.execute_tool", return_value="{}"):
+    with patch("app.routers.chat.get_config", side_effect=_guest_enabled_cfg), \
+         patch("app.routers.chat.stream_chat_events", side_effect=_stream), \
+         patch("app.routers.chat.execute_tool", return_value="{}"):
         r = client.post("/api/chat", json={"prompt": "Hi", "model": "test-model",
                                            "session_id": "s-empty-fallback"})
     assert r.status_code == 200
@@ -238,9 +238,9 @@ def test_preamble_then_empty_final_round_is_retried(client):
         else:
             yield {"type": "text", "text": "Here is the real answer."}
 
-    with patch("app.main.get_config", side_effect=_guest_enabled_cfg), \
-         patch("app.main.stream_chat_events", side_effect=_stream), \
-         patch("app.main.execute_tool", return_value="{}"):
+    with patch("app.routers.chat.get_config", side_effect=_guest_enabled_cfg), \
+         patch("app.routers.chat.stream_chat_events", side_effect=_stream), \
+         patch("app.routers.chat.execute_tool", return_value="{}"):
         r = client.post("/api/chat", json={"prompt": "Hi", "model": "test-model",
                                            "session_id": "s-preamble-empty"})
     assert r.status_code == 200

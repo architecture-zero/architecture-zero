@@ -45,6 +45,9 @@ PII_SCAN_MODE               = os.getenv("PII_SCAN_MODE", "off").lower()
 ALLOW_GUEST_MODE            = os.getenv("ALLOW_GUEST_MODE", "false").lower() == "true"
 ENCRYPTION_AT_REST_VERIFIED = os.getenv("ENCRYPTION_AT_REST_VERIFIED", "false").lower() == "true"
 _DATA_DIR                   = os.getenv("DATA_DIR", "/app/data")
+# Read by main (the boot-time purge) and by the chat handler (whether to write
+# an audit row at all), so it is shared rather than either module's.
+ENABLE_AUDIT_LOG            = os.getenv("ENABLE_AUDIT_LOG", "true").lower() == "true"
 
 
 def _config_or_default(key: str, default: str) -> str:
@@ -219,3 +222,13 @@ _NO_WEB_NOTICE = (
     "does hold.\n"
     "--- END OUTSIDE-WORLD ACCESS ---"
 )
+
+
+# The CORS allow-list. Read by main's CORSMiddleware AND by the chat handler's
+# per-request Origin check, so it lives here rather than in either - two
+# recomputations of "the same" list is how they drift apart.
+CORS_ORIGIN            = os.getenv("CORS_ORIGIN",   "http://localhost:5173")
+_widget_origins = os.getenv("WIDGET_ORIGINS", "")
+_dev_origins = ["http://localhost:5173", "http://localhost:3000"]
+_all_origins = [CORS_ORIGIN] + _dev_origins + [o.strip() for o in _widget_origins.split(",") if o.strip()]
+_allow_all = "*" in _all_origins

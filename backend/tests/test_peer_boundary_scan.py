@@ -24,8 +24,8 @@ def _fake_peer_chunks(chunks):
     peers = [{"id": "p1", "name": "testpeer", "url": "http://peer.test", "enabled": True}]
     stamped = [{"peer": "testpeer", "source": "peer-doc.md", "score": 0.9, **c}
                for c in chunks]
-    return (patch("app.main.get_peers", return_value=peers),
-            patch("app.main.query_peer_kb", return_value=stamped))
+    return (patch("app.routers.chat.get_peers", return_value=peers),
+            patch("app.routers.chat.query_peer_kb", return_value=stamped))
 
 
 def _chat_with_peers(client, admin_headers, captured):
@@ -35,7 +35,7 @@ def _chat_with_peers(client, admin_headers, captured):
         captured.append(msgs)
         yield {"type": "text", "text": "ok"}
 
-    with patch("app.main.stream_chat_events", side_effect=fake_stream):
+    with patch("app.routers.chat.stream_chat_events", side_effect=fake_stream):
         r = client.post("/api/chat", headers=admin_headers, json={
             "prompt": "What is the vendor onboarding turnaround?",
             "use_peers": True, "session_id": "peer-scan-test"})

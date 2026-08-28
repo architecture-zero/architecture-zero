@@ -136,7 +136,7 @@ def test_no_model_lanes_record_null_ttft_never_zero():
 # -- WIRING: the columns are useless if the call sites never stamp them -------
 
 def test_every_audit_call_site_in_chat_stamps_a_lane():
-    from app.main import chat
+    from app.routers.chat import chat
     src = inspect.getsource(chat)
     calls = src.count("log_audit_entry(")
     stamps = src.count("answer_lane=")
@@ -147,7 +147,7 @@ def test_every_audit_call_site_in_chat_stamps_a_lane():
 
 
 def test_chat_stamps_both_lanes_and_captures_ttft():
-    from app.main import chat
+    from app.routers.chat import chat
     src = inspect.getsource(chat)
     for lane in ('answer_lane="model"', 'answer_lane="rag_refusal"'):
         assert lane in src, f"missing lane stamp: {lane}"

@@ -141,7 +141,7 @@ def test_every_audit_call_site_in_chat_stamps_the_receipt():
     """Both chat audit call sites (the rag_refusal lane and the model lane)
     must read the stats dict, or one lane silently records NULLs forever
     while looking covered."""
-    from app.main import chat
+    from app.routers.chat import chat
     src = inspect.getsource(chat)
     calls = src.count("log_audit_entry(")
     assert calls == 2, f"chat has {calls} audit call sites - update this guard"

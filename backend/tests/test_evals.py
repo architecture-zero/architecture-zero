@@ -278,12 +278,12 @@ def test_safety_rules_exist_and_cover_both_prompt_paths():
 
     for needle in ("Instruction-override", "Credentials", "Compensation"):
         assert needle in runtime_config._SAFETY_RULES
-    # The two prompt paths live in two modules now - chat in main, the measured
-    # prompt in the eval engine - so it is one occurrence apiece rather than two
-    # in one file. Checking both BY NAME is what keeps "BOTH carry it" true
-    # after the split instead of quietly becoming "one of them does".
-    from app import main as _main_mod
-    for _mod in (_main_mod, main_mod):
+    # The two prompt paths live in two modules now - the chat router and the
+    # eval engine - so it is one occurrence apiece rather than two in one file.
+    # Checking both BY NAME is what keeps "BOTH carry it" true after the split
+    # instead of quietly becoming "one of them does".
+    from app.routers import chat as _chat_mod
+    for _mod in (_chat_mod, main_mod):
         _src = open(_mod.__file__, encoding="utf-8", errors="ignore").read()
         assert "_GROUNDING_RULES + _SAFETY_RULES" in _src,             f"{_mod.__name__} must append the safety rules to its system prompt"
 
@@ -1071,7 +1071,7 @@ def test_blank_config_row_does_not_beat_the_default(client):
     a wrong model id: `float("")` raises and 500s the chat path.
     """
     from app.config import set_config, get_config
-    from app.main import _config_or_default
+    from app.runtime_config import _config_or_default
 
     try:
         set_config("default_model", "")
