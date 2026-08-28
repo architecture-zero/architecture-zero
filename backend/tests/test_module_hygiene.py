@@ -21,6 +21,59 @@ def _tree(path):
     return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
+def _local_bindings(fn):
+    """Names bound inside one function body, not descending into nested defs."""
+    bound = set()
+    for node in fn.body:
+        for sub in ast.walk(node):
+            if isinstance(sub, (ast.Import, ast.ImportFrom)):
+                for alias in sub.names:
+                    if alias.name != "*":
+                        bound.add((alias.asname or alias.name).split(".")[0])
+            elif isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
+                bound.add(sub.id)
+            elif isinstance(sub, ast.arg):
+                bound.add(sub.arg)
+    return bound
+
+
+def _names_resolving_to_module_scope(tree):
+    """Names read through the MODULE binding, not through a local rebind.
+
+    Scope-aware on purpose, because the naive whole-tree walk counts a read
+    inside a function that re-imports the same name locally - which is exactly
+    how a dead module-level import hides. `optional_user` does
+    `from app.users import get_user_by_id` and reads it, so the module-level
+    import of that name looked used while reaching no caller: a live
+    patch("app.main.get_user_by_id") target that injects nothing and keeps every
+    test green.
+
+    Deliberately NOT symtable, which was the first attempt: under PEP 709 a
+    module-level list comprehension is inlined, and symtable still reports the
+    names it reads as unreferenced at module scope - `re` in app/security.py is
+    read only inside one, and got flagged as dead. Walking the AST with an
+    explicit scope stack has no such gap.
+    """
+    seen, stack = set(), []
+
+    def visit(node):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            stack.append(_local_bindings(node) if not isinstance(node, ast.Lambda)
+                         else {a.arg for a in node.args.args})
+            for child in ast.iter_child_nodes(node):
+                visit(child)
+            stack.pop()
+            return
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            if not any(node.id in frame for frame in stack):
+                seen.add(node.id)
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+
+    visit(tree)
+    return seen
+
+
 def test_nothing_under_app_imports_app_main():
     """Direction is main -> routers -> runtime_config, one way.
 
@@ -73,7 +126,7 @@ def test_no_dead_module_level_imports_under_app():
                     bound[name] = node.lineno
         if not bound:
             continue
-        used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+        used = _names_resolving_to_module_scope(tree)
         used |= {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
         for node in ast.walk(tree):                # names reached via strings
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
