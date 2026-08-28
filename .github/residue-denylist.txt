@@ -3,3 +3,5 @@ kintsugi
 mrjstickel
 northwind
 thestatic
+az-personal
+az-universal
