@@ -75,7 +75,11 @@ def test_backup_uses_the_sqlite_api_not_loose_wal_file_copies(tmp_path):
     restore inconsistent or drop the WAL tail. The backup path must take a
     real snapshot and skip the sidecars."""
     from pathlib import Path
-    src = Path(__file__).resolve().parents[1] / "app" / "main.py"
+    # The backup handler moved to the admin router. This is the only by-PATH
+    # source assertion in the suite, so it does not follow a name - it has to
+    # be repointed by hand, and its failure message talks about WAL sidecars
+    # rather than about routing.
+    src = Path(__file__).resolve().parents[1] / "app" / "routers" / "admin.py"
     text = src.read_text(encoding="utf-8")
     assert 'item.endswith(("-wal", "-shm"))' in text, "sidecars must be skipped"
     assert "src_conn.backup(dst_conn)" in text, "must use the sqlite backup API"

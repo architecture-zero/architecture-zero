@@ -136,7 +136,7 @@ def test_backup_uses_the_sqlite_api_for_chromas_store_too():
     copy2 - copied live and mid-write - while the -wal skip dropped its most
     recent commits. Restores came back torn and nothing said so."""
     import inspect
-    from app import main as m
+    from app.routers import admin as m   # run_backup moved with the admin routes
     src = inspect.getsource(m.run_backup)
     assert '(".db", ".sqlite3")' in src, (
         "the backup extension check no longer covers chroma's sqlite store")

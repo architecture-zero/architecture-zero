@@ -245,17 +245,20 @@ def test_the_audit_line_records_what_was_written(client, admin_headers,
     """The log is the record of what CHANGED. The old line logged
     list(body.keys()) - what the caller SENT - so the audit record agreed with
     the caller that a discarded write had happened."""
-    from app import main as main_module
+    # admin_set_config resolves `log` from its own module now. Patching
+    # app.main.log would still SUCCEED - the name is live there - and inject
+    # nothing; this test only fails loudly because it asserts on `captured`.
+    from app.routers import admin as admin_module
 
     captured = []
-    real_log = main_module.log
+    real_log = admin_module.log
 
     def spy(event, **kw):
         if event == "admin_config_update":
             captured.append(kw)
         return real_log(event, **kw)
 
-    monkeypatch.setattr(main_module, "log", spy)
+    monkeypatch.setattr(admin_module, "log", spy)
     original = client.get("/api/admin/config", headers=admin_headers).json()
     try:
         r = client.patch("/api/admin/config",

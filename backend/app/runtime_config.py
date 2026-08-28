@@ -30,6 +30,11 @@ from app.providers import _get_runtime, _ollama_headers, OLLAMA_BASE
 # where nothing is listening, and no test would catch it: /api/health is public
 # by design and nothing asserts on its body.
 DEFAULT_MODEL               = os.getenv("DEFAULT_MODEL", "qwen3:8b")
+# Answer-mode judge: pinned CLOUD model (not the opportunistic local tier, not
+# the answer model under test) so the measurement instrument stays constant
+# across runs. Overridable at runtime via config key eval_judge_model.
+EVAL_JUDGE_MODEL_DEFAULT    = os.getenv("EVAL_JUDGE_MODEL", "claude-sonnet-4-6")
+MAX_CONTEXT_TOKENS          = int(os.getenv("MAX_CONTEXT_TOKENS", "6000"))
 RAG_ONLY_MODE               = os.getenv("RAG_ONLY_MODE", "false").lower() == "true"
 RAG_SIMILARITY_THRESHOLD    = float(os.getenv("RAG_SIMILARITY_THRESHOLD", "0.40"))
 PII_SCAN_MODE               = os.getenv("PII_SCAN_MODE", "off").lower()

@@ -22,8 +22,19 @@ def _tree(path):
 
 
 def _local_bindings(fn):
-    """Names bound inside one function body, not descending into nested defs."""
-    bound = set()
+    """Names bound inside one function: its parameters plus its body.
+
+    The parameters have to be taken from fn.args explicitly - fn.body does not
+    contain them, so a body-only walk treats every parameter as resolving to
+    module scope. A parameter that happens to share a name with a module-level
+    import would then make that import look used.
+    """
+    a = fn.args
+    bound = {x.arg for x in a.args + a.kwonlyargs + a.posonlyargs}
+    if a.vararg:
+        bound.add(a.vararg.arg)
+    if a.kwarg:
+        bound.add(a.kwarg.arg)
     for node in fn.body:
         for sub in ast.walk(node):
             if isinstance(sub, (ast.Import, ast.ImportFrom)):
