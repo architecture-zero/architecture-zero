@@ -13,10 +13,13 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   rules say a live record wins), refresh on change rather than only at
   boot, and a content-aware corpus fingerprint so a record's content edit
   is visible to evaluation banding rather than invisible to it.
-- **Index maintenance at boot** - automated vector-index parameter
-  adoption, orphan cleanup, and a one-shot force-rebuild lever for
-  write-corrupted collections (the flush hook and rebuild rationale are
-  already in; this automates the recovery).
+- **Index parameter adoption** - boot maintenance now cleans orphaned
+  segments, heals records whose metadata outlived their vector, and ships
+  the one-shot force-rebuild lever. Parameter drift is REPORTED rather than
+  adopted automatically: adopting it means dropping and re-adding a healthy
+  collection with its only copy in memory, which is not a thing to do
+  unattended. Still ahead: a rebuild that stages to disk first, which would
+  make automatic adoption safe enough to enable.
 - **Async ingest workers** - queue-dispatched ingestion for very large
   uploads (the job model and status endpoint shapes are in place).
 - **On-demand injection probe** - a live-fire probe script sharing the

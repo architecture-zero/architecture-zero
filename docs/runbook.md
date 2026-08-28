@@ -76,6 +76,41 @@ flushes the vector index's unpersisted tail. Do not shorten it - a kill
 that beats the flush can lose recently written vectors (the startup
 completeness check will re-ingest them, but a graceful stop is free).
 
+## Index maintenance
+
+Every boot runs a short, embed-free pass over the vector store before the
+ingest syncs. It clears debris that deleting a collection leaves behind, and it
+finds records whose metadata outlived their vector - the silent failure mode
+here, because an unclean stop can lose vectors written since the last flush
+while the sqlite metadata survives, and the ingest skip-check counts a dead
+record as present. Dead records are dropped and their sources are queued for
+re-embedding on the same boot. Look for `chroma_maintenance` in the log; it
+reports every boot, including the boots where it found nothing.
+
+`params_drift` in that line means a collection's index parameters differ from
+the current target. The instance will NOT act on it: adopting new parameters
+means dropping and re-adding a healthy collection, and the only copy of its
+records lives in memory until the re-add finishes. It is reported so you can
+decide.
+
+**The force-rebuild lever.** Write a JSON list of collection names to
+`backend/data/force-rebuild.json` and restart once:
+
+    echo '["knowledge_base"]' > backend/data/force-rebuild.json
+
+The next boot rebuilds exactly those collections and deletes the file, so it
+fires once even if that boot dies - which is what makes it usable during a
+restart loop. It is the cure for write-side index corruption, which has no safe
+in-process probe: an index can crash the process natively on the first write of
+every boot while every read-side check stays green. A name that matches no
+collection is logged as an error rather than ignored.
+
+**Back up first** (`POST /api/admin/backup`, or copy `backend/data/` with the
+container stopped). A rebuild exports a collection to memory, drops it, and
+re-adds it. Documents that came from files on disk can always be re-ingested;
+**uploaded documents have no copy outside the index**, so if a rebuild is
+interrupted they are gone.
+
 ## Backups
 
 Everything stateful lives in `backend/data/` (SQLite databases, the chroma

@@ -240,6 +240,26 @@ async def startup_tasks():
         except Exception as e:
             logging.getLogger("uvicorn.error").warning("guest retention purge failed: %s", e)
 
+        # INDEX MAINTENANCE, after the SQL-only stages and BEFORE the syncs.
+        # The ordering is load-bearing in both directions: this drops records
+        # whose vectors died and clears the ingest fingerprints for their
+        # sources, and the syncs below are what re-embed them - while
+        # _sync_knowledge_dir snapshots the indexed-chunk counts at its TOP, so
+        # a heal landing after that snapshot would be invisible for a whole
+        # boot. Embed-free, and it rides the background task like every other
+        # chroma-touching boot stage so a wedged read cannot sit in front of
+        # the first health check. The summary is logged either way: a guard
+        # that is silent when healthy is indistinguishable from one that is not
+        # running at all.
+        try:
+            from app.chroma_maintenance import run_chroma_maintenance
+            from app.ingest_sync import _clear_ingest_fingerprints
+            maint = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: run_chroma_maintenance(_clear_ingest_fingerprints))
+            log("chroma_maintenance", **maint)
+        except Exception as e:
+            log_error("chroma_maintenance_crashed", error=str(e))
+
         # EMBED-HEAVY syncs (knowledge + docs). These can run for many
         # minutes on a loaded box; _startup_ingest_active stays True across
         # them so an eval RUN can't measure a half-embedded corpus.
