@@ -20,5 +20,13 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   collection with its only copy in memory, which is not a thing to do
   unattended. Still ahead: a rebuild that stages to disk first, which would
   make automatic adoption safe enough to enable.
-- **Async ingest workers** - queue-dispatched ingestion for very large
-  uploads (the job model and status endpoint shapes are in place).
+- **Distributed ingest** - large uploads can now be queued instead of
+  embedded inside the request: the upload returns a job id, an in-process
+  worker indexes the document, and `GET /api/admin/jobs` reports progress.
+  In-process is as far as this safely goes while the vector store is
+  embedded - a worker in a second process is a second writer against one
+  index with no cross-process lock, and the lexical index it invalidates
+  is its own copy, so the API would serve a stale BM25 half. Still ahead:
+  the vector store as a server, which is what would make a broker and a
+  worker container a gain rather than distribution bought with index
+  integrity.

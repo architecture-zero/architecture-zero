@@ -136,6 +136,52 @@ re-adds it. Documents that came from files on disk can always be re-ingested;
 **uploaded documents have no copy outside the index**, so if a rebuild is
 interrupted they are gone.
 
+## Large uploads and the ingest queue
+
+By default an upload is indexed inside the request: `POST /api/ingest/upload`
+returns once the document is chunked and embedded. On a large file over a slow
+embedding backend that is a long-held connection, and a proxy timing out in
+front of it turns a working ingest into an error the caller cannot tell apart
+from a failure.
+
+Set `ENABLE_ASYNC_JOBS=true` to queue instead. The upload then returns
+immediately with `{"status": "queued", "job_id": ...}` and a worker thread does
+the indexing. Poll it:
+
+    curl -s -H "Authorization: Bearer $TOKEN" \
+      http://localhost:8000/api/admin/jobs | jq
+
+`enabled` reports the posture, `queued` the live depth, and each row carries
+`status` (`queued` / `running` / `complete` / `failed`), `chunks_processed`
+against `chunks_total`, and the error when one failed.
+
+**What is NOT deferred.** The injection scan, the quarantine decision, PII
+redaction and the caller's trust tier all still run synchronously, before the
+job is queued. An upload whose content is withheld is still refused in the
+response, never silently accepted and quarantined later. Only chunking,
+embedding and the index diff move to the worker.
+
+**The worker is in-process, and that is deliberate.** The vector store is
+embedded rather than a server, so a worker in a separate container would be a
+second process writing one HNSW index with no cross-process locking - the same
+class of loss the grace period under "Stopping safely" exists to avoid. It
+would also invalidate only its own copy of the in-memory lexical index, leaving
+this process serving a stale BM25 half on every hybrid search. One process
+avoids both. The cost is that ingestion scales to one machine.
+
+**Bounds.** One worker thread, so queued documents index serially - the point is
+getting the work off the request path, not doing more of it at once.
+`ASYNC_JOB_MAX_QUEUED` (default 20) caps how many documents wait at once,
+because each holds its extracted text in memory until its turn. Past the cap an
+upload answers `503`, and its job row is closed as failed rather than left
+looking queued.
+
+**A restart ends in-flight jobs.** They live in this process, so a stop loses
+them. At the next boot every row still marked queued or running is failed with
+`interrupted by a restart - re-upload to retry`, rather than left claiming
+progress forever. Re-uploading is safe and cheap: chunk ids address content, so
+the chunks that did land are skipped rather than embedded a second time.
+
 ## Backups
 
 Everything stateful lives in `backend/data/` (SQLite databases, the chroma

@@ -162,6 +162,7 @@ REQUIRED_GUARD = {
     ("GET", "/api/admin/evals/runs"): "require_owner",
     ("GET", "/api/admin/evals/runs/{run_id}"): "require_owner",
     ("GET", "/api/admin/injection-sources"): "require_permission:manage_kb",
+    ("GET", "/api/admin/jobs"): "require_permission:manage_kb",
     ("POST", "/api/admin/kb/prune-orphans"): "require_owner",
     ("GET", "/api/admin/kb/quarantine"): "require_permission:manage_kb",
     ("DELETE", "/api/admin/kb/quarantine/{item_id}"): "require_permission:manage_kb",
@@ -331,6 +332,6 @@ def test_the_pin_covers_every_route():
     """Cheap canary: the split moves routes between files, and a router that
     silently fails to register would shrink this number with nothing else in
     the suite noticing."""
-    assert len(_actual_guards()) == 96, (
-        f"expected 96 routes, found {len(_actual_guards())} - a router failed "
+    assert len(_actual_guards()) == 97, (
+        f"expected 97 routes, found {len(_actual_guards())} - a router failed "
         "to register, or routes were added without updating this count")

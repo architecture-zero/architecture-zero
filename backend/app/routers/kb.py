@@ -21,9 +21,11 @@ import logging
 import pathlib
 import datetime as _dt
 
-from fastapi import (APIRouter, Depends, File, Form, HTTPException, UploadFile)
+from fastapi import (APIRouter, Depends, File, Form, HTTPException, Query,
+                     UploadFile)
 from pydantic import BaseModel
 
+from app import jobs
 from app.chunking import chunk_plain
 from app.database import (add_document, list_sources, delete_source,
                           list_departments, list_pii_sources, get_source_ids,
@@ -380,6 +382,35 @@ async def upload_file(
 
     chunk_meta = {"trust": trust, **inj_meta, **pii_meta}
 
+    # QUEUED PATH (ENABLE_ASYNC_JOBS, off by default). Everything that decides
+    # whether this content may be indexed has already run above and run
+    # synchronously: extraction, the full-text injection scan, the quarantine
+    # decision, PII redaction, and the trust tier derived from THIS caller.
+    # Only chunking, embedding and the index diff are deferred - a queued
+    # upload is never a deferred security decision, and the tier travels in
+    # chunk_meta because the worker has no request user to derive it from.
+    #
+    # Read through jobs.async_enabled() rather than a from-imported flag: a
+    # from-import binds the value at import time and makes it unpatchable.
+    if jobs.async_enabled():
+        job_id = jobs.create_job(source=name, department=department)
+        try:
+            jobs.dispatch_ingest(job_id, name, text, department,
+                                 extra_meta=chunk_meta)
+        except jobs.JobQueueFull as e:
+            # The row exists already, so a refusal has to close it out. Left
+            # queued it would describe a document no queue ever accepted.
+            jobs.update_job(job_id, status="failed", error=str(e))
+            raise HTTPException(status_code=503, detail=f"Ingest queue is full: {e}")
+        log("ingest_upload_queued", source=name, job_id=job_id,
+            department=department)
+        # Same key set as the sync return, so one client can read both without
+        # branching on which keys exist. chunks is genuinely unknown here - the
+        # document has not been chunked yet - and job_id is where the count
+        # eventually shows up.
+        return {"status": "queued", "job_id": job_id, "source": name,
+                "chunks": None, "department": department, "pii": pii_summary}
+
     chunks = chunk_plain(text)
     # ADD-THEN-PRUNE, the same set-diff _ingest_file uses. Chunk ids are
     # CONTENT-ADDRESSED - md5(dept::name::chunk-text) - so the new version's
@@ -428,6 +459,25 @@ async def upload_file(
     increment("ingest_total")
     log("ingest_upload", source=name, chunks=len(chunks), ext=ext, department=department)
     return {"status": "ingested", "source": name, "chunks": len(chunks), "department": department, "pii": pii_summary}
+
+
+@router.get("/api/admin/jobs")
+def admin_ingest_jobs(limit: int = Query(50, ge=1, le=200),
+                      current_user: dict = Depends(require_permission("manage_kb"))):
+    """Status of queued ingestion. Lives beside upload rather than in the admin
+    router because manage_kb is the permission and this is the KB domain - the
+    /api/admin/ prefix describes the audience, not the module.
+
+    `enabled` is the posture, `queued` the live depth: a list of finished jobs
+    on an instance with async ingest switched off reads as a working queue
+    unless the payload says otherwise.
+    """
+    return {"enabled": jobs.async_enabled(),
+            "queued": jobs.pending_count(),
+            "max_queued": jobs.ASYNC_JOB_MAX_QUEUED,
+            "jobs": jobs.list_jobs(limit)}
+
+
 @router.post("/api/admin/kb/prune-orphans")
 def prune_orphans_endpoint(current_user: dict = Depends(require_owner)):
     """Observable orphan purge: delete docs/ sources with no file on disk,

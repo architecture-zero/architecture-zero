@@ -239,6 +239,18 @@ async def startup_tasks():
                 log("guest_retention_purge", days=days, **purged)
         except Exception as e:
             logging.getLogger("uvicorn.error").warning("guest retention purge failed: %s", e)
+        try:
+            # Ingest jobs run on a thread in THIS process, so a restart leaves
+            # any queued or running row describing work that nothing is doing.
+            # Fail them here, with the reason, rather than let the status
+            # surface claim progress forever. SQL-only, so it belongs in this
+            # stage rather than behind the embed-heavy syncs.
+            from app.jobs import reconcile_orphaned_jobs
+            orphans = await asyncio.get_running_loop().run_in_executor(
+                None, reconcile_orphaned_jobs)
+            log("ingest_jobs_reconciled", **orphans)
+        except Exception as e:
+            logging.getLogger("uvicorn.error").warning("ingest job reconcile failed: %s", e)
 
         # INDEX MAINTENANCE, after the SQL-only stages and BEFORE the syncs.
         # The ordering is load-bearing in both directions: this drops records
