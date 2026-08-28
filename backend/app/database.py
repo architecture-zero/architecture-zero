@@ -380,7 +380,7 @@ def _hybrid_rank(docs: list, distances: list, metadatas: list, query: str, n_res
 
     return [
         {"text": doc, "source": meta.get("source", "unknown"), "score": round(vs, 4),
-         # DB-truth autogen chunks (the autogen sync stamps auto_generated on
+         # DB-truth generated chunks (app/system_records.py stamps auto_generated on
          # ingest); carried through so retrieval can rank them first on status
          # questions and the context builder can mark them authoritative.
          "auto_generated": meta.get("auto_generated") == "true",
@@ -432,7 +432,7 @@ def add_document(doc_id: str, text: str, metadata: dict, department: str | None 
     """Index one chunk - and run the UNTRUSTED-CORPUS INJECTION GATE.
 
     The gate itself lives in _gate_chunk, shared by BOTH write shapes: single
-    writes land here (file watcher, autogen sync, ingest/upload endpoints)
+    writes land here (file watcher, system-record producer, ingest/upload endpoints)
     while multi-chunk writes land in add_documents_batch (connector modules
     and the file delta path) - so the gate cannot be walked around: each
     chunk gets its provenance trust tier stamped, is scanned for

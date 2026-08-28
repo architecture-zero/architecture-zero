@@ -114,14 +114,15 @@ seed asks the same class of support questions, so the very first eval run
 scores how well the instance onboards its own operator - support quality
 as a measured number from day one.
 
-One honest boundary: the assistant answers from documentation and from
-whatever you ingest, not from the instance's live configuration. "What
-does the ingestion injection scan do?" it answers today; "is the scan
-actually on, on this instance, right now?" belongs to the posture surface
-(GET /api/status, which reports the live state of the fail-open controls)
-until the live-system record generator on the [roadmap](ROADMAP.md) fills
-the dormant `system` trust tier and current-state questions get the same
-grounded treatment.
+The assistant also answers from the instance itself, not only from
+documentation. "What does the ingestion injection scan do?" is a
+documentation question; "is the scan actually on, on this instance, right
+now?" is answered from records generated at boot from the live database
+and ranked above everything else in the context. Those records are Owner
+clearance, so lower tiers still use the posture surfaces (GET /api/status,
+and the public trust panel at GET /api/trust). The records carry no
+document names, no account names, and nothing a user typed - only values
+the code produced or that passed an allowlist.
 
 ## Extending it
 

@@ -228,6 +228,12 @@ def ingest(request: IngestRequest, current_user: dict = Depends(require_permissi
     _check_department_write(current_user, request.department or "general")
     text = request.text
     meta = dict(request.metadata)
+    # `auto_generated` is not a caller's to claim. It is what marks content as a
+    # LIVE SYSTEM RECORD in the label the model reads, and what lifts a chunk to
+    # the front of the pool on status questions - so a caller who can set it can
+    # dress arbitrary text as the instance's own live truth, whatever trust tier
+    # the line below then assigns. Only app.system_records writes it.
+    meta.pop("auto_generated", None)
     meta["trust"] = _ingest_trust(current_user, meta.get("trust"))
     if PII_SCAN_MODE != "off":
         findings = scan_pii(text)
@@ -255,10 +261,14 @@ def get_sources(department: str | None = None, current_user: dict = Depends(requ
 @router.post("/api/kb/sync")
 def kb_sync(current_user: dict = Depends(require_permission("manage_kb"))):
     from datetime import datetime, timezone
+    from app.system_records import sync_system_records
+    # Records last, same order as boot: they report corpus counts, which are
+    # only true once the two file syncs above have finished changing them.
     return {
-        "synced_at": datetime.now(timezone.utc).isoformat(),
-        "files":     _sync_knowledge_dir(),
-        "docs":      _sync_docs(),
+        "synced_at":       datetime.now(timezone.utc).isoformat(),
+        "files":           _sync_knowledge_dir(),
+        "docs":            _sync_docs(),
+        "system_records":  sync_system_records(),
     }
 
 

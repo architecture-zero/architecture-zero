@@ -57,6 +57,17 @@ automatically, and logs if it cannot. **Back up first**: take a backup
 The rebuild copies, drops and renames a live table, and the database runs in WAL
 mode with an active writer. A fresh instance is unaffected and skips it.
 
+## Live system records
+
+At the end of every boot the instance generates a small set of records
+describing its own posture, corpus and measurement state, and indexes them
+at Owner clearance. They are what lets the assistant answer "is the
+injection scan on here?" from this deployment rather than from the
+documentation. Watch for `startup_sync_done stage=system-records` in the
+boot log; `POST /api/kb/sync` regenerates them on demand and returns their
+status alongside the file syncs. Regenerating is cheap - an unchanged
+record re-embeds nothing.
+
 ## Stopping safely
 
 `docker compose stop` (or down). The compose file sets stop_grace_period

@@ -183,7 +183,7 @@ def dept_for_source(source: str) -> str:
 # prompt's data-not-instructions rules (untrusted content can never override
 # curated).
 #
-#   system    - generated from the live database by the autogen sync (the
+#   system    - generated from the live database by app/system_records.py (the
 #               LIVE SYSTEM RECORD chunks). Highest authority for status/plan
 #               questions.
 #   curated   - the owner's own authored content: git-controlled KB files and
@@ -228,7 +228,7 @@ def derive_trust(meta: dict | None) -> str:
     derivation - no re-embed, no migration of the vector store):
 
     - an explicit `trust` stamp wins (all post-gate ingests);
-    - auto_generated chunks are `system` (the DB autogen sync);
+    - auto_generated chunks are `system` (app/system_records.py);
     - from_file chunks are `curated` (the repo file watcher/startup sync);
     - anything else (legacy uploads/API ingests) fails closed to `untrusted`.
     """

@@ -90,6 +90,24 @@ A peer chunk with a hot finding is dropped from that answer and logged;
 milder findings ride along visibly tagged. Peer knowledge is reference
 material, labeled EXTERNAL, and never outranks your own corpus.
 
+## The tier the quarantine cannot withhold
+
+Live system records rank above every other kind of content and are exempt
+from the ingestion injection scan by design - the scan exists to judge
+content of unknown provenance, and these are written by the instance
+about itself. That exemption means nothing downstream would stop a bad
+record, so the producer is constrained instead of inspected: a value
+reaches a record only if it is a number, a code-produced date, or a string
+that passes an allowlist, and no free-text database column is ever
+interpolated. As a second layer the producer scans its own output and
+refuses to write on any finding, because a hit there means the generator
+is broken rather than that the corpus is quoting an attack.
+
+The records are Owner clearance. One consequence worth knowing before
+enabling peer serving: that clearance is also what an `all`-scoped peer
+key receives, so an instance serving its knowledge base to peers serves
+its posture record with it.
+
 ## Fail-open controls get positive signals
 
 A control that fails open (rate limiting, injection scanning, the

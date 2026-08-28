@@ -256,6 +256,18 @@ async def startup_tasks():
             _report_sync("docs", res)
         except Exception as e:
             log_error("startup_sync_crashed", stage="docs", error=str(e))
+        # Live-system records LAST of the three ingest stages: the corpus record
+        # reports source and chunk counts, and those are only true for this boot
+        # once both file syncs have finished moving them. Still inside the
+        # background task, so the startup-ingest window is open and an eval run
+        # cannot measure a half-written record.
+        try:
+            from app.system_records import sync_system_records
+            res = await asyncio.get_running_loop().run_in_executor(
+                None, sync_system_records)
+            _report_sync("system-records", res)
+        except Exception as e:
+            log_error("startup_sync_crashed", stage="system-records", error=str(e))
         # DEPARTMENT-LIST INVARIANT: report residue at every boot, not just
         # when someone happens to call the endpoint. An empty kb_* collection
         # here means some tool created it and cleaned up imperfectly -

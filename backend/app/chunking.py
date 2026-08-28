@@ -1,6 +1,6 @@
 """Shared chunking for KB ingestion.
 
-One chunker for every ingestion call site (file sync/watcher, upload, autogen
+One chunker for every ingestion call site (file sync/watcher, upload, system-record
 sync) - a fixed character loop copy-pasted per call site is how chunking
 drifts.
 

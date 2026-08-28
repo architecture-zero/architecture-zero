@@ -23,11 +23,12 @@ runbook, and a synthetic demo company for exploring departments and tiers
 safely. Ask things like "how do I set up MFA?", "why was my upload
 withheld?", or "what does the recall number mean?" - answers cite the
 document they came from. Keep retrieval (RAG) on so answers ground in
-these documents. One limit to know: the assistant answers from
-documentation and ingested content, not from this instance's live
-configuration - for the instance's current posture, use the operator
-surfaces (GET /api/status behind auth, and the public trust panel at
-GET /api/trust).
+these documents. The assistant can also answer from this
+instance's own live state: records generated at boot describe its posture,
+corpus and measurement state, and rank above ordinary documents on
+current-state questions. They are Owner clearance, so at lower tiers the
+operator surfaces remain the route (GET /api/status behind auth, and the
+public trust panel at GET /api/trust).
 
 ## First run: create the Owner account
 

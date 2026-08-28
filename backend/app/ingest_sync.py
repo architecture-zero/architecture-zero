@@ -320,7 +320,7 @@ def _valid_doc_sources() -> set[str]:
 def _prune_orphan_docs() -> dict:
     """Delete 'docs/' sources whose backing file is gone - they otherwise
     linger in the index and pollute retrieval. Safe: the 'docs/' source
-    namespace is exclusively file-derived (uploads/autogen sources are never
+    namespace is exclusively file-derived (uploads and generated records never
     prefixed 'docs/'). Deletes from each source's ACTUAL department, and
     returns what it removed plus the remaining docs/ sources in the index -
     so the purge is observable, not silent."""

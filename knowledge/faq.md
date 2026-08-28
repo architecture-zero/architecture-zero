@@ -33,9 +33,9 @@ Owner - private until deliberately shared.
 
 Access tiers say who may READ a document. Trust tiers say how much
 AUTHORITY its content carries in an answer - who wrote it. Four tiers:
-"system" (reserved for records generated from the live database - the
-current-state authority; the core ships the tier's full machinery but no
-producer yet, so it stays dormant until a generator module lands),
+"system" (records generated from the live database - the current-state
+authority, written at boot by the producer and covering this instance's
+posture, corpus and measurement state),
 "curated" (the owner's own authored content), "external" (content arriving
 live from federated peer instances), and "untrusted" (third-party content:
 non-owner uploads and anything a connector would bring in). Higher tiers
