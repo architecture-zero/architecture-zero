@@ -78,15 +78,28 @@ def _send_all(title: str, body: str) -> None:
     _email(title, body)
 
 
+def _configured() -> bool:
+    return bool(_WEBHOOK_URL or (_EMAIL_TO and _SMTP_HOST and _SMTP_USER and _SMTP_PASS))
+
+
 def fire(key: str, title: str, body: str) -> None:
     """Send a deduped alert (per cooldown window) via all configured channels.
+
+    With NO channel configured this returns before touching the pool or the
+    cooldown stamp, so an unconfigured instance never builds the executor or
+    spawns its non-daemon workers - the dormancy the lazy pool promises holds
+    at fire time too, and configuring a channel later starts with a clean
+    cooldown slate.
 
     daemon=False on purpose: daemon threads die with the process, so an exit
     right after a disk-threshold alert drops it silently - the alert path is
     least reliable exactly when the box is in trouble. Non-daemon delivery
-    makes interpreter shutdown wait for the send, and both channels are
-    timeout-bounded (5s webhook + 10s SMTP) so the wait is too. Still off the
-    caller's thread - a health-check request never blocks on SMTP.
+    makes interpreter shutdown wait for the send, and both channels carry
+    timeouts (5s webhook + 10s SMTP) that bound each socket operation - not
+    total wall-clock, so an endpoint dripping bytes under the per-read window
+    can stretch a send; the pool cap is what bounds how many such sends can
+    exist. Still off the caller's thread - a health-check request never
+    blocks on SMTP.
 
     BOUNDED: spawning a thread per alert traded one silent failure for an
     unbounded one - nothing capped how many delivery threads could exist at
@@ -95,6 +108,8 @@ def fire(key: str, title: str, body: str) -> None:
     concurrent.futures registers an atexit join, so interpreter shutdown
     still waits for an in-flight send. Two workers is enough for two
     channels; the per-key cooldown is what keeps the submit queue short."""
+    if not _configured():
+        return
     if not _cooldown_ok(key):
         return
     _pool().submit(_send_all, title, body)
