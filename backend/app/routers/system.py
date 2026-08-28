@@ -227,7 +227,11 @@ def public_config():
         # own copy that silently bypasses the server pins.
         "chat_model_effective":  get_config("chat_model", "").strip()
                                  or _config_or_default("default_model", DEFAULT_MODEL),
-        "default_rag_enabled":   get_config("default_rag_enabled", "false") == "true",
+        # Fallback matches config.py's seeded default. It read "false" until
+        # 2026-08-28, when the seed flipped to "true" and this was missed -
+        # so a database whose config rows had not been seeded would have
+        # reported retrieval off while the platform intended it on.
+        "default_rag_enabled":   get_config("default_rag_enabled", "true") == "true",
         # EFFECTIVE: what a visitor actually gets. This is the value a chat
         # client wants, and the only one it should act on.
         "guest_mode_enabled":    guest_chat_available(),
