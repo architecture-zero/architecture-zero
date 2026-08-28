@@ -508,8 +508,8 @@ def _sync_docs(force: bool = True) -> dict:
     _INGEST_STATE_PATH notes.
 
     Also prunes orphaned "docs/" sources whose file was deleted from disk -
-    the index otherwise keeps their chunks forever, and a deleted doc keeps
-    being retrieved for months, crowding real answers out of the top
+    the index otherwise keeps their chunks forever, and a deleted doc would
+    keep being retrieved indefinitely, crowding real answers out of the top
     results."""
     results = {}
     candidates = [f for f in _DOCS_ROOT_FILES if f.exists()]
@@ -706,7 +706,7 @@ async def _claim_code_on_startup():
             "\n"
             f"     claim code:  {code}\n"
             "\n"
-            "   Claim it (see docs/runbook.md step 7):\n"
+            "   Claim it (see docs/runbook.md step 5):\n"
             "     curl -X POST localhost:8000/api/auth/setup \\\n"
             "       -H 'Content-Type: application/json' \\\n"
             '       -d \'{"username":"owner","password":"<strong password>",\n'
@@ -714,6 +714,10 @@ async def _claim_code_on_startup():
             "\n"
             "   The code dies the moment the deployment is claimed, and a\n"
             "   restart before then mints a new one.\n"
+            "\n"
+            "   Running more than one worker? Each worker mints its OWN code,\n"
+            "   so a pasted code fails on the other workers - set\n"
+            "   SETUP_CLAIM_CODE to pin one value across all of them.\n"
             "  ================================================================\n",
             flush=True,
         )
@@ -1283,7 +1287,15 @@ def setup_admin(request: ClaimDeploymentRequest, req: Request):
     errors = validate_password(request.password)
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))
-    user_id = create_user(request.username, hash_password(request.password), role="owner")
+    # users.username is UNIQUE, and a bare IntegrityError from the flush
+    # surfaces as a 500 with a SQL traceback - an operator retyping an
+    # existing name reads that as "the server is broken", not "pick another
+    # name".
+    from sqlalchemy.exc import IntegrityError
+    try:
+        user_id = create_user(request.username, hash_password(request.password), role="owner")
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail="That username is already taken")
     # Burned only after the user row exists: a failed create means the claim did
     # NOT happen, and retiring the code there would strand the operator with a
     # dead code and no Owner until a container restart.

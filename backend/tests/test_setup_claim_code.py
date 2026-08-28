@@ -197,3 +197,20 @@ def test_the_right_code_claims_the_deployment_and_burns(client, unclaimed):
                         json={"username": "second", "password": "SecondPass1",
                               "claim_code": unclaimed})
     assert again.status_code == 401
+
+
+def test_a_failed_claim_does_not_burn_the_code(client, unclaimed):
+    """An IntegrityError - the operator retyping a name that already exists -
+    means the claim did NOT happen. Burning there would strand them with a dead
+    code and no Owner, and the only way back would be restarting the container.
+    """
+    taken = {"username": "testadmin", "password": "AnotherPass1",
+             "claim_code": unclaimed}
+
+    first = client.post("/api/auth/setup", json=taken)
+    assert first.status_code == 409
+
+    r = client.post("/api/auth/setup",
+                    json={"username": "recovered", "password": "RecoverPass1",
+                          "claim_code": unclaimed})
+    assert r.status_code == 200, r.text
