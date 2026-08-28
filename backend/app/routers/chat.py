@@ -40,7 +40,8 @@ from app.providers import stream_chat_events, non_stream_tool_call, supports_too
 from app.security import (check_rate_limit, check_injection, client_ip_from_request,
                           check_daily_guest_budget)
 from app.runtime_config import (_config_or_default, DEFAULT_MODEL, RAG_ONLY_MODE,
-                                RAG_SIMILARITY_THRESHOLD, ALLOW_GUEST_MODE,
+                                RAG_SIMILARITY_THRESHOLD,
+                                guest_chat_available,
                                 DEMO_DAILY_GUEST_LIMIT,
                                 MAX_CONTEXT_TOKENS, ENABLE_AUDIT_LOG, _BLOCKLIST,
                                 _SAFETY_RULES, _NON_OWNER_RULES, _GROUNDING_RULES,
@@ -218,7 +219,7 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
     # Guest gate - private by default. Unauthenticated access requires BOTH
     # the env opt-in (ALLOW_GUEST_MODE) and the admin config, so a
     # stray/legacy config row can't open the site.
-    if current_user is None and not (ALLOW_GUEST_MODE and get_config("guest_mode_enabled", "false") == "true"):
+    if current_user is None and not guest_chat_available():
         raise HTTPException(status_code=403, detail="Login required - this instance is private.")
 
     # Guest turn limit - unauthenticated sessions are capped

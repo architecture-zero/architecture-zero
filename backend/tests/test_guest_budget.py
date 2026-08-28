@@ -59,7 +59,8 @@ _AUTH_SESSION = "guest-budget-test-auth"
 
 
 def _guest_chat(client):
-    with patch("app.routers.chat.get_config", side_effect=_guest_enabled_cfg), \
+    with patch("app.routers.chat.guest_chat_available", return_value=True), \
+         patch("app.routers.chat.get_config", side_effect=_guest_enabled_cfg), \
          patch("app.routers.chat.stream_chat_events", side_effect=_mock_stream_events):
         return client.post("/api/chat", json={"prompt": "Hi", "model": "test-model",
                                               "session_id": _GUEST_SESSION})
@@ -82,7 +83,8 @@ def test_guest_budget_exhausts_and_answers_the_wallet_429(client, monkeypatch):
 
 def test_authenticated_callers_are_never_budgeted(client, admin_headers, monkeypatch):
     monkeypatch.setattr(chat_mod, "DEMO_DAILY_GUEST_LIMIT", 2)
-    with patch("app.routers.chat.get_config", side_effect=_guest_enabled_cfg), \
+    with patch("app.routers.chat.guest_chat_available", return_value=True), \
+         patch("app.routers.chat.get_config", side_effect=_guest_enabled_cfg), \
          patch("app.routers.chat.stream_chat_events", side_effect=_mock_stream_events):
         codes = [client.post("/api/chat",
                              json={"prompt": "Hi", "model": "test-model",

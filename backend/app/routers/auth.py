@@ -363,10 +363,18 @@ def check_needs_setup():
 
 @router.get("/api/auth/config")
 def auth_config():
-    """Public (EXCLUDED_PATHS): what the login screen may offer."""
+    """Public (EXCLUDED_PATHS): what the login screen may offer.
+
+    guest_mode_enabled is the EFFECTIVE value, from the same helper the chat
+    gate itself calls - a login screen that computed it separately would
+    eventually offer a guest door the server refuses. It discloses nothing new:
+    posting to /api/chat already answers the same question, and less politely.
+    """
+    from app.runtime_config import guest_chat_available
     return {
         "needs_setup": not owner_exists(),
         "auth_mode": "local",
+        "guest_mode_enabled": guest_chat_available(),
     }
 
 

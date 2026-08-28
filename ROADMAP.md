@@ -3,8 +3,6 @@
 What's ahead for the open core, in rough order of readiness. Commercial
 modules and their graduation policy live in [MODULES.md](MODULES.md).
 
-- **Reference web frontend** - the platform is deliberately API-first
-  today; a reference chat + admin client is the most-wanted addition.
 - **Live-system records for lower tiers** - the boot-time producer now
   fills the `system` trust tier with this instance's own posture, corpus
   and measurement state, at Owner clearance. Still ahead: a variant safe

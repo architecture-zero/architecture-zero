@@ -35,7 +35,8 @@ from app.alerting import (fire as fire_alert, get_config as get_alert_config,
                           DISK_ALERT_THRESHOLD_PCT)
 from app import corpus_scan as _corpus_scan
 from app.runtime_config import (_config_or_default, _ollama_get, DEFAULT_MODEL,
-                                RAG_ONLY_MODE, PII_SCAN_MODE, ALLOW_GUEST_MODE,
+                                RAG_ONLY_MODE, PII_SCAN_MODE,
+                                guest_chat_available,
                                 DEMO_DAILY_GUEST_LIMIT,
                                 ENCRYPTION_AT_REST_VERIFIED, _DATA_DIR)
 
@@ -227,7 +228,7 @@ def public_config():
         "chat_model_effective":  get_config("chat_model", "").strip()
                                  or _config_or_default("default_model", DEFAULT_MODEL),
         "default_rag_enabled":   get_config("default_rag_enabled", "false") == "true",
-        "guest_mode_enabled":    ALLOW_GUEST_MODE and get_config("guest_mode_enabled", "false") == "true",
+        "guest_mode_enabled":    guest_chat_available(),
     }
 
 # -- Monitoring & Alerting ----------------------------------------------------

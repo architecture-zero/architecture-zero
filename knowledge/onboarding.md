@@ -56,9 +56,10 @@ with several processes only one of them would accept yours.
 If you see "Owner already exists", setup already ran; sign in instead. If
 you see "Invalid or missing claim code", re-read the boot banner in the
 logs - and if the container has restarted since you copied it, take the
-newer one. The platform is API-first: every surface in this guide is an
-HTTP endpoint, usable from any client (a reference web frontend is on the
-roadmap).
+newer one. The platform is API-first: every surface in this guide is an HTTP endpoint,
+usable from any client. A reference web client ships with the platform and
+serves the claim screen at http://localhost:5173 on a stock deployment, so
+the steps in this guide can be followed from a browser instead of curl.
 
 ## Signing in and staying signed in
 

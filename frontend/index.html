@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- The shell title only shows before the app boots. Once /api/auth/config
+         answers, the app sets document.title from this instance's configured
+         name, so an operator who sets VITE_INSTANCE_NAME does not need to edit
+         this file. Deliberately no og/twitter cards: this is a private,
+         self-hosted assistant by default, and social preview tags on it would
+         describe a page nobody can open. -->
+    <title>Architecture Zero</title>
+    <meta name="description" content="A self-hosted AI assistant grounded in your own documents, with tiered access control and measured retrieval." />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

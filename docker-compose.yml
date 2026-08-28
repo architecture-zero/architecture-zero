@@ -40,3 +40,23 @@ services:
     # through both - that is the vector-loss class. Keep this at 45s.
     stop_grace_period: 45s
     restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: az_frontend
+    # VITE_* values are baked as placeholders at build time and replaced from
+    # this env at container start, so one built image serves every operator.
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    # Nothing to configure for the API: nginx proxies /api to the backend
+    # service on this network, so the browser sees ONE origin. That is why
+    # VITE_API_URL is empty by default and why CORS does not come into it.
+    # Set VITE_API_URL only when the API is served from somewhere else, and
+    # then set CORS_ORIGIN to this frontend's origin to match.
+    restart: unless-stopped

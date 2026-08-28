@@ -1,0 +1,27 @@
+# Line endings, and why this file exists.
+#
+# This is a template other people clone, and a fair number of them clone it on
+# Windows with core.autocrlf=true. Without this file the shell scripts and the
+# Dockerfile check out CRLF, and `docker compose up --build` then copies a
+# CRLF entrypoint into the image. Its shebang becomes `#!/bin/sh\r`, the
+# container cannot exec it, the runtime placeholders are never replaced, and
+# the app renders with the literal string __RT_VITE_INSTANCE_NAME__ as its
+# title. Nothing in that chain says "line endings" to the person debugging it.
+#
+# Anything read by a Linux container or an interpreter is pinned to LF.
+* text=auto
+
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+*.conf      text eol=lf
+*.py        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+
+# Binary, so git never rewrites bytes inside them.
+*.png       binary
+*.jpg       binary
+*.ico       binary
+*.pdf       binary
+*.woff      binary
+*.woff2     binary

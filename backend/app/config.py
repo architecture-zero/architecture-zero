@@ -17,7 +17,14 @@ _DEFAULTS = {
     "allow_model_selection": "true",
     "allow_rag_toggle":      "true",
     "default_model":         os.getenv("DEFAULT_MODEL", ""),
-    "default_rag_enabled":   "false",
+    # ON by default. This is a retrieval platform, and the first question asked
+    # of a fresh deployment decides what an evaluator concludes it is: with
+    # retrieval off the model answers from training memory, cites nothing, and
+    # reads as an instance whose corpus was never ingested. The operator can
+    # still turn it off here, and the per-message toggle still exists - this
+    # only chooses which way the default points, and "do not use the knowledge
+    # base" was the wrong way for the only product this repo builds.
+    "default_rag_enabled":   "true",
 }
 
 

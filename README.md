@@ -78,7 +78,15 @@ cannot be taken by whoever gets there first:
 
 ```
 docker compose logs backend | grep -A2 "claim code"
+```
 
+Then open <http://localhost:5173> - a fresh deployment routes straight to the
+claim screen. Paste the code, pick a username and password, and you are signed
+in as the Owner.
+
+Or claim it from the API instead, which is the same endpoint the screen calls:
+
+```
 curl -X POST localhost:8000/api/auth/setup -H "Content-Type: application/json" \
   -d '{"username":"owner","password":"<strong password>","claim_code":"<from the logs>"}'
 ```
@@ -90,7 +98,11 @@ and the runbook's deploy steps end with the exact call to make.
 
 The platform is API-first: everything - chat (streaming SSE at /api/chat),
 ingestion, users, evals, the trust panel - is served over a documented HTTP
-surface, so any client works; a reference web frontend is on the roadmap.
+surface, so any client works. A reference web client ships with it
+(`frontend/`): chat with citations, the claim screen, and an admin panel
+covering knowledge base, quarantine review, users, models, system prompt,
+audit, monitoring, backup and the ingest queue. It is a reference, not a
+requirement - the API is the product, and the client is one consumer of it.
 Full walkthrough: [docs/runbook.md](docs/runbook.md).
 
 ## The built-in onboarding assistant
@@ -148,9 +160,11 @@ core and how modules graduate into it.
 - `backend/scripts/` - the measurement harness (retrieval A/B arms, noise
   bands, answer-layer runs, outside-model holdout authoring, the live-fire
   injection probe)
+- `frontend/` - the reference web client (React + Vite, served by nginx)
 - `knowledge/` - the shipped corpus (help docs + demo company)
 - `docs/` - operator docs, ingested as corpus
-- `docker-compose.yml`, `backend/Dockerfile` - the single-VM shape
+- `docker-compose.yml`, `backend/Dockerfile`, `frontend/Dockerfile` - the
+  single-VM shape
 
 ## Development
 
@@ -161,10 +175,20 @@ cd backend && ../.venv/bin/python -m pytest tests -q
 ```
 
 The suite mocks the vector store and embedder: no network, no keys, no
-GPU. CI runs the same suite plus a full-history secret scan, a
-private-residue guard (a denylist grep that fails the build if lineage
-from the private deployments this template descends from appears in the
-tree), and a Docker image build on every push to main.
+GPU.
+
+The client:
+
+```
+cd frontend && npm install
+npm run type-check && npm test && npm run build
+npm run dev          # proxies /api to the backend service
+```
+
+CI runs both suites plus a full-history secret scan, a private-residue
+guard (a denylist grep that fails the build if lineage from the private
+deployments this template descends from appears in the tree), and both
+Docker image builds on every push to main.
 
 ## License
 

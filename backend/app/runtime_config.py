@@ -244,3 +244,18 @@ _widget_origins = os.getenv("WIDGET_ORIGINS", "")
 _dev_origins = ["http://localhost:5173", "http://localhost:3000"]
 _all_origins = [CORS_ORIGIN] + _dev_origins + [o.strip() for o in _widget_origins.split(",") if o.strip()]
 _allow_all = "*" in _all_origins
+
+
+def guest_chat_available() -> bool:
+    """Whether an anonymous caller may chat, right now.
+
+    Same reasoning as the CORS list above: this expression had two
+    recomputations - the chat router's gate and /api/config's report - and it
+    is about to have a third for the login screen, which needs to know whether
+    to offer a guest door before any token exists. Three copies of "the same"
+    condition is how a UI ends up offering a door the server refuses.
+
+    Both halves are required by design: the env opt-in AND the admin config, so
+    a stray or legacy config row cannot open the instance on its own.
+    """
+    return ALLOW_GUEST_MODE and get_config("guest_mode_enabled", "false") == "true"
