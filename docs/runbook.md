@@ -130,6 +130,10 @@ decide.
 
     echo '["knowledge_base"]' > backend/data/force-rebuild.json
 
+Any editor will do - the file just has to hold that JSON, in UTF-8. On Windows
+write it from an editor rather than with PowerShell's `>`, which produces
+UTF-16 and will not parse.
+
 The next boot rebuilds exactly those collections and deletes the file, so it
 fires once even if that boot dies - which is what makes it usable during a
 restart loop. It is the cure for write-side index corruption, which has no safe
@@ -229,8 +233,8 @@ start running drills.
 
 ```
 python -m venv .venv
-.venv/bin/pip install -r backend/requirements-dev.txt
-cd backend && ../.venv/bin/python -m pytest tests -q
+.venv/bin/pip install -r backend/requirements-dev.txt          # Windows: .venv\Scripts\pip
+cd backend && ../.venv/bin/python -m pytest tests -q           # Windows: ..\.venv\Scripts\python
 ```
 The suite mocks the vector store and embedder - it needs no Ollama, no
 network, and no API keys. CI runs the same suite plus a secret scan and a
