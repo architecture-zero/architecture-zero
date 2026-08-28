@@ -20,7 +20,7 @@ retrieval pool-entry bar; dense single-topic section chunks clear it.
 import re
 
 # Bump when chunking behavior changes - it is part of the ingest fingerprint
-# (main._ingest_fingerprint), so a bump forces every file to re-ingest on the
+# (ingest_sync._ingest_fingerprint), so a bump forces every file to re-ingest on the
 # next startup instead of being skipped as "unchanged".
 CHUNKER_VERSION = "3"
 

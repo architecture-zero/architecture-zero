@@ -19,7 +19,7 @@ def test_oversize_upload_is_refused_without_buffering_it_all(client, admin_heade
     a body larger than the container's memory took the process down before the
     limit could be applied. The cap now applies as the bytes arrive.
     """
-    from app.main import MAX_UPLOAD_MB, _UPLOAD_CHUNK_BYTES
+    from app.routers.kb import MAX_UPLOAD_MB, _UPLOAD_CHUNK_BYTES
     body = b"x" * (MAX_UPLOAD_MB * 1024 * 1024 + _UPLOAD_CHUNK_BYTES * 2)
     r = client.post("/api/ingest/upload",
                     files={"file": ("huge.txt", body, "text/plain")},
@@ -166,7 +166,7 @@ def test_watcher_ingest_adds_before_it_prunes():
     neither generation indexed.
     """
     import inspect
-    from app import main as m
+    from app import ingest_sync as m
     src = inspect.getsource(m._ingest_file)
     add_at = src.index("add_documents_batch(new_entries")
     prune_at = src.index("delete_documents(sorted(stale)")
@@ -255,6 +255,6 @@ def test_docs_orphan_prune_failure_is_reported_not_swallowed():
     """`except: pass` let the prune fail while the sync reported clean - the
     assistant keeps answering from files the operator deleted."""
     import inspect
-    from app import main as m
+    from app import ingest_sync as m
     src = inspect.getsource(m._sync_docs)
     assert "docs_orphan_prune_failed" in src, "orphan-prune failure is still silent"

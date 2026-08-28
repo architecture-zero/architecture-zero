@@ -6,7 +6,7 @@ overwrite plus an every-boot re-embed. These pin the fix: relative keys, plus
 the self-healing purge of legacy basename keys that must NEVER touch a
 top-level file that legitimately owns the name.
 """
-import app.main as main_mod
+import app.ingest_sync as main_mod
 
 
 def test_subdir_sources_key_by_relative_path_and_purge_guards(tmp_path, monkeypatch):

@@ -8,7 +8,10 @@ and a retry after mid-file failure resumes instead of starting over.
 """
 import hashlib
 
-import app.main as main_mod
+# The ingest machinery lives in app/ingest_sync.py now; the alias is kept so
+# the body of this file does not churn. main no longer imports any of these
+# names, so a stale target here raises rather than patching a dead copy.
+import app.ingest_sync as main_mod
 
 # The default HISTORY_SOURCES entry (app/rag_config.py) - routed to the
 # history department, where chunking is dated-section-aware.
@@ -41,9 +44,9 @@ class Harness:
                             lambda ids, dept=None: (self.deleted.extend(ids),
                                                     self.index.difference_update(ids)))
         monkeypatch.setattr(main_mod, "delete_source", lambda source, dept=None: None)
-        monkeypatch.setattr(main_mod, "add_document",
-                            lambda doc_id, text, meta, department=None:
-                            (self.added.append(doc_id), self.index.add(doc_id)))
+        # No add_document patch: ingest_sync deliberately does not import it,
+        # which is what lines 67-68 below assert about _ingest_file. Retargeting
+        # this would raise; removing it is the fix.
 
         # _ingest_file writes new chunks through the BATCH shape (one embed
         # round trip per slice); the harness records the same per-chunk facts

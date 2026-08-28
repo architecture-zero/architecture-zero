@@ -80,7 +80,7 @@ def test_failed_replacement_leaves_the_old_version_intact(client, admin_headers,
     before = set(get_source_ids(name, "general"))
     assert before, "setup failed - the original never indexed"
 
-    with patch("app.main.add_document", side_effect=RuntimeError("embed backend down")):
+    with patch("app.routers.kb.add_document", side_effect=RuntimeError("embed backend down")):
         with pytest.raises(RuntimeError):
             _upload(client, admin_headers, name, b"a replacement that will not land")
 
@@ -137,7 +137,7 @@ def test_failed_release_stays_held_and_records_why(client, admin_headers):
         db.flush()
         item_id = row.id
 
-    with patch("app.main.add_document", side_effect=RuntimeError("embed backend down")):
+    with patch("app.routers.kb.add_document", side_effect=RuntimeError("embed backend down")):
         r = client.post(f"/api/admin/kb/quarantine/{item_id}/release", headers=admin_headers)
     assert r.status_code == 500, r.text
 

@@ -57,7 +57,7 @@ def test_route_departments_handles_empty():
 
 
 def test_history_source_maps_to_history_department():
-    from app.main import _dept_for_source
+    from app.rag_config import dept_for_source as _dept_for_source   # its real home
     assert _dept_for_source("internal/session-log.md") == "history"
     # The whole internal/ subtree is restricted (Owner-only) - gate the
     # COPIES, not just the canonical file. Public KB content stays general.
