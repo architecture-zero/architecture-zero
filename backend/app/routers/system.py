@@ -35,7 +35,7 @@ from app.alerting import (fire as fire_alert, get_config as get_alert_config,
                           DISK_ALERT_THRESHOLD_PCT)
 from app import corpus_scan as _corpus_scan
 from app.runtime_config import (_config_or_default, _ollama_get, DEFAULT_MODEL,
-                                RAG_ONLY_MODE, PII_SCAN_MODE,
+                                RAG_ONLY_MODE, PII_SCAN_MODE, ALLOW_GUEST_MODE,
                                 guest_chat_available,
                                 DEMO_DAILY_GUEST_LIMIT,
                                 ENCRYPTION_AT_REST_VERIFIED, _DATA_DIR)
@@ -228,7 +228,17 @@ def public_config():
         "chat_model_effective":  get_config("chat_model", "").strip()
                                  or _config_or_default("default_model", DEFAULT_MODEL),
         "default_rag_enabled":   get_config("default_rag_enabled", "false") == "true",
+        # EFFECTIVE: what a visitor actually gets. This is the value a chat
+        # client wants, and the only one it should act on.
         "guest_mode_enabled":    guest_chat_available(),
+        # STORED: the admin half alone. Reported separately because the admin
+        # UI EDITS this half - a control bound to the effective value writes
+        # the AND back into the row and silently erases the operator's setting
+        # whenever the host env half is off.
+        "guest_mode_configured": get_config("guest_mode_enabled", "false") == "true",
+        # And the host half, so the UI can say WHY a configured toggle is not
+        # taking effect instead of just showing it off.
+        "guest_mode_env_allowed": ALLOW_GUEST_MODE,
     }
 
 # -- Monitoring & Alerting ----------------------------------------------------

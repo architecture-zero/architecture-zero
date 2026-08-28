@@ -15,6 +15,12 @@ venv/
 
 # Data and indexes
 data/
+# ...and any copy of it. A timestamped backup made while testing was committed
+# once because `data/` matches only the exact directory name; the operator
+# habit that produces these is universal, and the files are binary, so the
+# residue guard cannot see them either.
+data.bak*/
+*.bak/
 *.db
 chroma/
 

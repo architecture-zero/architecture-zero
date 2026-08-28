@@ -69,10 +69,10 @@ inference (`ollama pull qwen3:8b`).
 
 The embedder is **required whichever provider answers chat.** Only the chat
 model is swappable for a cloud API; embeddings speak the Ollama dialect to
-`EMBED_BASE` and have no provider seam. With nothing reachable there, ingestion
-fails per file, the instance still boots and still answers, and every retrieval
-question comes back ungrounded - and `/api/health` only probes the chat
-endpoint, so it will not tell you.
+`EMBED_BASE` and have no provider seam. With nothing reachable there the
+instance still boots, ingestion fails per file, and any question asked with
+retrieval on - the default - returns a 500 rather than an answer. `/api/health`
+probes only the chat endpoint, so it reports healthy throughout.
 
 ```
 git clone https://github.com/architecture-zero/architecture-zero

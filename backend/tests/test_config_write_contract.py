@@ -272,3 +272,30 @@ def test_the_audit_line_records_what_was_written(client, admin_headers,
         client.patch("/api/admin/config",
                      json={"instance_name": original["instance_name"]},
                      headers=admin_headers)
+
+
+def test_config_reports_the_guest_halves_separately(client, admin_headers):
+    """The admin UI EDITS the stored half; a chat client ACTS on the effective
+    one. Reporting only the effective value made the toggle read `env AND row`
+    and write that result back into the row - so with the host half off,
+    saving any neighbouring control erased a deliberate "true" and left no
+    record it had been set.
+
+    Pinned in the state where the two disagree, because that is the only state
+    where conflating them does damage.
+    """
+    from unittest.mock import patch
+    from app.config import set_config
+    from app.routers import system as system_mod
+
+    set_config("guest_mode_enabled", "true")
+    try:
+        # Host half OFF, stored half ON - the state that used to be lossy.
+        with patch.object(system_mod, "ALLOW_GUEST_MODE", False), \
+             patch.object(system_mod, "guest_chat_available", return_value=False):
+            body = client.get("/api/config", headers=admin_headers).json()
+            assert body["guest_mode_enabled"] is False, "effective must reflect the closed door"
+            assert body["guest_mode_configured"] is True, "the operator's stored setting must survive"
+            assert body["guest_mode_env_allowed"] is False, "and the UI must be able to say why"
+    finally:
+        set_config("guest_mode_enabled", "false")

@@ -504,6 +504,7 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
   const [defaultModel, setDefaultModel] = useState('')
   const [defaultRagEnabled, setDefaultRagEnabled] = useState(false)
   const [guestChatEnabled, setGuestChatEnabled] = useState(true)
+  const [guestEnvAllowed, setGuestEnvAllowed] = useState(true)
   const [availableModels, setAvailableModels] = useState<{ value: string; label: string }[]>([])
   const [controlsSaved, setControlsSaved] = useState(false)
   const [saveErr, setSaveErr] = useState('')
@@ -526,7 +527,8 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
       allow_rag_toggle?: boolean
       default_model?: string
       default_rag_enabled?: boolean
-      guest_mode_enabled?: boolean
+      guest_mode_configured?: boolean
+      guest_mode_env_allowed?: boolean
     }>(fetch(`${api}/api/config`, { headers: headers() }), 'Loading settings')
       .then(d => {
         if (!d) return
@@ -535,7 +537,12 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
         if (d.allow_rag_toggle !== undefined) setAllowRagToggle(d.allow_rag_toggle)
         if (d.default_model) setDefaultModel(d.default_model)
         if (d.default_rag_enabled !== undefined) setDefaultRagEnabled(d.default_rag_enabled)
-        if (d.guest_mode_enabled !== undefined) setGuestChatEnabled(d.guest_mode_enabled)
+        // The STORED half, not the effective one. This control edits the
+        // row; binding it to `guest_mode_enabled` (which is env AND row) meant
+        // saving any neighbouring control wrote the AND back and erased a
+        // deliberate setting whenever the env half was off.
+        if (d.guest_mode_configured !== undefined) setGuestChatEnabled(d.guest_mode_configured)
+        if (d.guest_mode_env_allowed !== undefined) setGuestEnvAllowed(d.guest_mode_env_allowed)
       })
     guardedJson<{ groups?: { models: { value: string; label: string }[] }[] }>(
       fetch(`${api}/api/models`, { headers: headers() }), 'Loading models')
@@ -776,7 +783,13 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
         <div className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-gray-800/50 border border-gray-700">
           <div>
             <p className="text-sm text-gray-300">Guest access</p>
-            <p className="text-xs text-gray-500 mt-0.5">Allow unauthenticated chat; when off, visitors get the sign-in wall. This is the admin half of a double gate - the host must also set ALLOW_GUEST_MODE=true, or guests stay refused whatever this says.</p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Allow unauthenticated chat; when off, visitors get the sign-in wall.
+              This is the admin half of a double gate.
+              {guestEnvAllowed
+                ? ' The host has set ALLOW_GUEST_MODE=true, so this control decides.'
+                : ' The host has NOT set ALLOW_GUEST_MODE=true, so guests stay refused whatever this says - your setting is stored and takes effect if that changes.'}
+            </p>
           </div>
           <button
             onClick={() => { setGuestChatEnabled(!guestChatEnabled); saveControls(allowModelSelection, allowRagToggle, defaultModel, defaultRagEnabled, !guestChatEnabled) }}
@@ -1681,7 +1694,11 @@ function TrustTile(props: { value: string; label: string; note: string; good?: b
   )
 }
 
-function TrustTab({ api, headers }: { api: string; headers: () => Record<string, string> }) {
+function TrustTab({ api, headers, currentUser }: {
+  api: string
+  headers: () => Record<string, string>
+  currentUser: { role: string } | null
+}) {
   const [data, setData] = useState<AdminTrustData | null>(null)
   const [error, setError] = useState('')
   const [running, setRunning] = useState(false)
@@ -1752,13 +1769,23 @@ function TrustTab({ api, headers }: { api: string; headers: () => Record<string,
           model calls, needs no provider key, and answers the first question
           worth asking - does retrieval surface the right documents?
         </p>
-        <button
-          onClick={runFirstMeasurement}
-          disabled={running}
-          className="text-sm px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-40 transition-colors"
-        >
-          {running ? (progress || 'Working...') : 'Run the first measurement'}
-        </button>
+        {/* Every endpoint this calls is Owner-only, while the tab itself
+            opens for view_analytics. Offer the control to someone who can use
+            it rather than a button that answers 403. */}
+        {currentUser?.role === 'owner' ? (
+          <button
+            onClick={runFirstMeasurement}
+            disabled={running}
+            className="text-sm px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-40 transition-colors"
+          >
+            {running ? (progress || 'Working...') : 'Run the first measurement'}
+          </button>
+        ) : (
+          <p className="text-sm text-gray-600">
+            Starting a measurement is an Owner action. Ask the Owner to run one,
+            or POST /api/admin/evals/run with an Owner token.
+          </p>
+        )}
         {running && (
           <p className="text-xs text-gray-600">
             This seeds the shipped question set and runs it. Leaving this tab
@@ -1891,7 +1918,15 @@ function SettingsTab({ api, headers }: { api: string; headers: () => Record<stri
     guardedJson<ProviderSettings>(
       fetch(`${api}/api/settings`, { headers: headers() }), 'Loading provider settings')
       .then(d => {
-        if (!d) return
+        if (!d) {
+          // The guard already raised a toast; this is what the tab BODY says.
+          // Without it the render guard below sits on "Loading..." forever,
+          // which is a quieter version of the dishonesty this call was fixed
+          // for.
+          setError('Could not load provider settings - this section is Owner-only.')
+          return
+        }
+        setError('')
         setSettings(d)
         setOllamaEnabled(d.ollama_enabled)
         setAnthropicEnabled(d.anthropic_enabled)
@@ -2193,7 +2228,7 @@ export default function AdminPanel({ api, headers, currentUser, onClose, onLogou
           {TABS.find(t => t.id === tab)?.label}
         </h1>
         <fieldset className="border-0 p-0 m-0 min-w-0">
-        {tab === 'trust'      && <TrustTab api={api} headers={headers} />}
+        {tab === 'trust'      && <TrustTab api={api} headers={headers} currentUser={currentUser} />}
         {tab === 'settings'   && <SettingsTab api={api} headers={headers} />}
         {tab === 'users'      && <UsersTab api={api} headers={headers} />}
         {tab === 'kb'         && <KBManage api={api} headers={headers} />}
