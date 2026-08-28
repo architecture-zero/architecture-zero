@@ -323,12 +323,25 @@ def check_daily_guest_budget(limit: int) -> None:
     day = datetime.now(timezone.utc).strftime("%Y%m%d")
     from app.redis_client import get_redis
     r = get_redis()
+    count = None
     if r:
-        key = f"az:guestbudget:{day}"
-        count = r.incr(key)
-        if count == 1:
-            r.expire(key, 90000)  # ~25h, so the daily key self-cleans
-    else:
+        try:
+            key = f"az:guestbudget:{day}"
+            count = r.incr(key)
+            if count == 1:
+                r.expire(key, 90000)  # ~25h, so the daily key self-cleans
+        except Exception as e:
+            # get_redis() latches its client on first use, so a Redis that dies
+            # after a successful ping keeps handing back a live-looking handle
+            # and every guest request raises out of this guard. Degrade to the
+            # in-process counter (the users.py convention): during an outage the
+            # cap loosens from global to per-process, which beats 500ing the
+            # lane the control exists to protect. Logged, never silent - a
+            # security control that quietly changes scope is the worse failure.
+            from app.logger import log_error
+            log_error("guest_budget_redis_degraded", error=str(e))
+            count = None
+    if count is None:
         # In-memory fallback: keep only today's counter.
         for k in [k for k in _daily_guest_store if k != day]:
             _daily_guest_store.pop(k, None)

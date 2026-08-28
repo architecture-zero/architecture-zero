@@ -36,6 +36,7 @@ from app.alerting import (fire as fire_alert, get_config as get_alert_config,
 from app import corpus_scan as _corpus_scan
 from app.runtime_config import (_config_or_default, _ollama_get, DEFAULT_MODEL,
                                 RAG_ONLY_MODE, PII_SCAN_MODE, ALLOW_GUEST_MODE,
+                                DEMO_DAILY_GUEST_LIMIT,
                                 ENCRYPTION_AT_REST_VERIFIED, _DATA_DIR)
 
 router = APIRouter()
@@ -145,6 +146,10 @@ def status():
         "redis": redis_status(),
         "agent_tools": get_tool_config(),
         "security": get_security_config(),
+        # Guest wallet backstop. It is fail-open by design (0 = inert), so
+        # without a positive signal an operator cannot tell "off" from "on" in
+        # a running deployment - the same reason injection_scan_mode is here.
+        "guest_daily_limit": DEMO_DAILY_GUEST_LIMIT,
         "provider": get_provider_config(),
         "pii_scan_mode": PII_SCAN_MODE,
         # Corpus injection gate (distinct from security.injection_protection,

@@ -43,6 +43,19 @@ PII_SCAN_MODE               = os.getenv("PII_SCAN_MODE", "off").lower()
 # opted in here AND enabled in admin config. Without this env var set, the
 # instance is login-required for everyone.
 ALLOW_GUEST_MODE            = os.getenv("ALLOW_GUEST_MODE", "false").lower() == "true"
+# Global daily guest budget - the VOLUME backstop. GUEST_MAX_TURNS caps one
+# conversation and check_rate_limit caps one IP (and defaults OFF), so neither
+# bounds a whole day: IP-rotating or distributed callers run up unbounded volume
+# under both. SCOPE THIS HONESTLY - it counts REQUESTS, not tokens, so it bounds
+# how many guest turns land in a day and not how large any one of them is;
+# per-request cost still follows whichever model a request names. 0 = off.
+# Counted in Redis when Redis is REACHABLE (get_redis returns a client), else
+# in-process - right for the single-container image this repo ships, and
+# per-worker under `uvicorn --workers N` or several replicas, the same caveat
+# SETUP_CLAIM_CODE carries.
+# Read by the chat handler (enforcement) and by /api/status (the positive
+# signal), so it is shared rather than either module's.
+DEMO_DAILY_GUEST_LIMIT      = int(os.getenv("DEMO_DAILY_GUEST_LIMIT", "0"))
 ENCRYPTION_AT_REST_VERIFIED = os.getenv("ENCRYPTION_AT_REST_VERIFIED", "false").lower() == "true"
 _DATA_DIR                   = os.getenv("DATA_DIR", "/app/data")
 # Read by main (the boot-time purge) and by the chat handler (whether to write

@@ -37,9 +37,11 @@ from app.metrics import increment, record_request
 from app.peers import get_peers, query_peer_kb
 from app.pii import apply_blocklist
 from app.providers import stream_chat_events, non_stream_tool_call, supports_tools
-from app.security import check_rate_limit, check_injection, client_ip_from_request
+from app.security import (check_rate_limit, check_injection, client_ip_from_request,
+                          check_daily_guest_budget)
 from app.runtime_config import (_config_or_default, DEFAULT_MODEL, RAG_ONLY_MODE,
                                 RAG_SIMILARITY_THRESHOLD, ALLOW_GUEST_MODE,
+                                DEMO_DAILY_GUEST_LIMIT,
                                 MAX_CONTEXT_TOKENS, ENABLE_AUDIT_LOG, _BLOCKLIST,
                                 _SAFETY_RULES, _NON_OWNER_RULES, _GROUNDING_RULES,
                                 _CONTEXT_DATA_RULES, _NO_WEB_NOTICE,
@@ -227,6 +229,11 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
                 status_code=429,
                 detail=f"Guest limit reached ({GUEST_MAX_TURNS} messages). Sign in to continue chatting.",
             )
+
+    # Global daily guest budget - wallet backstop (per-IP limits do not stop
+    # distributed traffic). Tuned high enough that real visitors never reach it.
+    if current_user is None and DEMO_DAILY_GUEST_LIMIT > 0:
+        check_daily_guest_budget(DEMO_DAILY_GUEST_LIMIT)
 
     record_request()
     increment("chat_requests_total")

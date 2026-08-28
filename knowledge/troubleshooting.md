@@ -19,6 +19,26 @@ if you intend anonymous access, enable guest mode BOTH ways - the
 ALLOW_GUEST_MODE=true host environment variable AND the guest toggle in
 admin config. Either one alone keeps the instance closed.
 
+## "Guest limit reached (N messages). Sign in to continue chatting."
+
+A per-conversation cap, not an outage. Guest sessions are limited to
+GUEST_MAX_TURNS user messages. Sign in to keep going, or raise the limit in
+the host environment; 0 removes the cap. This one counts messages in the
+current conversation, so a fresh chat starts over.
+
+## "The demo is seeing high demand right now - please try again a little later"
+
+The instance's global daily guest budget is spent. It is a volume backstop
+rather than a per-IP rate limit: DEMO_DAILY_GUEST_LIMIT caps total guest
+requests per UTC day across ALL callers, because per-IP limits do not stop
+distributed or IP-rotating traffic. It counts requests, not tokens, so it
+bounds how many guest turns land in a day and not how large any one of them is.
+Signed-in users are never counted against it, so signing in is the immediate
+way through. The counter resets at UTC midnight; raise the limit or set it to 0
+to switch the cap off. It counts in Redis when Redis is reachable and
+in-process otherwise, so on the default single-container setup a restart also
+clears it.
+
 ## "Session expired - sign in again"
 
 Your access token expired and the presented token was invalid - this is the

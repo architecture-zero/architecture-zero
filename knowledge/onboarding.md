@@ -143,4 +143,9 @@ The instance is private by default: every request needs a signed-in user.
 Guest access requires BOTH the host environment opt-in
 (ALLOW_GUEST_MODE=true) and the admin config toggle - so a stray config
 row alone can never open the site. Guests get a capped number of turns and
-a reduced token budget, and only ever see general-floor content.
+a reduced token budget, and only ever see general-floor content. An instance
+left open to the public can also set DEMO_DAILY_GUEST_LIMIT, a global daily
+budget capping total guest requests per UTC day across all callers - the
+total-volume bound per-IP limits cannot give you. It counts requests rather
+than tokens, so per-request cost still follows whichever model a request names.
+It is 0, meaning off, by default.
