@@ -3,6 +3,13 @@
 What's ahead for the open core, in rough order of readiness. Commercial
 modules and their graduation policy live in [MODULES.md](MODULES.md).
 
+- **Split `main.py` into routers** - it is the largest file in the tree by a
+  wide margin and holds every route handler. The natural seams already exist
+  in the route prefixes (admin, auth, users, peers, ingest, sessions); moving
+  them into FastAPI routers makes the codebase navigable for anyone reading it
+  to extend it, which is most of the point of a template. The endpoint
+  authorization sweep pins every route's guard, so the split is checked rather
+  than trusted.
 - **Reference web frontend** - the platform is deliberately API-first
   today; a reference chat + admin client is the most-wanted addition.
 - **Live-system record generator** - the producer for the `system` trust
