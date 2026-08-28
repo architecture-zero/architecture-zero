@@ -9,7 +9,13 @@ import json
 
 import pytest
 
-import app.main as main_mod
+# The status_dir fixture patches BACKUP_STATUS_DIR, and _backup_job_state
+# resolves it from its OWN module globals at call time - so the patch has to land
+# on the module that DEFINES it, which is now the system router. Deliberately no
+# compatibility re-export from main: with one, the setattr would succeed, patch a
+# name nobody reads, and these eight tests would quietly start reading the real
+# /app/data - with test_missing_files_503 passing for entirely the wrong reason.
+import app.routers.system as main_mod
 
 
 def _stamp(hours_ago: float) -> str:
