@@ -48,6 +48,33 @@ from app.main import app  # triggers all module-level init (DB schema, config se
 # -- Mock _embed after app.database is imported --------------------------------
 patch("app.database._embed", return_value=[0.0] * 768).start()
 
+# -- The BATCH leg's socket, closed (F12, ported from az-personal 2026-08-27) --
+# The mock above covers `_embed` (the per-text leg) and leaves `_embed_batch`
+# open, so every batched write opened a REAL HTTP connection before falling back
+# to the mocked path. What that cost depended entirely on what was listening on
+# the developer's machine, which is what makes it a bug rather than a slow test:
+# in CI nothing listens, so it is an instant refusal and invisible; on a
+# workstation running Ollama this repo's suite stalled ~230s, and on az-personal
+# the equivalent files WEDGED for 35 minutes. Green either way, which is how it
+# survived. Found as F12 of the 2026-08-27 batch review.
+#
+# Not mocking `_embed_batch` itself: real tests exercise it, and blanket-mocking
+# would delete that coverage instead of isolating it. The SOCKET closes instead -
+# requests.post inside app.database raises instantly, the batch leg fails the way
+# it already knows how to fail, and its existing `[_embed(t) for t in texts]`
+# fallback runs the mocked per-text path. The batch code path still executes.
+#
+# Safe against the other requests.post in this module: it belongs to `_embed`,
+# which is mocked at the function level above and never reaches the socket.
+def _no_outbound_embed(*args, **kwargs):
+    import requests as _rq
+    url = args[0] if args else kwargs.get("url", "?")
+    raise _rq.exceptions.ConnectionError(
+        f"conftest: outbound embed calls are blocked in tests ({url})")
+
+
+patch("app.database.requests.post", side_effect=_no_outbound_embed).start()
+
 _ADMIN = {"username": "testadmin", "password": "AdminPass1"}
 
 
