@@ -161,6 +161,7 @@ core and how modules graduate into it.
   bands, answer-layer runs, outside-model holdout authoring, the live-fire
   injection probe)
 - `frontend/` - the reference web client (React + Vite, served by nginx)
+- `scripts/acceptance.sh` - end-to-end check against a RUNNING deployment
 - `knowledge/` - the shipped corpus (help docs + demo company)
 - `docs/` - operator docs, ingested as corpus
 - `docker-compose.yml`, `backend/Dockerfile`, `frontend/Dockerfile` - the
