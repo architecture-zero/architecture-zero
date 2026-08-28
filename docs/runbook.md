@@ -133,6 +133,16 @@ so a fresh deploy measures a whole corpus, never a half-ingested one.
 Deeper measurement (A/B arms, noise bands) lives in
 `backend/scripts/eval_retrieval.py` - run it inside the container.
 
+Growing the locked holdout: `backend/scripts/author_holdout.py` has an OUTSIDE
+model read corpus files and draft questions plus grading keys for them, spread
+deterministically across the whole corpus. It writes a JSON array to
+/tmp/holdout-questions.json; you review it and merge what survives into
+`backend/eval-questions.json`, and the next boot syncs it in. The rule that
+makes the cohort worth having: nobody edits the drafted text. A bad item is
+DELETED, never fixed - the moment you improve a question you have tuned it, and
+a tuned holdout measures nothing the tuned set was not already measuring. The
+script costs one API call per sampled file.
+
 ## Where things live
 
 - `backend/data/` - all persistent state (the only directory to back up)

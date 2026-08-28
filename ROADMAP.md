@@ -19,8 +19,5 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   already in; this automates the recovery).
 - **Async ingest workers** - queue-dispatched ingestion for very large
   uploads (the job model and status endpoint shapes are in place).
-- **Holdout authoring workflow** - tooling that has an outside model
-  author new locked-holdout eval questions, keeping the tuned/holdout
-  separation easy to maintain as a corpus grows.
 - **On-demand injection probe** - a live-fire probe script sharing the
   standing injection cohort's SPECS, for red-teaming outside eval runs.
