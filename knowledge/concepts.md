@@ -73,10 +73,16 @@ retrieval-only, no model calls, so it is cheap to run often.
 
 An evaluation score is a property of three things at once: the system, the
 question set, AND the corpus it ran against. Every run stamps a compact
-fingerprint of the corpus state, so two runs that measured different
-corpora can never be silently compared. The fingerprint does not make them
-comparable - nothing can, after the fact - it makes incomparability
-visible.
+fingerprint of the corpus SHAPE - which sources, in which departments, with
+how many chunks each - so two runs whose corpus shape differs can never be
+silently compared. The fingerprint does not make them comparable; nothing
+can, after the fact. It makes incomparability visible.
+
+Be precise about its reach, because it is a measurement-integrity claim: the
+fingerprint reads shape, not content. Editing a document without changing
+its chunk count leaves the fingerprint identical, so those two runs still
+band together. Making a content edit visible to banding is named on the
+ROADMAP as work still ahead.
 
 ## Noise bands: when is a change real?
 

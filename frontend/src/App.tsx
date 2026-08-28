@@ -1115,10 +1115,10 @@ export default function App() {
               Guest
             </span>
           )}
-          {/* Any unauthenticated viewer gets the door - including the demo's
-              authless straight-to-chat path, which set neither isGuest nor
-              auth_enabled and so hid this button entirely (2026-07-09: the owner
-              had an admin account but no way to reach the login screen). */}
+          {/* Any unauthenticated viewer gets the door. A signed-out visitor
+              who is not flagged as a guest is still someone who may have an
+              account, and keying this off anything narrower has already
+              produced an instance whose owner could not reach a login screen. */}
           {!currentUser && (
             <button
               onClick={() => setView('login')}
@@ -1178,7 +1178,10 @@ export default function App() {
                 <Message key={i} role={m.role} content={m.content} toolCalls={m.toolCalls}
                   sources={m.sources} msgIndex={i}
                   isStreaming={loading}
-                  onFeedback={m.role === 'assistant' ? handleFeedback : undefined}
+                  // Guests have no session; /api/feedback needs one, and a 401 here
+                    // raises the sticky session-expired banner at someone who never
+                    // logged in. Withhold the control rather than the error.
+                    onFeedback={m.role === 'assistant' && !isGuest ? handleFeedback : undefined}
                   onRegenerate={m.role === 'assistant' && i === messages.length - 1 ? regenerate : undefined}
                   onEdit={m.role === 'user' ? (newContent) => editAndRegenerate(i, newContent) : undefined}
                 />

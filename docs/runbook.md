@@ -5,19 +5,26 @@ running, you can ask the assistant these questions directly.
 
 ## Deploy on a single machine
 
-Prerequisites: Docker with the compose plugin, and (for local models) an
-Ollama install on the host with at least one chat model and the embedding
-model pulled (`ollama pull qwen3:8b` and `ollama pull nomic-embed-text`).
+Prerequisites: Docker with the compose plugin, and an Ollama install on the
+host with the embedding model pulled (`ollama pull nomic-embed-text`), plus a
+chat model if you want local inference (`ollama pull qwen3:8b`). The embedder
+is required whichever provider answers chat - only the chat model is swappable
+for a cloud API.
 
 1. Clone the repository.
 2. `cp .env.example .env` and set JWT_SECRET_KEY to a real secret
    (`python -c "import secrets; print(secrets.token_urlsafe(48))"`).
-   Auth fails closed on the placeholder - the backend will not boot with
-   ENABLE_AUTH=true and the default value.
+   Auth fails closed on the placeholder - the backend will not boot on the
+   default value, whether or not ENABLE_AUTH is on. The guard runs at import,
+   before that flag is read.
 3. `docker compose up -d --build` (the first build downloads and bakes the
    reranker models into the image).
 4. Open http://localhost:8000/api/health - expect status healthy (or
-   degraded if Ollama is not up yet; cloud-only deployments can ignore it).
+   degraded if the CHAT endpoint is not up yet, which a cloud-only deployment
+   can ignore). It says nothing about the embedder: that is a separate
+   endpoint (`EMBED_BASE`, model `nomic-embed-text`) and it is required no
+   matter which provider answers chat. Without it every ingest fails, the
+   instance still boots, and answers come back with no sources.
 5. Create the Owner account. This takes a **claim code**, which the backend
    mints at boot and prints to its own logs while the deployment is unclaimed -
    run `docker compose logs backend` and look for the banner. Only someone who

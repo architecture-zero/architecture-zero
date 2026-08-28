@@ -50,10 +50,10 @@ def read_root():
 @router.get("/api/version")
 def version():
     """Public build identity - the git SHA baked in at image-build time
-    (Dockerfile ARG GIT_SHA, set from `git rev-parse` in the deploy
-    workflow). Lets deploy-verify confirm the LIVE commit directly instead of
-    inferring it from CI. 'unknown' = built without the build-arg (e.g. local
-    dev)."""
+    (Dockerfile ARG GIT_SHA, passed by whatever builds your image; the shipped
+    compose file forwards `${GIT_SHA:-unknown}`). Lets a deploy check confirm
+    the LIVE commit directly instead of inferring it. 'unknown' = built without
+    the build-arg."""
     return {"sha": os.getenv("GIT_SHA", "unknown"), "service": "architecture-zero", "api_version": "1.0"}
 
 @router.get("/api/health")

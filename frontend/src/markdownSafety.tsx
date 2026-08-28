@@ -1,6 +1,6 @@
 /**
- * Exfil hygiene at the RENDER boundary - the client half of the untrusted-corpus
- * injection gate (part d, 2026-08-25).
+ * Exfil hygiene at the RENDER boundary - the client half of the
+ * untrusted-corpus injection gate.
  *
  * The backend's system prompt already forbids the model from emitting markdown
  * images or context-bearing links: "that is how data leaks at render time".

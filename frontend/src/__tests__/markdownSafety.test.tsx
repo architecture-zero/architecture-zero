@@ -1,8 +1,8 @@
 /**
- * The render-boundary half of the injection gate (part d).
+ * The render-boundary half of the injection gate.
  *
  * The backend probe measures whether the model can be steered into EMITTING an
- * exfil channel (4/4 on all three arms, 2026-08-25). These tests measure the
+ * exfil channel. These tests measure the
  * other half, which no backend test can see: whether this client would OPEN one
  * if the text ever contained it. They render the real component with the real
  * markdown library, so an upgrade that changes react-markdown's defaults fails

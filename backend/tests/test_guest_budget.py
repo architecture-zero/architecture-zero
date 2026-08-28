@@ -123,9 +123,8 @@ def test_day_rollover_evicts_the_stale_counter():
 
 def test_the_guard_is_wired_at_the_chat_handler():
     """The defect this file closes was a guard with no caller, and the shape of
-    that bug is that everything else stays green. This is the same substring
-    the fleet drift checker pins from outside the repo - asserted here so the
-    repo carries its own copy of the claim."""
+    that bug is that everything else stays green: a guard that is defined and
+    never called passes every test that only checks it exists."""
     src = Path(chat_mod.__file__).read_text(encoding="utf-8")
     assert "check_daily_guest_budget(DEMO_DAILY_GUEST_LIMIT)" in src
 

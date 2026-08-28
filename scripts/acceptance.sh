@@ -48,10 +48,18 @@ fi
 # The image bakes __RT_VITE_* placeholders and the entrypoint replaces them from
 # the container's env. A surviving placeholder means that script did not run -
 # the classic cause is CRLF line endings on the .sh (see .gitattributes).
-if grep -q '__RT_VITE_' <<<"$body"; then
-  bad "runtime placeholders replaced" "a literal __RT_VITE_* survived: the entrypoint did not run"
+#
+# GREP THE BUNDLE, NOT THE SHELL. The placeholders reach .tsx through
+# import.meta.env, so vite inlines them into the hashed asset under /assets/ and
+# index.html never contains one. Checking index.html passes unconditionally -
+# including on the exact failure this is here to catch.
+asset=$(grep -oE '/assets/[^"]+\.js' <<<"$body" | head -1)
+if [ -z "$asset" ]; then
+  bad "runtime placeholders replaced" "no /assets/*.js referenced from index.html - nothing to check"
+elif curl -s -m 20 "$BASE$asset" | grep -q '__RT_VITE_'; then
+  bad "runtime placeholders replaced" "a literal __RT_VITE_* survived in $asset: the entrypoint did not run"
 else
-  ok "runtime placeholders replaced"
+  ok "runtime placeholders replaced (checked in $asset)"
 fi
 
 echo "== 2. security headers, on the document a browser loads =="

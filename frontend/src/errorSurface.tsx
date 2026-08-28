@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 
-// Shared error surface (error-masking sweep 2026-08-05). Contract:
+// Shared error surface. Contract:
 //   - ACTIONS never look successful on a non-2xx: use actionError() and show
-//     its returned text (server `detail` preferred) - the 2026-07-15 false-
-//     "Saved" bug class, generalized.
+//     its returned text (server `detail` preferred). The class this exists for:
+//     an expired token makes a PATCH 401 while the UI still flashes "Saved".
 //   - One-shot LOADS surface failures as a toast instead of silently rendering
 //     empty UI: use guardedJson().
 //   - Repeating POLLS stay quiet on transient failures (the next tick retries)

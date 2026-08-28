@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 
 from app.audit import get_audit_log, export_audit_csv
-from app.config import get_config, set_config, get_all_config
+from app.config import get_config, set_config, get_all_config_masked
 from app.jwt_auth import require_owner, require_permission
 from app.logger import log
 from app.runtime_config import (_config_or_default, _ollama_get, DEFAULT_MODEL,
@@ -119,7 +119,9 @@ def overview_metrics(current_user: dict = Depends(require_permission("manage_sys
 
 @router.get("/api/admin/config")
 def admin_get_config(current_user: dict = Depends(require_permission("manage_system"))):
-    return get_all_config()
+    # MASKED: this guard is manage_system, a permission an Owner can grant, and
+    # provider credentials are not part of what it is for.
+    return get_all_config_masked()
 
 
 @router.patch("/api/admin/config")
@@ -171,7 +173,7 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
         written.append(key)
     # written, not submitted: the log is the record of what CHANGED.
     log("admin_config_update", admin_id=current_user["id"], keys=sorted(written))
-    return get_all_config()
+    return get_all_config_masked()
 
 
 # -- Model pinning matrix -----------------------------------------------------

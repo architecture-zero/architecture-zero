@@ -20,9 +20,9 @@ RUN python -c "from fastembed.rerank.cross_encoder import TextCrossEncoder; from
 COPY ./app ./app
 COPY ./scripts ./scripts
 COPY ./eval-questions.json ./eval-questions.json
-# Build identity - set from `git rev-parse` in the deploy workflow; surfaced
-# at GET /api/version. Placed last so changing it only rebuilds this tiny
-# layer, not pip install / COPYs.
+# Build identity - passed by whatever builds this image; the shipped compose
+# file forwards `${GIT_SHA:-unknown}`. Surfaced at GET /api/version. Placed
+# last so changing it only rebuilds this tiny layer, not pip install / COPYs.
 ARG GIT_SHA=unknown
 ENV GIT_SHA=$GIT_SHA
 EXPOSE 8000

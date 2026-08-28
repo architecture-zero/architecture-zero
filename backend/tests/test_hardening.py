@@ -106,3 +106,42 @@ def test_sqlite_backup_snapshot_is_consistent_with_live_writers(tmp_path):
     check = sqlite3.connect(out)
     assert check.execute("SELECT count(*) FROM t").fetchone()[0] == 50
     check.close()
+
+
+def test_admin_config_never_returns_a_provider_credential(client, admin_headers):
+    """Provider keys live in the same config table as ordinary settings, and
+    /api/admin/config used to return that table whole.
+
+    Its guard is manage_system - a permission an Owner can GRANT, and one whose
+    stated job is "edit system prompt, instance config, model settings". So a
+    non-Owner could read every provider credential in cleartext from a surface
+    one tier BELOW the Owner-only settings page that masks the same values.
+
+    Pinned on both verbs, because the PATCH handler returns the config too - a
+    write leaked exactly as much as a read.
+    """
+    from app.config import set_config
+
+    set_config("anthropic_api_key", "sk-ant-not-a-real-key-000")
+    try:
+        for resp in (client.get("/api/admin/config", headers=admin_headers),
+                     client.patch("/api/admin/config", json={"instance_name": "Acme"},
+                                  headers=admin_headers)):
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert "anthropic_api_key" not in body, "the raw credential is in the response"
+            assert "not-a-real-key" not in resp.text, "the credential leaked by value"
+            # Reported as presence, the way the Owner-only settings surface does.
+            assert body.get("anthropic_key_set") is True
+    finally:
+        set_config("anthropic_api_key", "")
+
+
+def test_the_masked_config_still_carries_the_ordinary_settings():
+    """Two-sided: masking must not swallow the rows the panel actually edits."""
+    from app.config import get_all_config_masked, set_config
+
+    set_config("instance_name", "Acme Corp")
+    body = get_all_config_masked()
+    assert body["instance_name"] == "Acme Corp"
+    assert "system_prompt" in body

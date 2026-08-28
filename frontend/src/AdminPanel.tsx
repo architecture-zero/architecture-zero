@@ -62,7 +62,7 @@ function UsersTab({ api, headers }: { api: string; headers: () => Record<string,
   const [expandedUser, setExpandedUser] = useState<number | null>(null)
   const [newUsername, setNewUsername] = useState('')
   const [newPassword, setNewPassword] = useState('')
-  const [newRole, setNewRole] = useState('user')
+  const [newRole, setNewRole] = useState('member')
   const [newDept, setNewDept] = useState('general')
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
@@ -70,7 +70,20 @@ function UsersTab({ api, headers }: { api: string; headers: () => Record<string,
   const load = () => {
     guardedJson<{ users?: User[] }>(
       fetch(`${api}/api/users`, { headers: headers() }), 'Loading users')
-      .then(d => { if (d) setUsers(d.users || []) })
+      // Normalized at the boundary. The column defaults to the literal "{}"
+      // and the API returns json.loads of it, so a user whose permissions were
+      // never explicitly written arrives as an OBJECT, not a list - and
+      // `perms?.includes(x)` on an object THROWS inside render, which with no
+      // error boundary takes the whole panel to a blank page. The server is
+      // deliberately tolerant of the same sentinel (permissions.py checks
+      // isinstance(stored, list)); this is the client half of that tolerance.
+      .then(d => {
+        if (!d) return
+        setUsers((d.users || []).map(u => ({
+          ...u,
+          permissions: Array.isArray(u.permissions) ? u.permissions : [],
+        })))
+      })
     guardedJson<{ departments?: string[] }>(
       fetch(`${api}/api/ingest/departments`, { headers: headers() }), 'Loading departments')
       .then(d => { if (d) setDepartments(d.departments || ['general']) })
@@ -98,7 +111,7 @@ function UsersTab({ api, headers }: { api: string; headers: () => Record<string,
       }
       setNewUsername('')
       setNewPassword('')
-      setNewRole('user')
+      setNewRole('member')
       setNewDept('general')
       load()
     } catch {
@@ -188,8 +201,7 @@ function UsersTab({ api, headers }: { api: string; headers: () => Record<string,
             onChange={e => setNewRole(e.target.value)}
             className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white outline-none"
           >
-            <option value="user">user</option>
-            <option value="manager">manager</option>
+            <option value="member">member</option>
             <option value="admin">admin</option>
           </select>
           <input
@@ -247,9 +259,9 @@ function UsersTab({ api, headers }: { api: string; headers: () => Record<string,
                   onChange={e => changeRole(u.id, e.target.value)}
                   className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-xs text-white outline-none"
                 >
-                  <option value="user">user</option>
-                  <option value="manager">manager</option>
+                  <option value="member">member</option>
                   <option value="admin">admin</option>
+                  <option value="owner">owner</option>
                 </select>
                 <button
                   onClick={() => setExpandedUser(expandedUser === u.id ? null : u.id)}
@@ -497,20 +509,27 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
   const [saveErr, setSaveErr] = useState('')
 
   useEffect(() => {
-    fetch(`${api}/api/admin/config`, { headers: headers() })
-      .then(r => r.json())
-      .then((d: AdminConfig) => { setPrompt(d.system_prompt || ''); setLoading(false) })
-      .catch(() => setLoading(false))
-    fetch(`${api}/api/config`)
-      .then(r => r.json())
-      .then((d: {
-        suggestions?: string[]
-        allow_model_selection?: boolean
-        allow_rag_toggle?: boolean
-        default_model?: string
-        default_rag_enabled?: boolean
-        guest_mode_enabled?: boolean
-      }) => {
+    // BOTH loads go through the guard and BOTH early-out on null. Neither
+    // route is public, and a 401/403 body is valid JSON - so a bare
+    // .then(r => r.json()) RESOLVES, every `!== undefined` check below is
+    // skipped, and the component keeps its own initial state. That state is
+    // what saveControls then PATCHes back, so a failed READ became a
+    // destructive WRITE: retrieval turned off by default, and every control
+    // the operator had locked silently unlocked. The `if (!d) return` is the
+    // whole fix, and it is why the guard returns null rather than throwing.
+    guardedJson<AdminConfig>(
+      fetch(`${api}/api/admin/config`, { headers: headers() }), 'Loading system prompt')
+      .then(d => { if (d) setPrompt(d.system_prompt || ''); setLoading(false) })
+    guardedJson<{
+      suggestions?: string[]
+      allow_model_selection?: boolean
+      allow_rag_toggle?: boolean
+      default_model?: string
+      default_rag_enabled?: boolean
+      guest_mode_enabled?: boolean
+    }>(fetch(`${api}/api/config`, { headers: headers() }), 'Loading settings')
+      .then(d => {
+        if (!d) return
         setSuggestionsText((d.suggestions || []).join('\n'))
         if (d.allow_model_selection !== undefined) setAllowModelSelection(d.allow_model_selection)
         if (d.allow_rag_toggle !== undefined) setAllowRagToggle(d.allow_rag_toggle)
@@ -518,7 +537,6 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
         if (d.default_rag_enabled !== undefined) setDefaultRagEnabled(d.default_rag_enabled)
         if (d.guest_mode_enabled !== undefined) setGuestChatEnabled(d.guest_mode_enabled)
       })
-      .catch(() => emitError('Loading public config failed'))
     guardedJson<{ groups?: { models: { value: string; label: string }[] }[] }>(
       fetch(`${api}/api/models`, { headers: headers() }), 'Loading models')
       .then(d => {
@@ -1685,10 +1703,14 @@ function TrustTab({ api, headers }: { api: string; headers: () => Record<string,
     setRunning(true)
     setProgress('Seeding the question set...')
     try {
-      const seeded = await actionError(
-        fetch(`${api}/api/admin/evals/questions/seed`, { method: 'POST', headers: headers() }),
-        'Seeding evaluation questions')
-      if (seeded) return
+      // /sync, NOT /seed. Seeding REFUSES with 409 once any question exists,
+      // and the boot hook reconciles the shipped set on every start - so the
+      // question set is always already there and /seed always failed, taking
+      // the run with it. /sync is the idempotent form of the same operation.
+      const synced = await actionError(
+        fetch(`${api}/api/admin/evals/questions/sync`, { method: 'POST', headers: headers() }),
+        'Preparing the question set')
+      if (synced) return
       setProgress('Running retrieval...')
       const started = await fetch(`${api}/api/admin/evals/run`, {
         method: 'POST',
@@ -1862,9 +1884,14 @@ function SettingsTab({ api, headers }: { api: string; headers: () => Record<stri
   const [error, setError] = useState('')
 
   const load = () => {
-    fetch(`${api}/api/settings`, { headers: headers() })
-      .then(r => r.json())
-      .then((d: ProviderSettings) => {
+    // Same class as SystemPromptTab. This route is require_owner while the
+    // panel opens for several lesser permissions, so a non-owner admin gets a
+    // 403 - which unguarded renders as a confident, fully-drawn form reporting
+    // every provider disabled on an instance where they may all be live.
+    guardedJson<ProviderSettings>(
+      fetch(`${api}/api/settings`, { headers: headers() }), 'Loading provider settings')
+      .then(d => {
+        if (!d) return
         setSettings(d)
         setOllamaEnabled(d.ollama_enabled)
         setAnthropicEnabled(d.anthropic_enabled)

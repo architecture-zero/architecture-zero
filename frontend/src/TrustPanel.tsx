@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react'
 
-// Public trust panel (B4 panel-derivations leg; mock confirmed 2026-07-31;
-// overview upgrade - tiles + "how this is measured" - mock confirmed 2026-08-02).
-// Every number arrives derived from stored eval runs via GET /api/trust -
+// Public trust panel. Every number arrives derived from stored eval runs
+// via GET /api/trust -
 // nothing here is hardcoded, and the band form (low-high across identical
 // runs) is deliberate: a spread is more honest than a lucky point.
 

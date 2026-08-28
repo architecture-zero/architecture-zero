@@ -47,8 +47,10 @@ aspirational.
   the writer, a locked holdout cohort with the tuned-vs-holdout GAP as an
   overfitting alarm, a mechanically-graded injection-resistance cohort run
   against a live poisoned plant, retrieval recall with a named-miss gaps
-  list, and a corpus fingerprint on every run so incomparable runs can
-  never be silently compared.
+  list, and a corpus-SHAPE fingerprint on every run so runs measured
+  against a different corpus shape cannot be silently compared (content
+  edits that leave chunk counts alone are not yet visible to it - see the
+  ROADMAP).
 - **Eco Mode** - federate instances: peers contribute labeled,
   boundary-scanned chunks to answers, with per-peer health tracking and a
   circuit breaker so a down peer costs nothing.
@@ -60,9 +62,17 @@ aspirational.
 
 ## Quickstart
 
-Prerequisites: Docker with the compose plugin; for local models, an
-[Ollama](https://ollama.com) install on the host with a chat model and the
-embedding model pulled (`ollama pull qwen3:8b`, `ollama pull nomic-embed-text`).
+Prerequisites: Docker with the compose plugin, and an
+[Ollama](https://ollama.com) install on the host with the embedding model
+pulled (`ollama pull nomic-embed-text`) plus a chat model if you want local
+inference (`ollama pull qwen3:8b`).
+
+The embedder is **required whichever provider answers chat.** Only the chat
+model is swappable for a cloud API; embeddings speak the Ollama dialect to
+`EMBED_BASE` and have no provider seam. With nothing reachable there, ingestion
+fails per file, the instance still boots and still answers, and every retrieval
+question comes back ungrounded - and `/api/health` only probes the chat
+endpoint, so it will not tell you.
 
 ```
 git clone https://github.com/architecture-zero/architecture-zero
@@ -171,8 +181,8 @@ core and how modules graduate into it.
 
 ```
 python -m venv .venv
-.venv/bin/pip install -r backend/requirements-dev.txt
-cd backend && ../.venv/bin/python -m pytest tests -q
+.venv/bin/pip install -r backend/requirements-dev.txt          # Windows: .venv\Scripts\pip
+cd backend && ../.venv/bin/python -m pytest tests -q           # Windows: ..\.venv\Scripts\python
 ```
 
 The suite mocks the vector store and embedder: no network, no keys, no
@@ -192,11 +202,17 @@ Or on the host, if you have Node 20+ and your OS allows it:
 ```
 cd frontend && npm install
 npm run type-check && npm test && npm run build
-npm run dev          # proxies /api to the backend service
+npm run dev          # see the note below before using this
 ```
 
-**On Windows, the host path may not work, and the error will not tell you
-why.** Smart App Control (on by default on many Windows 11 installs) and
+`npm run dev` proxies `/api` to `http://backend:8000` - the compose service
+name, which resolves only inside the compose network. Running it on the host
+against the stock deployment, the page loads and every API call fails to
+resolve: point `vite.config.ts` at `http://localhost:8000` first, and expect
+vite to pick a different port since compose already holds 5173.
+
+**On Windows, the host path may not work at all, and the error will not tell
+you why.** Smart App Control (on by default on many Windows 11 installs) and
 corporate WDAC policies block unsigned native binaries, and npm ships native
 modules unsigned as a matter of course - so `vite` cannot load its own rollup
 binary. Every one of `npm run dev`, `npm test` and `npm run build` fails; only
