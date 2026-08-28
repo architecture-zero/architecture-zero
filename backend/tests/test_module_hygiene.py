@@ -45,6 +45,14 @@ def _local_bindings(fn):
                 bound.add(sub.id)
             elif isinstance(sub, ast.arg):
                 bound.add(sub.arg)
+            elif isinstance(sub, ast.ExceptHandler) and sub.name:
+                bound.add(sub.name)          # `except X as e` binds e here
+            elif isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                  ast.ClassDef)):
+                # A NESTED def binds its own name in this scope, and it binds
+                # via FunctionDef rather than via a Name Store. Missing this
+                # made every inner helper look like it resolved to module scope.
+                bound.add(sub.name)
     return bound
 
 
@@ -158,3 +166,47 @@ def test_no_dead_module_level_imports_under_app():
     # where a real dead import can hide behind a stale reason.
     stale = sorted(_ALLOWED_UNUSED - exemptions_used)
     assert not stale, f"_ALLOWED_UNUSED entries no longer needed - remove them: {stale}"
+
+
+def test_the_startup_ingest_flag_is_never_from_imported():
+    """runtime_config._startup_ingest_active is REBOUND at runtime by main's
+    startup hooks, and read by the evals router to refuse an eval mid-ingest.
+
+    A `from app.runtime_config import _startup_ingest_active` anywhere binds
+    False once at import time and never sees a rebind. The guard would then be
+    permanently open: an eval started during a boot re-ingest returns 200 and
+    measures a half-embedded corpus, with nothing in the logs to say so. The
+    dead-import check cannot catch it either - the import is live and has a
+    reader, it is just reading a fossil.
+
+    So the rule is structural: the name may only be reached as an attribute.
+    """
+    offenders = []
+    for path in _modules() + sorted((APP.parent / "tests").glob("test_*.py")):
+        for node in ast.walk(_tree(path)):
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name == "_startup_ingest_active":
+                        offenders.append(f"{path.name}:{node.lineno}")
+    assert not offenders, (
+        "_startup_ingest_active must be read as runtime_config._startup_ingest_active, "
+        f"never from-imported - a from-import snapshots False forever: {offenders}")
+
+
+def test_the_startup_ingest_flag_has_exactly_one_definition():
+    """The other half: a second binding anywhere means main arms one copy while
+    the router reads another. This is the assignment class the dead-import check
+    is structurally blind to, so it is asserted by name here."""
+    defs = []
+    for path in _modules():
+        for node in ast.walk(_tree(path)):
+            if isinstance(node, ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, ast.Name) and t.id == "_startup_ingest_active":
+                        defs.append(f"{path.name}:{node.lineno}")
+    assert defs == ["runtime_config.py:" + str(
+        next(n.lineno for n in ast.walk(_tree(APP / "runtime_config.py"))
+             if isinstance(n, ast.Assign)
+             and any(isinstance(t, ast.Name) and t.id == "_startup_ingest_active"
+                     for t in n.targets))
+    )], f"expected exactly one definition, in runtime_config: {defs}"

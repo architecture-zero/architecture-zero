@@ -283,7 +283,7 @@ def test_eval_job_runs_question_at_its_as_level(monkeypatch):
     """Wiring proof: _run_eval_job hands retrieve() the QUESTION's as_level, so a
     tier-isolation question is actually measured at Member/Guest clearance (a gate
     the low level never reaches is no gate). Spy at the retrieve seam."""
-    import app.main as main_mod
+    import app.eval_runner as main_mod
     captured = []
 
     def spy(query, top_k=None, user_level=None):
@@ -342,7 +342,7 @@ def test_eval_applies_non_owner_answer_gate_by_as_level(monkeypatch):
     system prompt; an Owner (as_level None) does not. Retrieval alone can't close
     the leak (operational history bleeds into general docs), so the answer layer
     refuses the behavior for low tiers."""
-    import app.main as main_mod
+    import app.eval_runner as main_mod
     import app.eval_judge as judge_mod
     calls: list[dict] = []
 

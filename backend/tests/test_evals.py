@@ -67,7 +67,7 @@ def test_eval_job_stamps_one_corpus_on_every_row(monkeypatch):
     """Wiring proof: the fingerprint is taken ONCE per run and written to every row.
     Per-row computation would let a mid-run re-ingest produce rows that disagree
     about what they measured, which is the exact ambiguity this stamp removes."""
-    import app.main as main_mod
+    import app.eval_runner as main_mod
     from app.db import get_session
     from app.models import EvalResult
 
@@ -97,7 +97,7 @@ def test_eval_job_stamps_one_corpus_on_every_row(monkeypatch):
 
 
 def test_seed_sync_adds_updates_and_preserves(client, admin_headers, tmp_path, monkeypatch):
-    import app.main as main_mod
+    import app.eval_runner as main_mod
 
     seed = [
         {"category": "career", "question": "Q1 where do I work?", "notes": "n1",
@@ -149,7 +149,7 @@ def test_multiturn_setup_turns_sync_and_resolver_parity(client, admin_headers,
     for a scripted bare follow-up resolves through the chat path's OWN
     resolver - the eval measures the real follow-up handling, not a
     sanitized single-turn phrasing."""
-    import app.main as main_mod
+    import app.eval_runner as main_mod
     from app.db import get_session
     from app.models import EvalQuestion
 
@@ -194,7 +194,7 @@ def test_seed_sync_carries_holdout_flag(client, admin_headers, tmp_path, monkeyp
     """The seed file is the source of truth for holdout membership - the flag
     must land on insert, flip as an update, and (older rows hold null) never
     report a spurious update on an unchanged file."""
-    import app.main as main_mod
+    import app.eval_runner as main_mod
 
     seed = [
         {"category": "career", "question": "HQ1 tuned seed question?", "notes": "n"},
@@ -228,24 +228,26 @@ def test_eval_run_refuses_mid_ingest(client, admin_headers, monkeypatch):
     # An eval against a half-migrated corpus produces a plausible wrong number -
     # the run endpoint must 409 during the startup ingest window and work again
     # once it closes.
-    import app.main as main_mod
+    import app.eval_runner as main_mod
 
     # question_ids that match nothing: if the guard is past, the endpoint 400s
     # deterministically instead of spawning a real (slow) run thread.
     body = {"question_ids": [999999]}
 
-    monkeypatch.setattr(main_mod, "_startup_ingest_active", True)
+    from app import runtime_config
+    monkeypatch.setattr(runtime_config, "_startup_ingest_active", True)
     r = client.post("/api/admin/evals/run", json=body, headers=admin_headers)
     assert r.status_code == 409
     assert "ingest" in r.json()["detail"].lower()
 
-    monkeypatch.setattr(main_mod, "_startup_ingest_active", False)
+    from app import runtime_config
+    monkeypatch.setattr(runtime_config, "_startup_ingest_active", False)
     r = client.post("/api/admin/evals/run", json=body, headers=admin_headers)
     assert r.status_code == 400
 
 
 def test_score_retrieval_multi_source_and_basename():
-    from app.main import _score_retrieval
+    from app.eval_runner import _score_retrieval
 
     # Multi-needle label: ANY listed source counts as the hit (rank of first match).
     hit, rank = _score_retrieval(
@@ -271,13 +273,19 @@ def test_safety_rules_exist_and_cover_both_prompt_paths():
     """The portable guardrail block must cover the three failure modes the
     measured runs exposed, and chat + eval must BOTH carry it (the eval
     measures the prompt the real system sends)."""
-    import app.main as main_mod
+    import app.eval_runner as main_mod
+    from app import runtime_config
 
     for needle in ("Instruction-override", "Credentials", "Compensation"):
-        assert needle in main_mod._SAFETY_RULES
-    src = open(main_mod.__file__, encoding="utf-8", errors="ignore").read()
-    assert src.count("_GROUNDING_RULES + _SAFETY_RULES") >= 2, \
-        "chat and eval system prompts must both append the safety rules"
+        assert needle in runtime_config._SAFETY_RULES
+    # The two prompt paths live in two modules now - chat in main, the measured
+    # prompt in the eval engine - so it is one occurrence apiece rather than two
+    # in one file. Checking both BY NAME is what keeps "BOTH carry it" true
+    # after the split instead of quietly becoming "one of them does".
+    from app import main as _main_mod
+    for _mod in (_main_mod, main_mod):
+        _src = open(_mod.__file__, encoding="utf-8", errors="ignore").read()
+        assert "_GROUNDING_RULES + _SAFETY_RULES" in _src,             f"{_mod.__name__} must append the safety rules to its system prompt"
 
 
 # -- Answer-mode judge ---------------------------------------------------------
@@ -437,7 +445,7 @@ def test_judge_freshness_contract(monkeypatch):
 def test_answer_mode_run_auto_scores(client, admin_headers, monkeypatch):
     """End-to-end: a non-retrieval-only run generates, judges, and stamps
     score + judge_rationale + the runs-list answer_pct headline."""
-    import app.main as main_mod
+    import app.eval_runner as main_mod
     import app.eval_judge as judge_mod
 
     r = client.post("/api/admin/evals/questions",
@@ -501,7 +509,7 @@ def test_answer_mode_rag_run_judges_faithfulness(client, admin_headers, monkeypa
     """End-to-end: a RAG answer run captures the grounding material the model
     was actually given (context_text) and stamps faithfulness + the
     faithful_pct headline alongside correctness."""
-    import app.main as main_mod
+    import app.eval_runner as main_mod
     import app.eval_judge as judge_mod
     from app.db import get_session
     from app.models import EvalResult
@@ -585,7 +593,7 @@ def test_holdout_rows_split_headline_and_withhold_diagnostics(client, admin_head
     (3) structurally withholds the miss-diagnosis material - the Gaps list,
     response, rationales, rank, and retrieved sources - so the tune loop can
     see THAT a holdout row failed but never WHY."""
-    import app.main as main_mod
+    import app.eval_runner as main_mod
     import app.eval_judge as judge_mod
 
     r = client.post("/api/admin/evals/questions",
@@ -693,7 +701,7 @@ def test_holdout_rows_split_headline_and_withhold_diagnostics(client, admin_head
 def test_answer_mode_errored_answer_is_a_fail(client, admin_headers, monkeypatch):
     """A generation error means the user got no answer - that is a FAIL (0),
     not unscored; unscored is reserved for judge failures."""
-    import app.main as main_mod
+    import app.eval_runner as main_mod
 
     r = client.post("/api/admin/evals/questions",
                     json={"question": "Errored answer question (judge e2e)",
@@ -741,7 +749,7 @@ def test_answer_mode_errored_answer_is_a_fail(client, admin_headers, monkeypatch
 
 def test_retrieval_only_run_stays_unjudged(client, admin_headers, monkeypatch):
     """retrieval_only runs must not generate OR judge - score/rationale null."""
-    import app.main as main_mod
+    import app.eval_runner as main_mod
     import app.eval_judge as judge_mod
 
     r = client.post("/api/admin/evals/questions",
@@ -822,7 +830,7 @@ def test_honesty_rows_own_metric_and_review_list(client, admin_headers, monkeypa
     the cohort as its own honesty_pct, and (3) lists the row in the recall
     endpoint's honesty review list (diagnosable by design - no holdout-style
     withholding), not the guardrail list."""
-    import app.main as main_mod
+    import app.eval_runner as main_mod
     import app.eval_judge as judge_mod
 
     r = client.post("/api/admin/evals/questions",
@@ -930,7 +938,7 @@ def test_injection_rows_run_last_with_plant_and_cleanup(monkeypatch):
     planted exactly once - after every non-injection row has already run
     against the clean corpus - and the finally-cleanup removes it. Planted any
     earlier, the poison would sit in every other cohort's retrieval pool."""
-    import app.main as main_mod
+    import app.eval_runner as main_mod
     from app.db import get_session
     from app.models import EvalResult
 
@@ -978,7 +986,7 @@ def test_injection_cleanup_runs_even_when_the_run_dies(monkeypatch):
     """A leftover plant moves the corpus fingerprint AND leaves live poison in
     chat retrieval - the finally-cleanup must run even when the job dies
     mid-row."""
-    import app.main as main_mod
+    import app.eval_runner as main_mod
 
     events = []
 

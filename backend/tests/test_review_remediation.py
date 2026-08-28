@@ -44,7 +44,7 @@ def test_stream_error_returns_a_stable_code_not_the_exception_text(client, admin
     hostnames, and the stream reaches any authenticated caller. The operator
     gets the detail in the log; the client gets a correlation id."""
     secret = "postgres://admin:hunter2@10.0.0.7:5432/internal"
-    with patch("app.main.stream_chat", side_effect=RuntimeError(secret)):
+    with patch("app.eval_runner.stream_chat", side_effect=RuntimeError(secret)):
         r = client.post("/api/chat",
                         json={"prompt": "hello", "session_id": "leak-probe", "use_rag": False},
                         headers=admin_headers)
@@ -92,7 +92,7 @@ def test_crashed_eval_run_is_marked_complete_and_failed():
     """complete=True used to sit at the end of the try, so a run that died
     mid-loop reported "running" forever and the operator waited on a job that
     was never coming back."""
-    from app import main as m
+    from app import eval_runner as m   # the engine owns _eval_runs / _run_eval_job
     run_id = "crash-probe"
     m._eval_runs.pop(run_id, None)
     with patch.object(m, "get_system_prompt", side_effect=RuntimeError("db gone")):
@@ -114,18 +114,22 @@ def test_startup_ingest_flag_is_set_before_the_task_is_scheduled():
     until the loop first ran that coroutine - a real window on the wrong side
     of the guard."""
     from app import main as m
-    m._startup_ingest_active = False
+    # The flag is a runtime_config module attribute now: a bare
+    # `runtime_config._startup_ingest_active = ...` would create a phantom on app.main
+    # that nothing reads, silently.
+    from app import runtime_config
+    runtime_config._startup_ingest_active = False
     observed = {}
 
     def _capture(coro):
-        observed["flag_when_scheduled"] = m._startup_ingest_active
+        observed["flag_when_scheduled"] = runtime_config._startup_ingest_active
         coro.close()  # never actually run the sync in a unit test
         return None
 
     with patch.object(m.asyncio, "create_task", _capture):
         asyncio.run(m.startup_tasks())
     assert observed["flag_when_scheduled"] is True
-    m._startup_ingest_active = False
+    runtime_config._startup_ingest_active = False
 
 
 # -- Backup covers the vector store, not only the app databases ----------------
@@ -228,6 +232,10 @@ def test_startup_ingest_flag_clears_even_if_the_sync_escapes():
     import asyncio
     import inspect
     from app import main as m
+    # The flag is a runtime_config module attribute now: a bare
+    # `runtime_config._startup_ingest_active = ...` would create a phantom on app.main
+    # that nothing reads, silently.
+    from app import runtime_config
     src = inspect.getsource(m.startup_tasks)
     assert "_bg_guarded" in src and "finally:" in src, (
         "no finally guarantees _startup_ingest_active clears")
@@ -235,7 +243,7 @@ def test_startup_ingest_flag_clears_even_if_the_sync_escapes():
     # Drive the real guard: patch _bg's work to explode and confirm the wrapper
     # still disarms the flag. asyncio.run re-raises, which is correct - the
     # point is the flag state after, not that the error is swallowed.
-    m._startup_ingest_active = True
+    runtime_config._startup_ingest_active = True
 
     async def _boom():
         raise RuntimeError("sync died")
@@ -244,11 +252,11 @@ def test_startup_ingest_flag_clears_even_if_the_sync_escapes():
         try:
             await _boom()
         finally:
-            m._startup_ingest_active = False
+            runtime_config._startup_ingest_active = False
 
     with pytest.raises(RuntimeError):
         asyncio.run(_guarded())
-    assert m._startup_ingest_active is False, "the flag survived a failed sync"
+    assert runtime_config._startup_ingest_active is False, "the flag survived a failed sync"
 
 
 def test_docs_orphan_prune_failure_is_reported_not_swallowed():

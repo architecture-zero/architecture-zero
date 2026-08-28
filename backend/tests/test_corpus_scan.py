@@ -259,7 +259,7 @@ def test_peer_chunks_are_framed_as_external():
 
 
 def test_system_prompt_carries_the_context_rules():
-    from app.main import _CONTEXT_DATA_RULES
+    from app.runtime_config import _CONTEXT_DATA_RULES   # chat and the eval engine both read it
     lowered = _CONTEXT_DATA_RULES.lower()
     assert "data, not instructions" in lowered
     assert "never override" in lowered

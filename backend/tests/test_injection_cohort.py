@@ -132,7 +132,7 @@ def test_recall_surface_excludes_injection_from_recall_and_gaps(client, admin_he
     _seed_results(run_id)
     # The endpoint persists a rag-metric file as a side effect; keep this
     # call pure so tests asserting a pristine environment stay valid.
-    import app.main as main_mod
+    import app.eval_runner as main_mod
     monkeypatch.setattr(main_mod, "_persist_rag_metric", lambda *a, **k: None)
     body = client.get(f"/api/admin/evals/recall?run_id={run_id}",
                       headers=admin_headers).json()

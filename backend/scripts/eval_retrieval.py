@@ -93,7 +93,7 @@ def _acquire_lock() -> bool:
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.main import _score_retrieval  # noqa: E402  (module init is idempotent)
+from app.eval_runner import _score_retrieval  # noqa: E402  (module init is idempotent)
 from app.db import get_session          # noqa: E402
 from app.models import EvalQuestion     # noqa: E402
 from app.rerank import retrieve         # noqa: E402
@@ -338,7 +338,8 @@ def run_answers(questions, n_results, label=""):
     import datetime as _dt
     import uuid as _uuid
 
-    from app.main import _run_eval_job, DEFAULT_MODEL, EVAL_JUDGE_MODEL_DEFAULT
+    from app.eval_runner import _run_eval_job
+    from app.runtime_config import DEFAULT_MODEL, EVAL_JUDGE_MODEL_DEFAULT
     from app.config import get_config
     from app.providers import _provider_for_model
     from app.models import EvalResult
@@ -524,7 +525,7 @@ def run_cohort(questions, top_k, misses_only, label="", stamp=False):
     # to be.
     if stamp and scored:
         import datetime as _dt
-        from app.main import _persist_rag_metric
+        from app.eval_runner import _persist_rag_metric
         _persist_rag_metric("script:eval_retrieval",
                             _dt.datetime.utcnow().isoformat(),
                             {"pct": pct, "hits": hits, "total": scored})
