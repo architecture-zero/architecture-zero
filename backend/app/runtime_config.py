@@ -31,6 +31,7 @@ from app.providers import _get_runtime, _ollama_headers, OLLAMA_BASE
 # by design and nothing asserts on its body.
 DEFAULT_MODEL               = os.getenv("DEFAULT_MODEL", "qwen3:8b")
 RAG_ONLY_MODE               = os.getenv("RAG_ONLY_MODE", "false").lower() == "true"
+RAG_SIMILARITY_THRESHOLD    = float(os.getenv("RAG_SIMILARITY_THRESHOLD", "0.40"))
 PII_SCAN_MODE               = os.getenv("PII_SCAN_MODE", "off").lower()
 # Private by default. Guest (unauthenticated) access is OFF unless explicitly
 # opted in here AND enabled in admin config. Without this env var set, the

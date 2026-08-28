@@ -46,14 +46,11 @@ def test_nothing_under_app_imports_app_main():
         f"app/runtime_config.py instead: {offenders}")
 
 
-# Names that are imported for their side effect or re-exported on purpose.
-# Keep this list short and state the reason; it is the escape hatch that would
-# otherwise let the whole check rot.
-_ALLOWED_UNUSED = {
-    # app/providers.py declares the key names as module API even where this
-    # module does not read them itself.
-    ("main.py", "OPENAI_KEY"),
-}
+# Names imported for a side effect or re-exported on purpose. Keep it short and
+# state the reason - this is the escape hatch that would otherwise let the whole
+# check rot. It is checked two-sided (see below): an entry that stops being
+# needed fails, so the list cannot outlive its reasons.
+_ALLOWED_UNUSED = set()
 
 
 def test_no_dead_module_level_imports_under_app():
@@ -63,7 +60,7 @@ def test_no_dead_module_level_imports_under_app():
     deliberately avoided by not re-exporting BACKUP_STATUS_DIR - and _ollama_get
     moving to runtime_config left exactly one behind on the first try.
     """
-    dead = []
+    dead, exemptions_used = [], set()
     for path in _modules():
         tree = _tree(path)
         bound = {}
@@ -85,9 +82,15 @@ def test_no_dead_module_level_imports_under_app():
             if name in used:
                 continue
             if (path.name, name) in _ALLOWED_UNUSED:
+                exemptions_used.add((path.name, name))
                 continue
             dead.append(f"{path.relative_to(APP.parent)}:{lineno} {name}")
     assert not dead, (
         "module-level imports with no reader. Prune them in the same commit "
         "that orphaned them, or add to _ALLOWED_UNUSED with a reason:\n  "
         + "\n  ".join(sorted(dead)))
+    # Two-sided, same reasoning as PUBLIC_BY_DESIGN and REQUIRED_GUARD: an
+    # exemption that stops being needed has to go, or the list becomes a place
+    # where a real dead import can hide behind a stale reason.
+    stale = sorted(_ALLOWED_UNUSED - exemptions_used)
+    assert not stale, f"_ALLOWED_UNUSED entries no longer needed - remove them: {stale}"

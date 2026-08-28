@@ -143,10 +143,16 @@ def test_models_endpoint_lists_keyed_provider_with_fallback(client, admin_header
     # Key present + live /models unreachable -> the provider still appears,
     # served from the static fallback list (the picker must never be empty
     # for a keyed provider).
-    import app.main as m
+    # Both targets follow the code: _compat_models_cache is DEFINED in the
+    # settings router now, and main no longer imports requests at all - so the
+    # old "app.main.requests.get" would raise at patch setup rather than quietly
+    # patching a module main does not read. Kept as a patch on the module object
+    # rather than a scoped mock, deliberately: that global reach is also what
+    # blanks runtime_config._ollama_get, which is why this test passes today.
+    import app.routers.settings as m
     monkeypatch.setenv("GEMINI_API_KEY", "gem-key")
     m._compat_models_cache.clear()
-    with patch("app.main.requests.get", side_effect=Exception("offline")):
+    with patch("app.routers.settings.requests.get", side_effect=Exception("offline")):
         r = client.get("/api/models", headers=admin_headers)
     assert r.status_code == 200
     groups = {g["provider"]: g for g in r.json()["groups"]}
@@ -171,3 +177,24 @@ def test_settings_roundtrip_gemini_key(client, admin_headers):
                    json={"gemini_api_key": "***"})
     assert r.json()["gemini_key_set"] is True
     set_config("gemini_api_key", "")  # don't leak state into other tests
+
+
+def test_model_config_endpoint_still_resolves_after_the_settings_split(client, admin_headers):
+    """/api/admin/model-config had NO coverage, and the split manifest wanted to
+    move _model_config_dict into the settings router - where its two real
+    callers, both admin routes, would have raised NameError at request time with
+    a green suite to say otherwise.
+
+    So this pins the seam rather than the feature: the handler resolves every
+    name it closes over (_config_or_default and DEFAULT_MODEL now from
+    runtime_config, EVAL_JUDGE_MODEL_DEFAULT and get_config still main's) and
+    returns its real shape. It exists to fail when a later commit moves the
+    helper away from its callers.
+    """
+    r = client.get("/api/admin/model-config", headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    for key in ("default", "chat", "eval_writer", "eval_judge"):
+        assert key in body, key
+        assert "value" in body[key] and "overridden" in body[key], key
+    assert "same_family_warning" in body
