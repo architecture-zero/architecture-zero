@@ -1,5 +1,5 @@
 from datetime import datetime, date, timedelta
-from sqlalchemy import text, func
+from sqlalchemy import text
 from app.db import get_session
 from app.models import Message
 

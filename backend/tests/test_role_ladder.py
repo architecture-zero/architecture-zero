@@ -107,3 +107,29 @@ def test_setup_disabled_once_owner_exists(client):
     # so the public bootstrap can never mint a second superuser.
     r = client.post("/api/auth/setup", json={"username": "late", "password": "Whatever1"})
     assert r.status_code == 403
+
+
+def test_the_two_guards_the_split_moved_hold_behaviourally(client, admin_headers):
+    """The structural pin in test_route_authz_wiring proves the dependency is
+    declared; this proves it BITES, through real tokens, for the two routes the
+    system-router extraction carried by hand.
+
+    Both were provably unguarded-in-effect at one point: downgrading them to a
+    bare get_current_user left the whole suite at its exact baseline. An Admin
+    is the right prober for the owner-only route and a Member for the scoped
+    one, because an Admin legitimately holds view_analytics - testing that one
+    with an Admin token would pass no matter what the guard said.
+    """
+    owner_headers = admin_headers  # conftest setup account is the Owner
+    admin_h  = _make(client, owner_headers, "guard_admin", "admin")
+    member_h = _make(client, owner_headers, "guard_member", "member")
+
+    # require_owner: discloses disk usage, DB latency, which provider keys are
+    # present, and fires alert webhooks inline - Admin must not reach it.
+    assert client.get("/api/health/detailed", headers=owner_headers).status_code == 200
+    assert client.get("/api/health/detailed", headers=admin_h).status_code == 403
+
+    # require_permission("view_analytics"): the operator trust panel, which adds
+    # provenance and working bands over the public variant.
+    assert client.get("/api/admin/trust", headers=admin_h).status_code == 200
+    assert client.get("/api/admin/trust", headers=member_h).status_code == 403

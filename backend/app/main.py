@@ -1780,7 +1780,7 @@ def admin_set_model_config(body: ModelConfigUpdate,
 
 from app.providers import (ENABLE_OLLAMA, ENABLE_ANTHROPIC, ENABLE_OPENAI, OLLAMA_BASE,
                            OPENAI_KEY, ANTHROPIC_KEY, OPENAI_COMPAT, compat_key_configured,
-                           _compat_base, _compat_headers, _get_runtime, _ollama_headers)
+                           _compat_base, _compat_headers, _get_runtime)
 
 
 # -- Provider / Instance Settings ---------------------------------------------

@@ -24,7 +24,6 @@ tuned-vs-holdout and the panel publishes the GAP - the overfitting number.
 Blending holdout into one "correctness" would hide exactly the number the
 holdout exists to expose.
 """
-import datetime as _dt
 import time
 
 from app.db import get_session
