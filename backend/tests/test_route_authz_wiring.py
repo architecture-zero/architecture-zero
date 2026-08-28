@@ -11,6 +11,12 @@ Two-sided on purpose: a new route without auth fails loudly (add the
 dependency, or make the public choice explicit here), and a stale allowlist
 entry fails too (a route that BECAME protected must leave the list, or the
 list rots into fiction). Every entry below states why it is public.
+
+That is only the first half of this file. The second half pins each route's
+exact PRIVILEGE LEVEL, because the sweep above answers a yes/no question and
+owner-only, scoped and any-authenticated all answer it identically - a guard
+retyped at the wrong level during a refactor was invisible to every test in the
+suite until REQUIRED_GUARD existed.
 """
 from fastapi.routing import APIRoute
 

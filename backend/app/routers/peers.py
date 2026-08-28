@@ -9,9 +9,9 @@ same thing while silently granting owner to whatever seventh route lands here
 next, and it would hide a downgrade from the level-aware pin in
 test_route_authz_wiring.py.
 
-The SERVE side of Eco Mode (`GET /api/query-kb`) deliberately stays in main:
-it is public-by-design behind the X-Peer-Key middleware, and it shares nothing
-with these six.
+The SERVE side of Eco Mode (`GET /api/query-kb`) is deliberately NOT here: it
+is public-by-design behind the X-Peer-Key middleware and shares nothing with
+these six, so it went with the chat router, whose retrieval path it reuses.
 """
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel

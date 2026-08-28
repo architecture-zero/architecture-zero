@@ -251,7 +251,7 @@ def burn_setup_claim_code() -> None:
 # Two bounds, deliberately different in kind:
 #   PER CHALLENGE (here) - one sign-in attempt gets a small number of tries, then
 #   that challenge is dead. Burned outright on success so it cannot be replayed.
-#   PER ACCOUNT (main.py, reusing the EXISTING lockout) - failures also count
+#   PER ACCOUNT (routers/auth.py, reusing the EXISTING lockout) - failures also count
 #   toward the same failed_attempts/locked_until the password path uses, so
 #   grinding fresh challenges walks into the account lock instead of resetting a
 #   counter every time.

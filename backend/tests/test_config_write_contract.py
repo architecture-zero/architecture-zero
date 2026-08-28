@@ -60,7 +60,8 @@ def test_served_prompt_always_carries_the_rails(monkeypatch):
 
     WHERE the rails are appended differs between builds: some append them
     inside get_system_prompt (config.PROMPT_RAILS), others at the single
-    LLM-facing call site in main.py (_GROUNDING_RULES / _SAFETY_RULES). This
+    LLM-facing call site in routers/chat.py (_GROUNDING_RULES / _SAFETY_RULES,
+    both defined in runtime_config). This
     asserts the property only where get_system_prompt owns it; where rails are
     appended at the call site, that build's own prompt-rails test pins them
     instead - rather than hardcoding one architecture and failing elsewhere.

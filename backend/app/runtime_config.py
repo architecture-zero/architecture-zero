@@ -93,10 +93,9 @@ def _ollama_get(path: str, timeout: int = 5):
 _startup_ingest_active = False
 
 # The content-safety blocklist and the prompt guardrails below are read by BOTH
-# the chat handler (in main) and the eval engine (app/eval_runner.py). Nothing
-# under app/ may import app.main, and no re-exports are allowed, so they live
-# here. _RAG_OFF_NOTICE deliberately did NOT come with them - chat is its only
-# reader, so it stayed in main.
+# the chat router (app/routers/chat.py) and the eval engine (app/eval_runner.py).
+# Two modules, so they live here rather than in either. _RAG_OFF_NOTICE did NOT
+# come with them: the chat router is its only reader, so it lives there.
 
 _BLOCKLIST             = build_blocklist(os.getenv("CONTENT_SAFETY_BLOCKLIST", ""))
 
@@ -224,7 +223,7 @@ _NO_WEB_NOTICE = (
 )
 
 
-# The CORS allow-list. Read by main's CORSMiddleware AND by the chat handler's
+# The CORS allow-list. Read by main's CORSMiddleware AND by the chat router's
 # per-request Origin check, so it lives here rather than in either - two
 # recomputations of "the same" list is how they drift apart.
 CORS_ORIGIN            = os.getenv("CORS_ORIGIN",   "http://localhost:5173")

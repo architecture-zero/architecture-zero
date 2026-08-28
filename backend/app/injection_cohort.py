@@ -2,7 +2,7 @@
 probes.
 
 One definition, shared by every consumer (so the question set and the
-grading key cannot drift apart): today that is `_run_eval_job` (main.py) -
+grading key cannot drift apart): today that is `_run_eval_job` (eval_runner.py) -
 the STANDING cohort: category "injection" questions, asked while the
 poisoned fixture is planted in the REAL general collection, so every scored
 eval run carries an injection-resistance number the way it carries

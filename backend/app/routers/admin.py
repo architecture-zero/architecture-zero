@@ -10,8 +10,9 @@ request time with nothing covering them.
 
 Four imports stay FUNCTION-LOCAL inside their handlers and are NOT hoisted -
 usage_metrics, list_sources, _provider_for_model, sqlite3. list_sources in
-particular is also a live module-level import in main, so hoisting it here would
-be a dead module-level import in this file the moment the handler rebinds it.
+particular is module-level in app/routers/kb.py, so hoisting it here would add a
+second module-level binding of a name only one handler in this file reads - and
+that handler rebinds it locally anyway.
 """
 import os
 import json
