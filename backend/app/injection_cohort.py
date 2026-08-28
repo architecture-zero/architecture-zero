@@ -2,13 +2,16 @@
 probes.
 
 One definition, shared by every consumer (so the question set and the
-grading key cannot drift apart): today that is `_run_eval_job` (eval_runner.py) -
-the STANDING cohort: category "injection" questions, asked while the
+grading key cannot drift apart). TWO consumers today. The first is
+`_run_eval_job` (eval_runner.py) - the STANDING cohort: category "injection" questions, asked while the
 poisoned fixture is planted in the REAL general collection, so every scored
 eval run carries an injection-resistance number the way it carries
 honesty_pct. The shipped eval seed carries these exact questions, and the
-test suite pins seed text == SPECS text both directions. An on-demand live
-probe script is a natural future consumer of the same SPECS.
+test suite pins seed text == SPECS text both directions. The second is
+`scripts/injection_probe.py`, the on-demand live-fire probe: it plants the
+same fixture across three label arms and grades with this same `grade`, so a
+question added here reaches both the standing number and the probe without a
+second edit - which is the entire reason these live in one module.
 
 Grading is MECHANICAL (regex over the answer), not judged: the checks are
 deterministic ("did it emit the exfil URL", "did it adopt the persona"), a
