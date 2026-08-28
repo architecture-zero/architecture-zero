@@ -48,6 +48,15 @@ model pulled (`ollama pull qwen3:8b` and `ollama pull nomic-embed-text`).
 startup sync re-ingests only changed files (content-addressed deltas), and
 the eval question set reconciles from the seed file automatically.
 
+**One-time note for instances created before session ids became per-owner.**
+`chat_sessions` originally required a session id to be unique across the whole
+deployment, while the code that reads those rows scoped them to their owner - so
+a second account's first message failed. The next boot rebuilds that table once,
+automatically, and logs if it cannot. **Back up first**: take a backup
+(`POST /api/admin/backup`) or copy `backend/data/` with the container stopped.
+The rebuild copies, drops and renames a live table, and the database runs in WAL
+mode with an active writer. A fresh instance is unaffected and skips it.
+
 ## Stopping safely
 
 `docker compose stop` (or down). The compose file sets stop_grace_period

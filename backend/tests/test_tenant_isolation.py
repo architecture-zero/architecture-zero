@@ -82,6 +82,107 @@ def test_history_endpoint_is_owner_scoped(client, admin_headers):
     assert any(m["content"] == "admin-only-secret" for m in still["messages"])
 
 
+# -- Session ids are per-owner, not global ------------------------------------
+# chat_sessions.session_id shipped UNIQUE across the whole table while the meta
+# upsert looks rows up owner-scoped. The client default session id is the same
+# string for everyone, so the SECOND account's FIRST message INSERTed into a key
+# the first account held and raised an uncaught IntegrityError. Relaxing that
+# constraint is only half the fix: the global unique was also the only thing
+# keeping list_sessions' meta map 1:1, so these pin both halves.
+
+def test_two_owners_can_hold_the_same_session_id(client, admin_headers):
+    """Pre-fix this does not return 500 - it RAISES out of the endpoint, because
+    the app registers no exception handler and TestClient re-raises. So assert
+    the success, not a status code the old code never got to return."""
+    owner_id = client.get("/api/auth/me", headers=admin_headers).json()["id"]
+    sid = "shared-sid-two-owners"
+
+    r = client.post("/api/sessions",
+                    json={"session_id": sid, "name": "owner-thread"},
+                    headers=admin_headers)
+    assert r.status_code == 200, r.text
+
+    client.post("/api/users",
+                json={"username": "carol_sid", "password": "CarolPass1", "role": "member"},
+                headers=admin_headers)
+    carol = client.post("/api/auth/login",
+                        json={"username": "carol_sid", "password": "CarolPass1"})
+    assert carol.status_code == 200, carol.text
+    carol_headers = {"Authorization": f"Bearer {carol.json()['access_token']}"}
+    carol_id = client.get("/api/auth/me", headers=carol_headers).json()["id"]
+
+    r = client.post("/api/sessions",
+                    json={"session_id": sid, "name": "carol-thread"},
+                    headers=carol_headers)
+    assert r.status_code == 200, r.text
+
+    # Each owner keeps their OWN meta - not one row they overwrite in turn.
+    assert h.get_session_meta(sid, owner_id)["name"] == "owner-thread"
+    assert h.get_session_meta(sid, carol_id)["name"] == "carol-thread"
+
+
+def test_session_listing_never_shows_another_owners_session_name(client, admin_headers):
+    """The leak that relaxing the unique would have opened. Session names are
+    auto-derived from the first prompt, so a mis-keyed meta map puts one user's
+    own words in another user's session list."""
+    owner_id = client.get("/api/auth/me", headers=admin_headers).json()["id"]
+    sid = "leak-probe-sid"
+
+    carol = client.post("/api/auth/login",
+                        json={"username": "carol_sid", "password": "CarolPass1"})
+    if carol.status_code != 200:
+        client.post("/api/users",
+                    json={"username": "carol_sid", "password": "CarolPass1", "role": "member"},
+                    headers=admin_headers)
+        carol = client.post("/api/auth/login",
+                            json={"username": "carol_sid", "password": "CarolPass1"})
+    carol_headers = {"Authorization": f"Bearer {carol.json()['access_token']}"}
+    carol_id = client.get("/api/auth/me", headers=carol_headers).json()["id"]
+
+    # Both own a session under the same id, each with a message so it lists.
+    h.save_message(sid, "user", "owner private wording", user_id=owner_id)
+    h.save_message(sid, "user", "carol private wording", user_id=carol_id)
+    h.upsert_session_meta(sid, name="OWNER-SECRET-TITLE", user_id=owner_id)
+    h.upsert_session_meta(sid, name="CAROL-SECRET-TITLE", user_id=carol_id)
+
+    owner_rows = {r["session"]: r for r in h.list_sessions(user_id=owner_id)}
+    carol_rows = {r["session"]: r for r in h.list_sessions(user_id=carol_id)}
+    assert owner_rows[sid]["name"] == "OWNER-SECRET-TITLE"
+    assert carol_rows[sid]["name"] == "CAROL-SECRET-TITLE"
+
+
+def test_guest_lane_cannot_hold_two_meta_rows_for_one_session_id(client):
+    """NULLs are DISTINCT under a composite unique, so (sid, NULL) twice would
+    satisfy UNIQUE(session_id, user_id) and leave the owner-scoped lookup
+    picking between two rows. A partial unique index on the guest lane is what
+    binds it.
+
+    Asserted at the CONSTRAINT, not through upsert_session_meta: that function
+    looks the row up scoped first and updates what it finds, so the app path
+    never reaches a second INSERT single-threaded. The index is what holds when
+    two anonymous requests race - which is exactly the case a test cannot stage
+    and the schema must cover anyway.
+    """
+    from sqlalchemy.exc import IntegrityError
+    from app.db import get_session
+    from app.models import ChatSession
+
+    sid = "guest-dupe-probe"
+    row = dict(session_id=sid, user_id=None, name="first",
+               category="general", created_at="t0", updated_at="t0")
+    with get_session() as db:
+        db.add(ChatSession(**row))
+
+    with pytest.raises(IntegrityError):
+        with get_session() as db:
+            db.add(ChatSession(**dict(row, name="second")))
+
+    # ...while a DIFFERENT id on the guest lane is still fine, so the index
+    # bounds duplicates rather than the lane itself.
+    with get_session() as db:
+        db.add(ChatSession(**dict(row, session_id="guest-dupe-probe-2")))
+
+
 # -- Access-tier retrieval isolation ------------------------------------------
 import app.rerank as rerank
 from app.permissions import (

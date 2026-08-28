@@ -177,13 +177,23 @@ def list_sessions(limit: int = 50, user_id: int | None = None,
         rows = [dict(r._mapping) for r in result]
 
         session_ids = [r["session"] for r in rows]
+        meta_map = {}
         if session_ids:
-            meta_rows = db.query(ChatSession).filter(
-                ChatSession.session_id.in_(session_ids)
-            ).all()
-            meta_map = {m.session_id: m for m in meta_rows}
-        else:
-            meta_map = {}
+            q = db.query(ChatSession).filter(
+                ChatSession.session_id.in_(session_ids))
+            if not all_users:
+                # Scope the META the same way the rows above are scoped. Session
+                # ids are unique per OWNER, so an unscoped fetch keyed by
+                # session_id alone can hand one user's session NAME - derived
+                # from their own first prompt - to another user's listing. The
+                # old global unique was the only thing making this map 1:1.
+                q = (q.filter(ChatSession.user_id.is_(None)) if user_id is None
+                     else q.filter(ChatSession.user_id == user_id))
+            # all_users is the operator aggregate and the GROUP BY above already
+            # merges owners, so there is no single right meta row - take the
+            # oldest deterministically rather than whatever the engine yields last.
+            for m in q.order_by(ChatSession.id).all():
+                meta_map.setdefault(m.session_id, m)
 
         for row in rows:
             meta = meta_map.get(row["session"])

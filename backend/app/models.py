@@ -60,7 +60,7 @@ class ChatSession(Base):
     __tablename__ = "chat_sessions"
 
     id         = Column(Integer, primary_key=True, autoincrement=True)
-    session_id = Column(String(255), nullable=False, unique=True)
+    session_id = Column(String(255), nullable=False)
     # Tenant owner: the session list + meta ops scope to this, so one user
     # can't see or rename another's sessions. Nullable = guest/legacy.
     user_id    = Column(Integer, nullable=True)
@@ -69,9 +69,25 @@ class ChatSession(Base):
     created_at = Column(String(50), nullable=False)
     updated_at = Column(String(50), nullable=False)
 
+    # Session ids are namespaced PER OWNER, not globally. The meta upsert looks
+    # a row up owner-scoped and INSERTs when it finds none, so a global unique
+    # meant a second account's first message INSERTed into a key the first
+    # account already held - an uncaught IntegrityError on their opening turn,
+    # since the client default session id is the same string for everyone.
+    __table_args__ = (
+        UniqueConstraint("session_id", "user_id", name="uq_chat_sessions_sid_user"),
+    )
+
 
 Index("idx_chat_sessions_sid", ChatSession.session_id)
 Index("idx_chat_sessions_user", ChatSession.user_id)
+# The composite constraint above cannot bind guest rows: SQL treats NULL as
+# distinct from NULL, so every anonymous row would satisfy it and two guests on
+# one session id would silently get two meta rows for the scoped lookup to pick
+# between. This partial unique keeps the guest lane to one row per session id.
+Index("uq_chat_sessions_sid_guest", ChatSession.session_id, unique=True,
+      sqlite_where=ChatSession.user_id.is_(None),
+      postgresql_where=ChatSession.user_id.is_(None))
 
 
 class Feedback(Base):

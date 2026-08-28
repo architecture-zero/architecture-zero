@@ -50,11 +50,10 @@ def _pin_the_in_memory_branch():
         yield
 
 
-# Distinct per caller on purpose. chat_sessions.session_id is UNIQUE across the
-# whole table while the meta upsert looks it up owner-scoped, so a guest and a
-# signed-in user both landing on the default id make the second one INSERT into
-# a key that is already taken. That is a defect in its own right and not this
-# control's business - these name their own sessions so they measure the budget.
+# Distinct per caller for readability: the guest and authenticated cases read
+# more clearly with their own session names, and the budget is what is under
+# test here. Session ids are namespaced per owner, so sharing one would be
+# harmless - see test_tenant_isolation.py for the tests that pin that.
 _GUEST_SESSION = "guest-budget-test"
 _AUTH_SESSION = "guest-budget-test-auth"
 

@@ -66,7 +66,82 @@ def _run_migrations():
                 pass  # column already exists
 
 
+def _rebuild_chat_sessions_unique():
+    """One-time rebuild of chat_sessions, for databases created before session
+    ids became per-owner.
+
+    The table shipped with a GLOBAL unique on session_id while the meta upsert
+    looked rows up owner-scoped, so a second account's first message INSERTed
+    into a key the first account held and raised. create_all() never alters an
+    existing table and SQLite cannot drop an inline UNIQUE, so repairing an
+    already-deployed database needs a rebuild - which is why this does not
+    belong in _run_migrations() above, whose contract is ADD COLUMN only.
+
+    Guarded and idempotent: it fires only when the 1-column unique auto-index is
+    actually present, so a fresh database (already built correctly by
+    create_all) and an already-repaired one both fall straight through. Logs on
+    failure rather than swallowing - a schema repair that quietly does nothing
+    is the thing being fixed here.
+    """
+    if not _sqlite:
+        return
+    with engine.connect() as conn:
+        try:
+            if not conn.execute(text(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='chat_sessions'")).first():
+                return
+            stale = False
+            for row in conn.execute(text("PRAGMA index_list('chat_sessions')")):
+                name, unique, origin = row[1], row[2], row[3]
+                if not unique or origin != "u":
+                    continue
+                cols = [r[2] for r in conn.execute(
+                    text("PRAGMA index_info('%s')" % name))]
+                if cols == ["session_id"]:
+                    stale = True
+                    break
+            if not stale:
+                return
+            # No table carries a foreign key to chat_sessions, so the rename
+            # needs no FK juggling. The old constraint is strictly stricter than
+            # the new one, so the copy can never collide on existing data.
+            conn.execute(text("""
+                CREATE TABLE chat_sessions_rebuild (
+                    id INTEGER NOT NULL,
+                    session_id VARCHAR(255) NOT NULL,
+                    user_id INTEGER,
+                    name VARCHAR(300),
+                    category VARCHAR(100) NOT NULL,
+                    created_at VARCHAR(50) NOT NULL,
+                    updated_at VARCHAR(50) NOT NULL,
+                    PRIMARY KEY (id),
+                    CONSTRAINT uq_chat_sessions_sid_user
+                        UNIQUE (session_id, user_id))"""))
+            conn.execute(text(
+                "INSERT INTO chat_sessions_rebuild "
+                "(id, session_id, user_id, name, category, created_at, updated_at) "
+                "SELECT id, session_id, user_id, name, category, created_at, "
+                "updated_at FROM chat_sessions"))
+            conn.execute(text("DROP TABLE chat_sessions"))
+            conn.execute(text(
+                "ALTER TABLE chat_sessions_rebuild RENAME TO chat_sessions"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_chat_sessions_sid "
+                              "ON chat_sessions (session_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_chat_sessions_user "
+                              "ON chat_sessions (user_id)"))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_sessions_sid_guest "
+                "ON chat_sessions (session_id) WHERE user_id IS NULL"))
+            conn.commit()
+            print("chat_sessions: rebuilt with per-owner unique", flush=True)
+        except Exception as exc:
+            conn.rollback()
+            print("chat_sessions unique rebuild FAILED: %s" % exc, flush=True)
+
+
 def init_db():
     from app import models  # noqa: F401 - register all ORM models
     Base.metadata.create_all(engine)
+    _rebuild_chat_sessions_unique()
     _run_migrations()
