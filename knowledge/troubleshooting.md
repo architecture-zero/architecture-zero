@@ -148,6 +148,37 @@ the file and re-ingests exactly the missing chunks. If a collection
 refuses searches entirely after a crash, delete and re-ingest its sources
 - the content-addressed ingest rebuilds only what is missing.
 
+## Building the frontend fails: "Cannot find module @rollup/rollup-win32-x64-msvc"
+
+The printed message says npm has an optional-dependency bug and tells you to
+delete `node_modules` and `package-lock.json` and reinstall. On Windows that
+advice is usually wrong, and following it changes nothing - the module is
+already there and already correct.
+
+Check what is really happening:
+
+    node -e "require('@rollup/rollup-win32-x64-msvc')"
+
+If that answers `An Application Control policy has blocked this file`, the
+operating system is refusing to load the binary. Smart App Control - on by
+default on many Windows 11 installs - and corporate WDAC policies block
+unsigned native code, and npm modules ship unsigned as a matter of course.
+`npm run dev`, `npm test` and `npm run build` all fail this way; `npm run
+type-check` still works, because TypeScript is pure JavaScript.
+
+Do not turn Smart App Control off to fix this. It cannot be turned back on
+without reinstalling Windows, and it is doing its job - it has found no fault
+with the file, it simply has no basis to trust it. Build in a container
+instead, which is both unaffected and better isolated than running the same
+code directly on your machine:
+
+    cd frontend
+    docker run --rm -v "$PWD:/app" -v /app/node_modules -w /app node:20-alpine \
+      sh -c "npm ci && npm run build"
+
+Deployment is not affected at all: `docker compose up --build` already builds
+the client inside Linux.
+
 ## Uploads rejected: "File too large" or "Unsupported file type"
 
 The upload cap defaults to 50 MB (MAX_UPLOAD_MB). Supported types: md,

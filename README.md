@@ -177,13 +177,31 @@ cd backend && ../.venv/bin/python -m pytest tests -q
 The suite mocks the vector store and embedder: no network, no keys, no
 GPU.
 
-The client:
+The client, in a container - this works everywhere, including on machines
+whose OS refuses to load unsigned native modules (see below):
+
+```
+cd frontend
+docker run --rm -v "$PWD:/app" -v /app/node_modules -w /app node:20-alpine \
+  sh -c "npm ci && npm run type-check && npm test && npm run build"
+```
+
+Or on the host, if you have Node 20+ and your OS allows it:
 
 ```
 cd frontend && npm install
 npm run type-check && npm test && npm run build
 npm run dev          # proxies /api to the backend service
 ```
+
+**On Windows, the host path may not work, and the error will not tell you
+why.** Smart App Control (on by default on many Windows 11 installs) and
+corporate WDAC policies block unsigned native binaries, and npm ships native
+modules unsigned as a matter of course - so `vite` cannot load its own rollup
+binary. Every one of `npm run dev`, `npm test` and `npm run build` fails; only
+`npm run type-check` still works, since TypeScript is pure JavaScript. Use the
+container command above. Nothing about deploying is affected: `docker compose
+up --build` builds the client inside Linux, where the policy does not apply.
 
 CI runs both suites plus a full-history secret scan, a private-residue
 guard (a denylist grep that fails the build if lineage from the private
