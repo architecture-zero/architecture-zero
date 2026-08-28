@@ -81,6 +81,13 @@ and restart. With enforcement on, a password login for an account with no
 enrolled authenticator is refused outright - so flipping the flag before
 enrolling locks that account out until an admin resets its MFA.
 
+On an UNCLAIMED deployment there is no admin to do that resetting, so
+claiming is refused outright while REQUIRE_MFA is set. Claiming does not
+enroll a factor, enrolling needs a signed-in session, and signing in is what
+enforcement refuses - a deployment claimed under the flag would have an Owner
+who can never sign in, a spent claim code, and no way back short of editing
+the database. Claim with the flag off, enroll, then turn it on and restart.
+
 ## Connecting a model provider
 
 Out of the box the backend expects a local Ollama server (OLLAMA_BASE,

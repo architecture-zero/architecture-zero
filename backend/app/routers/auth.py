@@ -388,14 +388,38 @@ def setup_admin(request: ClaimDeploymentRequest, req: Request):
     security.setup_claim_code for the shape and its multi-worker caveat.
 
     ORDER IS DELIBERATE: throttle, then the claimed-ness 403, then the code,
-    then the password policy. The code check sits above the policy so an
-    anonymous caller cannot probe password rules without holding the code, and
-    below the 403 so the existing claimed-deployment contract is unchanged.
+    then the MFA-posture refusal, then the password policy. The code check sits
+    above both so an anonymous caller can probe neither the password rules nor
+    this deployment's MFA posture without holding the code, and below the 403 so
+    the existing claimed-deployment contract is unchanged.
     """
     check_setup_rate_limit(client_ip_from_request(req))
     if owner_exists():
         raise HTTPException(status_code=403, detail="Owner already exists")
     verify_setup_claim_code(request.claim_code)
+    # REQUIRE_MFA + an unclaimed deployment is a one-way door, so it is refused
+    # here rather than walked into. Claiming does not enroll a factor, and the
+    # login below refuses any account without one - while both enrolment routes
+    # need a session that login is what grants. So the claim would succeed, burn
+    # the code, and leave an Owner who can never sign in, a claim endpoint that
+    # now 403s, and no recovery short of editing the database.
+    #
+    # This was documented rather than enforced ("ORDER MATTERS: enroll accounts
+    # first, flip this second"), and prose is the wrong guard for a step whose
+    # failure is unrecoverable and whose natural operator instinct - harden the
+    # config before first boot - is exactly what triggers it. Refusing costs a
+    # restart with one env var changed; the alternative costs the deployment.
+    #
+    # Deliberately NOT solved by exempting the first Owner from the login
+    # refusal: that would mint a session with no factor on an instance whose
+    # whole posture says every session has one.
+    if REQUIRE_MFA:
+        raise HTTPException(
+            status_code=409,
+            detail="REQUIRE_MFA is set, so this deployment cannot be claimed: "
+                   "the first Owner has no way to enroll a factor before their "
+                   "first sign-in. Start with REQUIRE_MFA=false, claim the "
+                   "deployment, enroll from Settings, then set it to true.")
     errors = validate_password(request.password)
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))

@@ -218,3 +218,63 @@ def test_a_failed_claim_does_not_burn_the_code(client, unclaimed):
                     json={"username": "recovered", "password": "RecoverPass1",
                           "claim_code": unclaimed})
     assert r.status_code == 200, r.text
+
+
+# -- REQUIRE_MFA is a one-way door on an unclaimed deployment -----------------
+#
+# Claiming does not enrol a factor; the login route refuses any account that has
+# none; and both enrolment routes need the session that login is what grants. So
+# claiming a REQUIRE_MFA deployment burns the code, creates an Owner who can
+# never sign in, and closes the claim endpoint behind them. Nothing recovers it
+# short of editing the database.
+#
+# These pin the refusal AND its position. The refusal is only worth having if it
+# lands before anything is written, and it is only safe to have if it sits below
+# the claim-code check - a 409 handed to a caller holding no code would turn this
+# endpoint into an oracle for the deployment's MFA posture.
+
+def test_require_mfa_refuses_the_claim_rather_than_bricking_the_deployment(
+        client, unclaimed, monkeypatch):
+    monkeypatch.setattr(auth_route_mod, "REQUIRE_MFA", True)
+    r = client.post("/api/auth/setup",
+                    json={"username": "mfaclaim", "password": "ClaimPass1",
+                          "claim_code": unclaimed})
+
+    assert r.status_code == 409, r.text
+    assert "REQUIRE_MFA" in r.json()["detail"]
+    # The code survives a refused claim: the operator restarts with the flag
+    # off and claims with the SAME code, rather than needing a fresh container
+    # to mint another one.
+    assert not security._claim_code_burned
+
+
+def test_the_mfa_refusal_runs_before_the_password_policy(client, unclaimed,
+                                                         monkeypatch):
+    """Two-sided, and it pins the ORDER without writing a user either way.
+
+    A password that fails policy reaches a 400 only if execution got past the
+    MFA gate - so the same request answering 409 with the flag on and 400 with
+    it off proves the gate fires, proves it fires FIRST, and proves the 409 is
+    the flag's doing rather than a broken fixture.
+    """
+    body = {"username": "mfaorder", "password": "short",
+            "claim_code": unclaimed}
+
+    monkeypatch.setattr(auth_route_mod, "REQUIRE_MFA", True)
+    assert client.post("/api/auth/setup", json=body).status_code == 409
+
+    monkeypatch.setattr(auth_route_mod, "REQUIRE_MFA", False)
+    assert client.post("/api/auth/setup", json=body).status_code == 400
+
+
+def test_the_mfa_posture_is_not_readable_without_the_claim_code(
+        client, unclaimed, monkeypatch):
+    """The refusal must stay BELOW the code check. Otherwise any anonymous
+    caller learns whether this deployment requires MFA by claiming badly, which
+    is the same class of leak the password-policy ordering already avoids."""
+    monkeypatch.setattr(auth_route_mod, "REQUIRE_MFA", True)
+    r = client.post("/api/auth/setup",
+                    json={"username": "nocode", "password": "NoCodePass1"})
+
+    assert r.status_code == 401, r.text
+    assert "REQUIRE_MFA" not in r.text
