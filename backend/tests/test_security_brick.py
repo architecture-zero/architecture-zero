@@ -7,7 +7,9 @@ values for fixtures; exercised here as shipped).
 """
 import importlib
 
-import app.main as main_mod
+# REQUIRE_MFA moved with the login route into the auth router; it has exactly
+# one reader and main no longer defines it.
+import app.routers.auth as main_mod
 
 
 # -- REQUIRE_MFA: enforced, not dead config ----------------------------------

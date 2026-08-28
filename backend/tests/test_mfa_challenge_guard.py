@@ -19,7 +19,9 @@ them becomes the weaker one nobody remembers.
 import pyotp
 import pytest
 
-from app import main, security
+# MAX_LOGIN_ATTEMPTS is read by the login/mfa routes, now in the auth router.
+from app.routers import auth as auth_route_mod
+from app import security
 from app.jwt_auth import create_mfa_challenge_token
 from app.users import reset_failed_attempts
 
@@ -124,7 +126,7 @@ def test_relogin_for_a_fresh_challenge_still_walks_into_the_account_lock(
     never accumulates. An earlier version of this test minted challenge tokens
     directly, which bypassed login's reset and hid exactly that bug while the
     test passed."""
-    monkeypatch.setattr(main, "MAX_LOGIN_ATTEMPTS", 3)
+    monkeypatch.setattr(auth_route_mod, "MAX_LOGIN_ATTEMPTS", 3)
     monkeypatch.setattr(security, "MFA_MAX_ATTEMPTS", 1)
 
     # A fresh login (hence a fresh challenge) each round - the move a

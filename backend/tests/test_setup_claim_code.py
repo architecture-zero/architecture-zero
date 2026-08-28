@@ -21,7 +21,11 @@ has already used it up.
 
 import pytest
 
-from app import main, security
+# owner_exists is read by the SETUP ROUTE, which lives in the auth router -
+# main still binds its own for the boot banner, so patching main here would
+# succeed and inject into a module the route no longer consults.
+from app.routers import auth as auth_route_mod
+from app import security
 
 
 # -- Unit: the code itself ----------------------------------------------------
@@ -119,7 +123,7 @@ def unclaimed(monkeypatch):
     Yields the live code. Resets the burn flag on the way out, because a test
     that claims successfully would otherwise leave the gate shut for the next.
     """
-    monkeypatch.setattr(main, "owner_exists", lambda: False)
+    monkeypatch.setattr(auth_route_mod, "owner_exists", lambda: False)
     monkeypatch.setattr(security, "_claim_code", None)
     monkeypatch.setattr(security, "_claim_code_burned", False)
     yield security.setup_claim_code()
