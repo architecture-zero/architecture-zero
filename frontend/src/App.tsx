@@ -22,6 +22,14 @@ interface ChatMessage {
   content: string
   toolCalls?: ToolCall[]
   sources?: string[]
+  // TRUE for bubbles that exist ONLY in this browser - the stopped-stream
+  // notice and every error bubble. They have no row in stored history, and
+  // that difference is load-bearing in two places: the regenerate/edit trim
+  // sends a COUNT to DELETE /api/history/{id}/tail, and send() posts the
+  // transcript back as model context. Counting a local bubble as a stored row
+  // deletes one row too many - permanently, silently, and one row too far back
+  // is somebody's previous answer.
+  ephemeral?: boolean
 }
 
 interface SessionEntry {
@@ -448,6 +456,11 @@ export default function App() {
   // component's optimistic initial value. Guests never learn it - /api/config
   // is authenticated - so they must not assert one.
   const [ragKnown, setRagKnown] = useState(false)
+  // Did the USER express a preference? Distinct from ragKnown: a guest never
+  // learns the server default, but if they flip the toggle they have still
+  // said something, and a control that animates while being ignored is worse
+  // than no control at all.
+  const [ragTouched, setRagTouched] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [sessionId, setSessionId] = useState<string>(getOrCreateSession)
   const [sessionList, setSessionList] = useState<SessionEntry[]>([])
@@ -644,6 +657,11 @@ export default function App() {
     try {
       await fetch(`${API}/api/auth/logout`, { method: 'POST', headers: authHeaders() })
     } catch { /* ignore */ }
+    // Signing out is a "leaving the conversation" path like the other three.
+    // Without this the in-flight stream kept running under the old token, kept
+    // owning streaming/loading, and the NEXT person to sign in at this browser
+    // found a dead composer with no way to clear it.
+    abandonStream()
     localStorage.removeItem('az_jwt_token')
     localStorage.removeItem('az_jwt_refresh')
     setCurrentUser(null)
@@ -852,7 +870,12 @@ export default function App() {
         // explicit value, including whatever the user toggled.
         body: JSON.stringify({
           prompt, model, history: historyForRequest, session_id: sessionId,
-          ...(ragKnown ? { use_rag: useRag } : {}),
+          // Sent when the server told us its default (so we can echo the
+          // user's choice), OR when the user has actually touched the toggle -
+          // an explicit choice must reach the server even from a guest whose
+          // client was never told the default. Omitted only when this client
+          // has no basis for an opinion, which is when the server should decide.
+          ...(ragKnown || ragTouched ? { use_rag: useRag } : {}),
         }),
         signal: controller.signal,
       })
@@ -864,7 +887,7 @@ export default function App() {
         const fallback = res.status === 429
           ? 'Guest limit reached. Sign in to continue.'
           : `Error: the server returned ${res.status}.`
-        setMessages(prev => [...prev, { role: 'assistant', content: errData.detail || fallback }])
+        setMessages(prev => [...prev, { role: 'assistant', content: errData.detail || fallback, ephemeral: true }])
         setLoading(false)
         return
       }
@@ -896,9 +919,25 @@ export default function App() {
 
             if (data.error) {
               if (!assistantStarted) {
-                setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${data.error}` }])
+                setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${data.error}`, ephemeral: true }])
                 setLoading(false)
                 assistantStarted = true
+              } else if (mine()) {
+                // AFTER tokens have flowed this used to `continue` in silence,
+                // so a provider dying mid-answer rendered as a complete answer
+                // that just stopped early - and the backend emits this event
+                // precisely when an exception escapes mid-generation, which is
+                // always after tokens. The partial text is kept (it is real and
+                // may be useful) with the failure appended to it, because
+                // replacing it would discard what did arrive.
+                assistantMsg += '\n\n_The answer stopped early: the provider failed mid-response._'
+                setMessages(prev => {
+                  const next = [...prev]
+                  if (slot < 0 || slot >= next.length) return prev
+                  next[slot] = { role: 'assistant', content: assistantMsg, toolCalls, sources }
+                  return next
+                })
+                emitError('The answer stopped early - the provider failed mid-response.')
               }
               continue
             }
@@ -958,12 +997,12 @@ export default function App() {
         // the last message is an assistant one, so there was no way back to it
         // either. Say what happened, in the shape the rest of the UI can act on.
         if (!assistantStarted && mine()) {
-          setMessages(prev => [...prev, { role: 'assistant', content: '_Stopped before the answer started._' }])
+          setMessages(prev => [...prev, { role: 'assistant', content: '_Stopped before the answer started._', ephemeral: true }])
         }
         setLoading(false)
         return
       }
-      setMessages(prev => [...prev, { role: 'assistant', content: 'Error: Could not reach the backend.' }])
+      setMessages(prev => [...prev, { role: 'assistant', content: 'Error: Could not reach the backend.', ephemeral: true }])
       setLoading(false)
     } finally {
       // Only retract the controller if it is still OURS. Clearing it blind let
@@ -1005,7 +1044,10 @@ export default function App() {
     setContextSummarized(false)
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
 
-    const history = messages.map(m => ({ role: m.role, content: m.content }))
+    // Local-only bubbles are UI, not conversation. Posting "Stopped before the
+    // answer started." or an error string back as an assistant turn teaches the
+    // model it said something it never said.
+    const history = messages.filter(m => !m.ephemeral).map(m => ({ role: m.role, content: m.content }))
     setMessages(prev => [...prev, { role: 'user', content: prompt }])
     setLoading(true)
     await sendCore(prompt, history)
@@ -1030,13 +1072,25 @@ export default function App() {
     if (lastUserMsg.role !== 'user') { setLoading(false); return }
 
     const truncated = messages.slice(0, -2)
-    const history = truncated.map(m => ({ role: m.role, content: m.content }))
+    const history = truncated.filter(m => !m.ephemeral).map(m => ({ role: m.role, content: m.content }))
     const prompt = lastUserMsg.content
 
-    const trimErr = await actionError(fetch(`${API}/api/history/${sessionId}/tail?count=2`, {
-      method: 'DELETE', headers: authHeaders(),
-    }), 'Trimming history')
-    if (trimErr) emitError(trimErr) // proceed - regeneration still works, server history may duplicate
+    // COUNT STORED ROWS, NOT BUBBLES. The tail endpoint deletes N rows by id
+    // with no role awareness, so sending a client message count deletes one row
+    // too many whenever a local-only bubble is in the tail - and one row too far
+    // back is the PREVIOUS turn's answer, gone permanently with nothing shown.
+    const trimCount = messages.slice(-2).filter(m => !m.ephemeral).length
+    const mySession = sessionId
+    if (trimCount > 0) {
+      const trimErr = await actionError(fetch(`${API}/api/history/${mySession}/tail?count=${trimCount}`, {
+        method: 'DELETE', headers: authHeaders(),
+      }), 'Trimming history')
+      if (trimErr) emitError(trimErr) // proceed - regeneration still works, server history may duplicate
+    }
+    // The trim was a network round-trip and nothing disables the sidebar during
+    // it, so the user can be in a different conversation by now. Writing into it
+    // would put this conversation's turn in that one - and post it there too.
+    if (sessionIdRef.current !== mySession) { setLoading(false); return }
 
     setContextWarning(false)
     setContextSummarized(false)
@@ -1058,13 +1112,19 @@ export default function App() {
     // Same await window as regenerate: claim the guard before the trim.
     setLoading(true)
     const truncated = messages.slice(0, msgIndex)
-    const countToRemove = messages.length - msgIndex
-    const history = truncated.map(m => ({ role: m.role, content: m.content }))
+    // Stored rows only - see regenerate above. `messages.length - msgIndex`
+    // counted local bubbles against server rows and orphaned real ones.
+    const countToRemove = messages.slice(msgIndex).filter(m => !m.ephemeral).length
+    const history = truncated.filter(m => !m.ephemeral).map(m => ({ role: m.role, content: m.content }))
+    const mySession = sessionId
 
-    const trimErr = await actionError(fetch(`${API}/api/history/${sessionId}/tail?count=${countToRemove}`, {
-      method: 'DELETE', headers: authHeaders(),
-    }), 'Trimming history')
-    if (trimErr) emitError(trimErr) // proceed - the edit still sends, server history may duplicate
+    if (countToRemove > 0) {
+      const trimErr = await actionError(fetch(`${API}/api/history/${mySession}/tail?count=${countToRemove}`, {
+        method: 'DELETE', headers: authHeaders(),
+      }), 'Trimming history')
+      if (trimErr) emitError(trimErr) // proceed - the edit still sends, server history may duplicate
+    }
+    if (sessionIdRef.current !== mySession) { setLoading(false); return }
 
     setContextWarning(false)
     setContextSummarized(false)
@@ -1184,7 +1244,7 @@ export default function App() {
                   useRag ? 'bg-blue-600/10 border-blue-500/40 text-blue-300' : 'bg-gray-800/50 border-gray-700 text-gray-400'
                 }`}>
                   <span>RAG Mode</span>
-                  <Toggle enabled={useRag} onToggle={() => setUseRag(!useRag)} />
+                  <Toggle enabled={useRag} onToggle={() => { setUseRag(!useRag); setRagTouched(true) }} />
                 </div>
               </div>
             )}

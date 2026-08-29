@@ -170,9 +170,25 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
     # to say why. Validated HERE, in the same pre-write block as suggestions,
     # so the refusal happens before anything is stored.
     if "rag_similarity_threshold" in body:
+        _raw = body["rag_similarity_threshold"]
+        # REJECT BOOLEANS EXPLICITLY. bool is a subclass of int, so float(True)
+        # is 1.0 and sails through the range check - then str(True) stores the
+        # string "True", which float() cannot parse on the chat path. That is
+        # the exact outage this validator was added to prevent, arriving through
+        # the validator itself. OverflowError is caught too: a JSON integer too
+        # large for a float raises it, not ValueError, and an unhandled one is a
+        # 500 where the caller deserves a 400.
+        if isinstance(_raw, bool):
+            raise HTTPException(
+                status_code=400,
+                detail="rag_similarity_threshold must be a number between 0 and 1")
         try:
-            _thr = float(body["rag_similarity_threshold"])
-        except (TypeError, ValueError):
+            _thr = float(_raw)
+        except (TypeError, ValueError, OverflowError):
+            raise HTTPException(
+                status_code=400,
+                detail="rag_similarity_threshold must be a number between 0 and 1")
+        if _thr != _thr:   # NaN survives float() and every comparison below
             raise HTTPException(
                 status_code=400,
                 detail="rag_similarity_threshold must be a number between 0 and 1")

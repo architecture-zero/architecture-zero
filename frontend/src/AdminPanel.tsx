@@ -1449,7 +1449,8 @@ scrape_configs:
           <p className="text-xs text-gray-500">
             <span className="font-mono text-gray-400">GET /metrics</span> exposes counters in Prometheus text format.
             Set <span className="font-mono text-gray-400">METRICS_TOKEN</span> in the backend's
-            environment and paste the same value into the config above - a user
+            environment and paste the same value into the downloaded file, replacing
+            <span className="font-mono text-gray-400"> YOUR_METRICS_TOKEN</span> - a user
             session expires in 30 minutes, which no scraper can hold.
           </p>
           <button onClick={downloadScrapeConfig}
@@ -1855,11 +1856,20 @@ function TrustTab({ api, headers, currentUser }: {
       // than guessing how long a corpus takes.
       for (let i = 0; i < 600; i++) {
         await new Promise(r => setTimeout(r, 1000))
-        const st = await guardedPoll<{ done?: number; total?: number; complete?: boolean }>(
+        const st = await guardedPoll<{ done?: number; total?: number; complete?: boolean;
+                                       failed?: boolean; error?: string }>(
           fetch(`${api}/api/admin/evals/run-status/${run.run_id}`, { headers: headers() }))
         if (!st) break
         setProgress(`Running retrieval... ${st.done ?? 0} / ${st.total ?? '?'}`)
-        if (st.complete) break
+        if (st.complete) {
+          // complete=true is set from the runner's FINALLY, so it means
+          // "terminal", not "succeeded" - `failed` is what tells the two apart.
+          // Reading only complete made a crashed run present as a normal finish,
+          // and the operator then went looking for results that were never
+          // written, with the reason sitting unread in this same payload.
+          if (st.failed) emitError(`The eval run failed: ${st.error || 'no reason reported'}`)
+          break
+        }
       }
       setProgress('')
       load()
