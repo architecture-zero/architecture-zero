@@ -247,6 +247,16 @@ Stated here rather than discovered later. Each is tracked in
 - **The client is a reference implementation.** It exercises the whole API
   and is what the acceptance suite drives, but it is a starting point to
   build on rather than a finished product surface.
+- **Client test coverage is narrow and deliberately so.** The automated
+  tests that mount the chat client cover one thing thoroughly: the rule that
+  a message bubble is marked as unstored exactly when no row for it exists on
+  the server, checked across every way a stream can end. That rule is where
+  the defects were, and getting it wrong deletes conversation history, so it
+  is tested as an invariant with a case per stream outcome. The rest of the
+  client - layout, the admin panel, model selection - is covered by the
+  acceptance suite driving a real deployment, not by unit tests. Read a green
+  frontend suite as "the storage invariant holds", not "the client is
+  verified".
 
 ## License
 

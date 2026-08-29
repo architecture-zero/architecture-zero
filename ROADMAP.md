@@ -35,3 +35,19 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   refresh off a 401 changes what every request does on failure - including
   mid-stream - so it wants its own tests rather than a release-eve patch. See
   Known limitations in the README.
+- **One numeric-env parser** - a bad number in `.env` should refuse to boot
+  (falling back to a default is the silent-discard shape this codebase has
+  spent its review history removing), and it should say which variable, what
+  value and what the default is. `runtime_config._env_num` does that for the
+  three it owns. Roughly two dozen more are parsed with a bare `int(os.getenv(
+  ...))` across alerting, jobs, jwt_auth, peers, providers, rag_config and
+  main, and they still fail as an unattributed `ValueError` from inside an
+  import chain. Mechanical, but a ten-module edit wants its own change rather
+  than riding a release.
+- **Widen client test coverage** - the tests that mount the chat client cover
+  the stored-row invariant across every stream outcome, which is where the
+  defects were. Not yet covered: the admin panel, the setup wizard, model
+  selection, and the identity transitions (sign-in, sign-out, continue as
+  guest) whose state resets are currently verified by hand. Each wants the
+  same treatment - find the rule, find where the rule becomes an observable,
+  test that rather than the symptoms.
