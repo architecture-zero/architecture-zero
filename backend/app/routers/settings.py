@@ -18,7 +18,7 @@ dead after this commit and goes with it.
 import os
 
 import requests
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.config import set_config
@@ -94,8 +94,19 @@ def update_settings(body: ProviderSettingsRequest, current_user: dict = Depends(
     if body.default_model is not None:
         set_config("default_model", body.default_model.strip())
     if body.rag_similarity_threshold is not None:
-        if 0.0 <= body.rag_similarity_threshold <= 1.0:
-            set_config("rag_similarity_threshold", str(body.rag_similarity_threshold))
+        # REFUSE OUT OF RANGE, do not discard it. This `if` had no `else`, while
+        # the log line and the success response below run unconditionally - so
+        # an out-of-range value was dropped and the operator was told "Saved".
+        # The field is a bare float with no ge/le, so Pydantic did not refuse it
+        # either. NaN is rejected explicitly because every comparison against it
+        # is False, so it fails the range test for the wrong reason and would
+        # otherwise be indistinguishable from an ordinary refusal.
+        _thr = body.rag_similarity_threshold
+        if _thr != _thr or not (0.0 <= _thr <= 1.0):
+            raise HTTPException(
+                status_code=400,
+                detail="rag_similarity_threshold must be a number between 0 and 1")
+        set_config("rag_similarity_threshold", str(_thr))
     log("settings_update", admin_id=current_user["id"])
     return _settings_dict()
 

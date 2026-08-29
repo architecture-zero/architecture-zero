@@ -267,7 +267,19 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
     # The operator's configured default applies when the caller omitted the
     # field; an explicit false from the caller still means false. RAG_ONLY_MODE
     # overrides both - it is the deployment-level "never answer ungrounded".
-    if request.use_rag is None:
+    #
+    # allow_rag_toggle IS ENFORCED HERE, and it was enforced nowhere before.
+    # The setting existed only in config defaults, the admin write allowlist and
+    # the /api/config read-back - never in a request path - so an operator who
+    # turned the control off had turned off a checkbox in somebody else's
+    # browser and nothing more. That was survivable while the client omitted
+    # use_rag unless it had read the config (which a guest never can), but once
+    # the client began sending an explicit value on a plain toggle tap, the
+    # omission became a real bypass. A control the operator disabled must not be
+    # honoured just because a caller asserts it; enforce on the server, where
+    # the operator's setting actually lives.
+    toggle_allowed = get_config("allow_rag_toggle", "true") == "true"
+    if request.use_rag is None or not toggle_allowed:
         use_rag = get_config("default_rag_enabled", "true") == "true"
     else:
         use_rag = request.use_rag
@@ -453,6 +465,16 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
                              f"[CONTEXT SUMMARY]: {summary}", request.model, user_id=uid)
                 for m in recent_msgs:
                     save_message(request.session_id, m.role, m.content, request.model, user_id=uid)
+                # RE-SAVE THE TURN IN FLIGHT. clear_session above deleted every
+                # row for this session INCLUDING the user row written for this
+                # request, and request.history is built by the client BEFORE it
+                # appends the new prompt, so recent_msgs never contains it. The
+                # current question was therefore destroyed and never rewritten:
+                # the answer about to stream had no question above it on reload,
+                # and the stored row set stopped matching the client's bubbles,
+                # which is the premise the regenerate/edit trims depend on.
+                save_message(request.session_id, "user", request.prompt,
+                             request.model, user_id=uid)
                 history_raw = [
                     {"role": "system", "content": f"Earlier conversation summary: {summary}"},
                     *[{"role": m.role, "content": m.content} for m in recent_msgs],

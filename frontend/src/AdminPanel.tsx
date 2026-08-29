@@ -1308,12 +1308,17 @@ function MonitoringTab({ api, headers }: { api: string; headers: () => Record<st
     // because the only credential this platform issued was a 30-minute access
     // token. METRICS_TOKEN now exists for exactly this.
     const yaml = `# Prometheus scrape config for Architecture Zero
-# Add under scrape_configs in prometheus.yml
+# MERGE this file into prometheus.yml. It declares scrape_configs itself, so
+# pasting it UNDER an existing scrape_configs key gives you the key twice and
+# Prometheus refuses to load its whole configuration - not just this job. If
+# prometheus.yml already has scrape_configs, copy only the '- job_name:' block
+# below into it.
 #
-# /metrics is authenticated. Set METRICS_TOKEN in the backend's .env to a long
-# random string and paste the SAME value below - a user login will not work
-# here, because its access token expires in 30 minutes and Prometheus cannot
-# refresh one.
+# /metrics is authenticated. Set METRICS_TOKEN in the .env at the repo root
+# (the one docker-compose.yml reads for both services - there is no
+# backend/.env) to a long random string, and paste the SAME value below,
+# replacing YOUR_METRICS_TOKEN. A user login will not work here, because its
+# access token expires in 30 minutes and Prometheus cannot refresh one.
 #
 # The target is the BACKEND port (8000 in the shipped compose), not the client
 # port: nginx only proxies /api/, so /metrics on the client port returns the
@@ -1448,8 +1453,9 @@ scrape_configs:
           <p className="text-sm font-medium">Prometheus</p>
           <p className="text-xs text-gray-500">
             <span className="font-mono text-gray-400">GET /metrics</span> exposes counters in Prometheus text format.
-            Set <span className="font-mono text-gray-400">METRICS_TOKEN</span> in the backend's
-            environment and paste the same value into the downloaded file, replacing
+            Set <span className="font-mono text-gray-400">METRICS_TOKEN</span> in the
+            <span className="font-mono text-gray-400"> .env</span> at the repo root and paste the
+            same value into the downloaded file, replacing
             <span className="font-mono text-gray-400"> YOUR_METRICS_TOKEN</span> - a user
             session expires in 30 minutes, which no scraper can hold.
           </p>
@@ -1854,12 +1860,25 @@ function TrustTab({ api, headers, currentUser }: {
       if (!started.ok) { emitError(run.detail || 'Could not start the run'); return }
       // The run is a background thread with a status endpoint; poll it rather
       // than guessing how long a corpus takes.
+      // THIS LOOP HAS THREE EXITS AND ALL THREE MUST SPEAK. Only the
+      // complete-and-failed one did, so two of the three ways a run can end
+      // still presented it as a normal finish - which is the exact shape the
+      // fix was supposed to cure.
+      let ended = false
       for (let i = 0; i < 600; i++) {
         await new Promise(r => setTimeout(r, 1000))
         const st = await guardedPoll<{ done?: number; total?: number; complete?: boolean;
                                        failed?: boolean; error?: string }>(
           fetch(`${api}/api/admin/evals/run-status/${run.run_id}`, { headers: headers() }))
-        if (!st) break
+        if (!st) {
+          // guardedPoll returns null on ANY non-2xx and on any thrown error,
+          // silently, because its contract is "the next tick retries". Here
+          // there is no next tick - this break ends the poll for good. A single
+          // transient failure therefore looked identical to a finished run.
+          emitError('Lost contact with the eval run - it may still be going. Reload to check.')
+          ended = true
+          break
+        }
         setProgress(`Running retrieval... ${st.done ?? 0} / ${st.total ?? '?'}`)
         if (st.complete) {
           // complete=true is set from the runner's FINALLY, so it means
@@ -1868,8 +1887,16 @@ function TrustTab({ api, headers, currentUser }: {
           // and the operator then went looking for results that were never
           // written, with the reason sitting unread in this same payload.
           if (st.failed) emitError(`The eval run failed: ${st.error || 'no reason reported'}`)
+          ended = true
           break
         }
+      }
+      if (!ended) {
+        // Ten minutes elapsed with the run neither complete nor failed. The run
+        // registry is an in-process dict, so a backend restart mid-run answers
+        // this way forever - the loop would otherwise just stop with no word.
+        emitError('The eval run did not report finishing within 10 minutes. '
+          + 'If the backend restarted, the run is gone and needs starting again.')
       }
       setProgress('')
       load()
@@ -2069,6 +2096,15 @@ function SettingsTab({ api, headers }: { api: string; headers: () => Record<stri
 
   const save = async () => {
     setSaving(true); setSaved(false); setError('')
+    // REFUSE HERE RATHER THAN SEND SOMETHING ELSE. Omitting the key makes the
+    // server skip the write and still answer 200, which is the same
+    // silently-discarded-but-reported-saved defect being fixed on that end.
+    const parsedThreshold = parseFloat(ragThreshold)
+    if (!Number.isFinite(parsedThreshold) || parsedThreshold < 0 || parsedThreshold > 1) {
+      setError('Similarity threshold must be a number between 0 and 1.')
+      setSaving(false)
+      return
+    }
     try {
       const body: Record<string, unknown> = {
         ollama_enabled: ollamaEnabled,
@@ -2076,7 +2112,10 @@ function SettingsTab({ api, headers }: { api: string; headers: () => Record<stri
         openai_enabled: openaiEnabled,
         ollama_base_url: ollamaBase,
         default_model: defaultModel,
-        rag_similarity_threshold: parseFloat(ragThreshold) || 0.4,
+        // NOT `parseFloat(x) || 0.4`. Zero is a legitimate threshold, the input
+        // advertises min="0", and `0 || 0.4` is 0.4 - so typing 0 silently sent
+        // 0.4 while the field went on displaying 0. Validated above instead.
+        rag_similarity_threshold: parsedThreshold,
       }
       if (anthropicKey.trim()) body.anthropic_api_key = anthropicKey.trim()
       if (openaiKey.trim()) body.openai_api_key = openaiKey.trim()
@@ -2089,6 +2128,11 @@ function SettingsTab({ api, headers }: { api: string; headers: () => Record<stri
       if (!r.ok) { const d = await r.json(); setError(d.detail || 'Save failed'); return }
       const updated: ProviderSettings = await r.json()
       setSettings(updated)
+      // REHYDRATE FROM THE RESPONSE. The input kept displaying whatever was
+      // typed, so a value the server did not store still read back as the
+      // current setting under a green "Saved" banner. What the server returns
+      // is what the server has.
+      setRagThreshold(String(updated.rag_similarity_threshold))
       setAnthropicKey(''); setOpenaiKey('')
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)

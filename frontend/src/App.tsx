@@ -22,14 +22,29 @@ interface ChatMessage {
   content: string
   toolCalls?: ToolCall[]
   sources?: string[]
-  // TRUE for bubbles that exist ONLY in this browser - the stopped-stream
-  // notice and every error bubble. They have no row in stored history, and
-  // that difference is load-bearing in two places: the regenerate/edit trim
-  // sends a COUNT to DELETE /api/history/{id}/tail, and send() posts the
-  // transcript back as model context. Counting a local bubble as a stored row
-  // deletes one row too many - permanently, silently, and one row too far back
-  // is somebody's previous answer.
+  // TRUE while this bubble has NO row in stored history. That is the whole
+  // meaning - not "is a notice", which is what it meant when it was introduced
+  // and why it missed the cases that mattered. The distinction is load-bearing
+  // in two places: the regenerate/edit trim sends a COUNT to
+  // DELETE /api/history/{id}/tail, which deletes N rows by id with no role
+  // awareness, and send() posts the transcript back as model context. Counting
+  // an unstored bubble as a stored row deletes one row too many - permanently,
+  // silently, and one row too far back is somebody's previous answer.
+  //
+  // The server writes the user row before the stream opens (chat.py) and the
+  // assistant row only after the stream completes cleanly, so bubbles START
+  // ephemeral and are cleared when the write is known to have happened. The
+  // previous version flagged the three notice bubbles and trusted everything
+  // else, which left the streaming bubble itself - unstored on every abort and
+  // every mid-stream provider failure - counted as a stored row.
   ephemeral?: boolean
+  // Presentational text shown under the bubble and NEVER posted back as model
+  // context. It exists because the mid-stream failure notice used to be
+  // concatenated into `content`: flagging that bubble ephemeral would then have
+  // dropped the genuine partial answer from context, and leaving it unflagged
+  // posted "the provider failed mid-response" to the model as a turn it never
+  // took. Keeping the two in separate fields is what lets both be correct.
+  notice?: string
 }
 
 interface SessionEntry {
@@ -71,6 +86,10 @@ interface AuthConfig {
   needs_setup?: boolean
   auth_mode?: string
   guest_mode_enabled?: boolean
+  // Delivered on the PUBLIC config read because /api/config is authenticated
+  // and a guest therefore never learned it - so the toggle rendered on every
+  // instance, including ones where the operator had turned it off.
+  allow_rag_toggle?: boolean
 }
 
 interface Analytics {
@@ -223,6 +242,8 @@ interface MessageProps {
   content: string
   toolCalls?: ToolCall[]
   sources?: string[]
+  // Shown under the bubble, never part of `content`. See ChatMessage.notice.
+  notice?: string
   msgIndex: number
   onFeedback?: (msgIndex: number, value: number) => void
   onRegenerate?: () => void
@@ -232,7 +253,7 @@ interface MessageProps {
   isStreaming?: boolean
 }
 
-function Message({ role, content, toolCalls, sources, msgIndex, onFeedback, onRegenerate, onEdit, isStreaming }: MessageProps) {
+function Message({ role, content, toolCalls, sources, notice, msgIndex, onFeedback, onRegenerate, onEdit, isStreaming }: MessageProps) {
   const isUser = role === 'user'
   const [copied, setCopied] = useState(false)
   const [voted, setVoted] = useState<1 | -1 | null>(null)
@@ -336,6 +357,9 @@ function Message({ role, content, toolCalls, sources, msgIndex, onFeedback, onRe
           )}
           {!isUser && <CitationsPanel sources={sources} />}
         </div>
+        {notice && (
+          <div className="px-1 text-xs text-amber-400/80 italic">{notice}</div>
+        )}
         {isUser && onEdit && !isStreaming && (
           <div className="flex justify-end opacity-0 group-hover:opacity-100 transition-opacity px-1">
             <button onClick={() => setEditing(true)} className="text-xs text-gray-500 hover:text-gray-300 transition-colors">
@@ -494,6 +518,55 @@ export default function App() {
   // rather than the one captured in its closure.
   const sessionIdRef = useRef(sessionId)
 
+  // Leaving a conversation ABANDONS its stream. Without this the in-flight
+  // answer kept running, kept holding the guards, and (before the identity
+  // check in sendCore) wrote into whichever transcript was loaded next.
+  //
+  // DECLARED HERE, ABOVE THE EARLY RETURNS, AND THAT PLACEMENT IS THE FIX.
+  // It used to sit below `if (view === 'admin') return ...`, so the statement
+  // initialising it was never reached while the Admin panel was open - and
+  // handleLogout, which the panel's own Sign out button calls, hit the
+  // temporal dead zone and threw a ReferenceError before it cleared a single
+  // token. The change that added abandonStream() to sign-out to stop a stream
+  // leaking across accounts is what broke sign-out on the privileged surface.
+  const abandonStream = () => {
+    activeStream.current = null
+    abortRef.current?.abort()
+    abortRef.current = null
+    setStreaming(false)
+    setLoading(false)
+  }
+
+  // Everything that belongs to ONE identity and must not survive into the next
+  // one at this browser. Sign-out used to reset only currentUser / isGuest /
+  // messages / input / view, so sessionList, analytics, sysStatus, the RAG
+  // preference and an open profile modal all carried across it. The RAG
+  // preference is not display-only: it travels in the next occupant's request
+  // body.
+  //
+  // The sessionId rotation is separately load-bearing. regenerate and edit bail
+  // after their trim by comparing sessionIdRef against the id they captured,
+  // and sign-out is declared a leaving-the-conversation path like the other
+  // three - but unlike them it never changed sessionId, so that guard could not
+  // see it. A sign-out landing inside the trim round-trip therefore let the
+  // regenerate run to completion and re-POST the signed-out user's turn with no
+  // credentials. The rotated id is deliberately NOT written to localStorage:
+  // the next sign-in restores that account's own stored session.
+  const clearIdentityState = () => {
+    setMessages([])
+    setInput('')
+    setSessionId(crypto.randomUUID())
+    setSessionList([])
+    setSysStatus(null)
+    setAnalytics(null)
+    setProfileOpen(false)
+    setContextWarning(false)
+    setContextSummarized(false)
+    setUseRag(true)
+    setRagKnown(false)
+    setRagTouched(false)
+  }
+
   // Auth bootstrap - runs once on load.
   // Demo instances run ENABLE_AUTH=false (frictionless guest tour), but the owner
   // still has a real admin account: /api/auth/login + /api/auth/me are
@@ -513,6 +586,10 @@ export default function App() {
         // The guest door is reported by the same expression the chat gate
         // reads, so the login screen cannot offer one the server refuses.
         setGuestModeEnabled(cfg.guest_mode_enabled === true)
+        // Guests get the operator's answer here or nowhere. The server enforces
+        // the setting on the chat route regardless, so this only stops the UI
+        // offering a control that cannot do anything.
+        if (cfg.allow_rag_toggle !== undefined) setAllowRagToggle(cfg.allow_rag_toggle)
         const token = localStorage.getItem('az_jwt_token')
         if (token) {
           try {
@@ -654,24 +731,23 @@ export default function App() {
   }
 
   const handleLogout = async () => {
+    // ABANDON BEFORE THE ROUND-TRIP, not after. The logout POST can hang for
+    // the whole fetch timeout on an unreachable backend, and until it returned
+    // the outgoing user's answer kept streaming into a screen the next person
+    // was about to use. The token is still in localStorage at this point, so
+    // authHeaders() below is unaffected by doing this first.
+    abandonStream()
+    // Signing out has to leave NOTHING on screen or in state for the next
+    // person at this machine - see clearIdentityState for what "nothing" turned
+    // out to include beyond the transcript.
+    clearIdentityState()
     try {
       await fetch(`${API}/api/auth/logout`, { method: 'POST', headers: authHeaders() })
     } catch { /* ignore */ }
-    // Signing out is a "leaving the conversation" path like the other three.
-    // Without this the in-flight stream kept running under the old token, kept
-    // owning streaming/loading, and the NEXT person to sign in at this browser
-    // found a dead composer with no way to clear it.
-    abandonStream()
     localStorage.removeItem('az_jwt_token')
     localStorage.removeItem('az_jwt_refresh')
     setCurrentUser(null)
     setIsGuest(false)
-    // Signing out has to leave nothing on screen for the next person at this
-    // machine. Only handleGuest cleared this before, so a shared browser kept
-    // the previous account's conversation visible behind the login form and
-    // straight through the next sign-in.
-    setMessages([])
-    setInput('')
     setView('login')
   }
 
@@ -761,22 +837,17 @@ export default function App() {
   }
 
   const handlePasswordChange = () => {
+    // Changing a password invalidates the session and drops to the login
+    // screen, which makes this a leaving-the-conversation path exactly like
+    // sign-out. It was missed when sign-out was fixed, and the commit that
+    // fixed sign-out asserted it was "the one" such path - it was not. The
+    // Profile button is not gated on `busy`, so this is reachable mid-stream.
+    abandonStream()
+    clearIdentityState()
     localStorage.removeItem('az_jwt_token')
     localStorage.removeItem('az_jwt_refresh')
     setCurrentUser(null)
-    setProfileOpen(false)
     setView('login')
-  }
-
-  // Leaving a conversation ABANDONS its stream. Without this the in-flight
-  // answer kept running, kept holding the guards, and (before the identity
-  // check above) wrote into whichever transcript was loaded next.
-  const abandonStream = () => {
-    activeStream.current = null
-    abortRef.current?.abort()
-    abortRef.current = null
-    setStreaming(false)
-    setLoading(false)
   }
 
   const switchSession = (id: string) => {
@@ -893,6 +964,22 @@ export default function App() {
       }
       if (!res.body) throw new Error('No response body')
 
+      // THE USER ROW IS NOW STORED. The route writes it before it returns the
+      // streaming response, so an OK status is proof the write happened - and
+      // this is the only point at which the client can know it. Clear the flag
+      // on the most recent user bubble; from here it counts as a stored row.
+      setMessages(prev => {
+        if (!mine()) return prev
+        const next = [...prev]
+        for (let i = next.length - 1; i >= 0; i--) {
+          if (next[i].role === 'user') {
+            if (next[i].ephemeral) next[i] = { ...next[i], ephemeral: false }
+            break
+          }
+        }
+        return next
+      })
+
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       // Carry buffer: a `data:` line can straddle network chunks, and
@@ -903,6 +990,12 @@ export default function App() {
       let assistantMsg = ''
       let toolCalls: ToolCall[] = []
       let sources: string[] = []
+      // Did the server emit an error event? The read loop ends normally in that
+      // case too - the generator yields the error and stops - so reaching the
+      // end of the loop is NOT proof the answer completed. The assistant row is
+      // written only on the clean path, so this flag is what decides whether
+      // the bubble stops being ephemeral.
+      let streamFailed = false
 
       while (true) {
         const { done, value } = await reader.read()
@@ -918,23 +1011,48 @@ export default function App() {
             const data = JSON.parse(payload)
 
             if (data.error) {
+              streamFailed = true
               if (!assistantStarted) {
-                setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${data.error}`, ephemeral: true }])
-                setLoading(false)
+                if (mine()) {
+                  setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${data.error}`, ephemeral: true }])
+                  setLoading(false)
+                }
                 assistantStarted = true
               } else if (mine()) {
                 // AFTER tokens have flowed this used to `continue` in silence,
                 // so a provider dying mid-answer rendered as a complete answer
-                // that just stopped early - and the backend emits this event
-                // precisely when an exception escapes mid-generation, which is
-                // always after tokens. The partial text is kept (it is real and
-                // may be useful) with the failure appended to it, because
-                // replacing it would discard what did arrive.
-                assistantMsg += '\n\n_The answer stopped early: the provider failed mid-response._'
+                // that just stopped early.
+                //
+                // The comment that used to sit here said the backend emits this
+                // event "precisely when an exception escapes mid-generation,
+                // which is always after tokens". Both halves were wrong. The
+                // route's try opens before the first provider call, every
+                // adapter raises before yielding text on a connect-time
+                // failure, and `assistantStarted` flips on data.sources - which
+                // the route yields ABOVE the try. So on any retrieval turn a
+                // refused connection or an unpulled model lands here with
+                // assistantMsg still empty, which is the common first-run state,
+                // not the rare one.
+                //
+                // The notice goes in its own field, NOT concatenated into
+                // content. Content is what send() posts back as model context,
+                // so appending the notice there taught the model it had said
+                // "the provider failed mid-response" - and marking the bubble
+                // ephemeral to fix the trim would then have thrown away the
+                // genuine partial answer along with it. Separate fields let the
+                // trim, the context and the display each be correct.
                 setMessages(prev => {
                   const next = [...prev]
                   if (slot < 0 || slot >= next.length) return prev
-                  next[slot] = { role: 'assistant', content: assistantMsg, toolCalls, sources }
+                  next[slot] = {
+                    ...next[slot],
+                    content: assistantMsg,
+                    toolCalls,
+                    sources,
+                    notice: assistantMsg
+                      ? 'The answer stopped early: the provider failed mid-response.'
+                      : 'The provider failed before any of the answer arrived.',
+                  }
                   return next
                 })
                 emitError('The answer stopped early - the provider failed mid-response.')
@@ -945,7 +1063,16 @@ export default function App() {
             if (!assistantStarted && (data.sources || data.tool_call || data.token)) {
               setMessages(prev => {
                 slot = prev.length            // this stream's own bubble, for good
-                return [...prev, { role: 'assistant', content: '', toolCalls: [], sources: [] }]
+                // EPHEMERAL UNTIL THE STREAM COMPLETES CLEANLY. The assistant
+                // row is written after the generator finishes, so until then no
+                // row exists: an abort cancels the generator before the write,
+                // and a mid-stream provider failure escapes to a handler that
+                // has no save and no finally. This bubble was the single
+                // largest hole in the stored-row model - it is unstored on
+                // every abort and every provider death, and it was never
+                // flagged, because the flag was being set on notice bubbles
+                // rather than on bubbles with no row.
+                return [...prev, { role: 'assistant', content: '', toolCalls: [], sources: [], ephemeral: true }]
               })
               setLoading(false)
               assistantStarted = true
@@ -957,7 +1084,10 @@ export default function App() {
                 if (!mine()) return prev
                 const next = [...prev]
                 if (slot < 0 || slot >= next.length) return prev
-                next[slot] = { role: 'assistant', content: assistantMsg, toolCalls, sources }
+                // Spread, do not rebuild. A literal drops `ephemeral` and
+                // `notice` on every token, which would silently re-mark an
+                // unstored bubble as stored mid-stream.
+                next[slot] = { ...next[slot], content: assistantMsg, toolCalls, sources }
                 return next
               })
             }
@@ -968,7 +1098,10 @@ export default function App() {
                 if (!mine()) return prev
                 const next = [...prev]
                 if (slot < 0 || slot >= next.length) return prev
-                next[slot] = { role: 'assistant', content: assistantMsg, toolCalls, sources }
+                // Spread, do not rebuild. A literal drops `ephemeral` and
+                // `notice` on every token, which would silently re-mark an
+                // unstored bubble as stored mid-stream.
+                next[slot] = { ...next[slot], content: assistantMsg, toolCalls, sources }
                 return next
               })
             }
@@ -982,12 +1115,29 @@ export default function App() {
                 if (!mine()) return prev
                 const next = [...prev]
                 if (slot < 0 || slot >= next.length) return prev
-                next[slot] = { role: 'assistant', content: assistantMsg, toolCalls, sources }
+                // Spread, do not rebuild. A literal drops `ephemeral` and
+                // `notice` on every token, which would silently re-mark an
+                // unstored bubble as stored mid-stream.
+                next[slot] = { ...next[slot], content: assistantMsg, toolCalls, sources }
                 return next
               })
             }
           } catch { /* malformed chunk, skip */ }
         }
+      }
+
+      // THE STREAM COMPLETED CLEANLY, so the assistant row was written and this
+      // bubble stops being ephemeral. Guarded on streamFailed because the read
+      // loop ALSO ends normally after an error event, and on that path no row
+      // exists - which is exactly the case that made Regenerate delete the
+      // previous turn's answer.
+      if (!streamFailed && assistantStarted && mine()) {
+        setMessages(prev => {
+          const next = [...prev]
+          if (slot < 0 || slot >= next.length) return prev
+          next[slot] = { ...next[slot], ephemeral: false }
+          return next
+        })
       }
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') {
@@ -998,12 +1148,30 @@ export default function App() {
         // either. Say what happened, in the shape the rest of the UI can act on.
         if (!assistantStarted && mine()) {
           setMessages(prev => [...prev, { role: 'assistant', content: '_Stopped before the answer started._', ephemeral: true }])
+        } else if (mine()) {
+          // Stopped AFTER tokens arrived. The partial text is real and stays,
+          // but the abort cancelled the generator before the row was written,
+          // so the bubble keeps its ephemeral flag - it was created with one
+          // and nothing on this path clears it. Say so on the bubble, because
+          // "this is not in your history" is not something a partial answer
+          // communicates on its own.
+          setMessages(prev => {
+            const next = [...prev]
+            if (slot < 0 || slot >= next.length) return prev
+            next[slot] = { ...next[slot], notice: 'Stopped. This partial answer was not saved.' }
+            return next
+          })
         }
         setLoading(false)
         return
       }
-      setMessages(prev => [...prev, { role: 'assistant', content: 'Error: Could not reach the backend.', ephemeral: true }])
-      setLoading(false)
+      // mine() for the same reason the branch above has it: an abandoned
+      // stream must not write its failure into whichever conversation is on
+      // screen now, nor clear that conversation's loading state.
+      if (mine()) {
+        setMessages(prev => [...prev, { role: 'assistant', content: 'Error: Could not reach the backend.', ephemeral: true }])
+        setLoading(false)
+      }
     } finally {
       // Only retract the controller if it is still OURS. Clearing it blind let
       // an older stream's finally null a newer stream's controller, which left
@@ -1048,7 +1216,13 @@ export default function App() {
     // answer started." or an error string back as an assistant turn teaches the
     // model it said something it never said.
     const history = messages.filter(m => !m.ephemeral).map(m => ({ role: m.role, content: m.content }))
-    setMessages(prev => [...prev, { role: 'user', content: prompt }])
+    // EPHEMERAL UNTIL THE SERVER ACCEPTS IT. Every rejection gate in the chat
+    // route - injection screen, origin check, expired session, guest limit,
+    // budget - runs BEFORE the user row is written, so a refused send leaves a
+    // user bubble on screen with no row behind it. Counted as stored, the next
+    // Regenerate trims one row too far back and takes the previous turn's
+    // answer with it. sendCore clears the flag once the response is OK.
+    setMessages(prev => [...prev, { role: 'user', content: prompt, ephemeral: true }])
     setLoading(true)
     await sendCore(prompt, history)
   }
@@ -1081,7 +1255,14 @@ export default function App() {
     // back is the PREVIOUS turn's answer, gone permanently with nothing shown.
     const trimCount = messages.slice(-2).filter(m => !m.ephemeral).length
     const mySession = sessionId
-    if (trimCount > 0) {
+    // GUESTS SKIP THE TRIM. A guest holds no token, the tail route depends on
+    // get_current_user and 401s at route level, and actionError maps any 401 to
+    // the sticky, dismiss-less "Session expired" banner - raised at someone who
+    // never signed in. The feedback control already withholds itself from
+    // guests with that exact reasoning; regenerate and edit were the two
+    // siblings that never got the guard. Nothing is lost by skipping: a guest's
+    // rows are anonymous and they cannot read them back.
+    if (trimCount > 0 && !isGuest) {
       const trimErr = await actionError(fetch(`${API}/api/history/${mySession}/tail?count=${trimCount}`, {
         method: 'DELETE', headers: authHeaders(),
       }), 'Trimming history')
@@ -1090,11 +1271,18 @@ export default function App() {
     // The trim was a network round-trip and nothing disables the sidebar during
     // it, so the user can be in a different conversation by now. Writing into it
     // would put this conversation's turn in that one - and post it there too.
-    if (sessionIdRef.current !== mySession) { setLoading(false); return }
+    if (sessionIdRef.current !== mySession) {
+      // SAY IT. The rows the trim removed are already gone and nothing on this
+      // path re-sends them, so bailing in silence looked like a no-op while a
+      // turn had actually been deleted.
+      emitError('You left that conversation while it was regenerating, so the turn was not re-sent.')
+      setLoading(false)
+      return
+    }
 
     setContextWarning(false)
     setContextSummarized(false)
-    setMessages([...truncated, { role: 'user', content: prompt }])
+    setMessages([...truncated, { role: 'user', content: prompt, ephemeral: true }])
     await sendCore(prompt, history)
   }
 
@@ -1118,17 +1306,26 @@ export default function App() {
     const history = truncated.filter(m => !m.ephemeral).map(m => ({ role: m.role, content: m.content }))
     const mySession = sessionId
 
-    if (countToRemove > 0) {
+    // Guests skip the trim - see regenerate above for why.
+    if (countToRemove > 0 && !isGuest) {
       const trimErr = await actionError(fetch(`${API}/api/history/${mySession}/tail?count=${countToRemove}`, {
         method: 'DELETE', headers: authHeaders(),
       }), 'Trimming history')
       if (trimErr) emitError(trimErr) // proceed - the edit still sends, server history may duplicate
     }
-    if (sessionIdRef.current !== mySession) { setLoading(false); return }
+    if (sessionIdRef.current !== mySession) {
+      // Wider blast radius than regenerate: countToRemove reaches back to the
+      // edited message, and submitEdit has already closed the editor and
+      // discarded the draft. Silence here lost an arbitrary number of turns
+      // with nothing on screen to say so.
+      emitError('You left that conversation while the edit was sending, so it was not re-sent.')
+      setLoading(false)
+      return
+    }
 
     setContextWarning(false)
     setContextSummarized(false)
-    setMessages([...truncated, { role: 'user', content: newContent }])
+    setMessages([...truncated, { role: 'user', content: newContent, ephemeral: true }])
     await sendCore(newContent, history)
   }
 
@@ -1428,7 +1625,7 @@ export default function App() {
             <div className="max-w-3xl mx-auto">
               {messages.map((m, i) => (
                 <Message key={i} role={m.role} content={m.content} toolCalls={m.toolCalls}
-                  sources={m.sources} msgIndex={i}
+                  sources={m.sources} notice={m.notice} msgIndex={i}
                   isStreaming={busy}
                   // Guests have no session; /api/feedback needs one, and a 401 here
                     // raises the sticky session-expired banner at someone who never

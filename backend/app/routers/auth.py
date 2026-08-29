@@ -371,10 +371,18 @@ def auth_config():
     posting to /api/chat already answers the same question, and less politely.
     """
     from app.runtime_config import guest_chat_available
+    from app.config import get_config
     return {
         "needs_setup": not owner_exists(),
         "auth_mode": "local",
         "guest_mode_enabled": guest_chat_available(),
+        # Guests never reach /api/config, so the chat client had no way to learn
+        # this and rendered the retrieval toggle unconditionally - including on
+        # instances where the operator had turned it off. The server enforces the
+        # setting regardless (see chat.py), so this is about not showing a
+        # control that does nothing, not about trust. It discloses no more than
+        # the toggle's own behaviour already would.
+        "allow_rag_toggle": get_config("allow_rag_toggle", "true") == "true",
     }
 
 

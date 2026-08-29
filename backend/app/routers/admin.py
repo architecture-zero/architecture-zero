@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from app.audit import get_audit_log, export_audit_csv
 from app.config import get_config, set_config, get_all_config_masked
 from app.jwt_auth import require_owner, require_permission
+from app.permissions import is_owner
 from app.logger import log
 from app.runtime_config import (_config_or_default, _ollama_get, DEFAULT_MODEL,
                                 EVAL_JUDGE_MODEL_DEFAULT, MAX_CONTEXT_TOKENS,
@@ -135,9 +136,19 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
                "eval_answer_model", "eval_judge_model",
                # The rerank seam's per-call config keys - the whole point of
                # the seam is that an A/B or an operator flip is a config
-               # change, not a restart. The hosted-egress LATCH is
-               # deliberately NOT here: RERANK_HOSTED_ALLOWED is host-env
-               # only, so no config write can start third-party egress.
+               # change, not a restart. The hosted-VENDOR latch is deliberately
+               # not here: RERANK_HOSTED_ALLOWED is host-env only, so no config
+               # write can start vendor egress.
+               #
+               # That clause used to end "so no config write can start
+               # third-party egress", full stop, three lines above
+               # rerank_remote_url - which took an arbitrary URL with no scheme
+               # check and no host allowlist and is POSTed candidate chunk text
+               # by the rerank path. The latch is only consulted on the hosted
+               # -vendor branch, so the remote-http leg had none. The claim is
+               # now narrowed to what is true, and the key is owner-gated below
+               # to match ollama_base_url, which is the identical
+               # arbitrary-destination capability and already requires owner.
                "rerank_enabled", "rerank_model", "rerank_provider",
                "rerank_remote_url", "rerank_hosted_vendor", "rerank_hosted_model",
                "rag_similarity_threshold",
@@ -196,6 +207,19 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
             raise HTTPException(
                 status_code=400,
                 detail="rag_similarity_threshold must be between 0 and 1")
+    # OWNER-ONLY KEYS, checked before anything is written so a mixed body is
+    # refused whole rather than half-applied. rerank_remote_url is an arbitrary
+    # destination for candidate chunk text - the same capability as
+    # ollama_base_url, which PUT /api/settings already gates behind
+    # require_owner. Sitting at the strictly lower manage_system with no scheme
+    # check and no host allowlist was an inconsistency with no stated reason,
+    # and the allowlist comment three lines up asserted it could not happen.
+    _owner_only = {"rerank_remote_url"} & set(body.keys())
+    if _owner_only and not is_owner(current_user):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Owner access required to set: {', '.join(sorted(_owner_only))}")
+
     written = []
     for key, value in body.items():
         if key == "suggestions":
