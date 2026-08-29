@@ -1,6 +1,18 @@
 import json
+import time
 
 import pytest
+
+# The REAL sleep, captured at import before any test patches time.sleep.
+#
+# Every eval test below monkeypatches "time.sleep" to a no-op so the runner's
+# deliberate inter-question pauses do not cost the suite minutes. That patch is
+# GLOBAL, so it also silently disabled the poll loops that wait for the run
+# thread to finish: a local `time as _t` alias resolved to the same
+# no-op, turning "poll for 5 seconds" into "spin 100 times instantly". Those
+# loops passed only because the worker thread usually won a pure-CPU race, and
+# lost on a loaded CI runner - the flake that failed this suite on 2026-08-29.
+_REAL_SLEEP = time.sleep
 
 
 def _write_seed(tmp_path, questions):
@@ -476,13 +488,12 @@ def test_answer_mode_run_auto_scores(client, admin_headers, monkeypatch):
     assert r.status_code == 200
     run_id = r.json()["run_id"]
 
-    import time as _t
     for _ in range(100):
         st = client.get(f"/api/admin/evals/run-status/{run_id}",
                         headers=admin_headers).json()
         if st["complete"]:
             break
-        _t.sleep(0.05)
+        _REAL_SLEEP(0.05)
     assert st["complete"], "eval run thread did not finish"
 
     detail = client.get(f"/api/admin/evals/runs/{run_id}", headers=admin_headers).json()
@@ -550,13 +561,12 @@ def test_answer_mode_rag_run_judges_faithfulness(client, admin_headers, monkeypa
     assert r.status_code == 200
     run_id = r.json()["run_id"]
 
-    import time as _t
     for _ in range(100):
         st = client.get(f"/api/admin/evals/run-status/{run_id}",
                         headers=admin_headers).json()
         if st["complete"]:
             break
-        _t.sleep(0.05)
+        _REAL_SLEEP(0.05)
     assert st["complete"], "eval run thread did not finish"
 
     row = client.get(f"/api/admin/evals/runs/{run_id}",
@@ -645,13 +655,12 @@ def test_holdout_rows_split_headline_and_withhold_diagnostics(client, admin_head
                     headers=admin_headers)
     run_id = r.json()["run_id"]
 
-    import time as _t
     for _ in range(100):
         st = client.get(f"/api/admin/evals/run-status/{run_id}",
                         headers=admin_headers).json()
         if st["complete"]:
             break
-        _t.sleep(0.05)
+        _REAL_SLEEP(0.05)
     assert st["complete"], "eval run thread did not finish"
 
     # (1) + (2) runs list: tuned headline unblended, holdout its own aggregate
@@ -725,13 +734,12 @@ def test_answer_mode_errored_answer_is_a_fail(client, admin_headers, monkeypatch
                     headers=admin_headers)
     run_id = r.json()["run_id"]
 
-    import time as _t
     for _ in range(100):
         st = client.get(f"/api/admin/evals/run-status/{run_id}",
                         headers=admin_headers).json()
         if st["complete"]:
             break
-        _t.sleep(0.05)
+        _REAL_SLEEP(0.05)
     assert st["complete"]
 
     row = client.get(f"/api/admin/evals/runs/{run_id}",
@@ -774,13 +782,12 @@ def test_retrieval_only_run_stays_unjudged(client, admin_headers, monkeypatch):
                     headers=admin_headers)
     run_id = r.json()["run_id"]
 
-    import time as _t
     for _ in range(100):
         st = client.get(f"/api/admin/evals/run-status/{run_id}",
                         headers=admin_headers).json()
         if st["complete"]:
             break
-        _t.sleep(0.05)
+        _REAL_SLEEP(0.05)
     assert st["complete"]
 
     row = client.get(f"/api/admin/evals/runs/{run_id}",
@@ -877,13 +884,12 @@ def test_honesty_rows_own_metric_and_review_list(client, admin_headers, monkeypa
                     headers=admin_headers)
     run_id = r.json()["run_id"]
 
-    import time as _t
     for _ in range(100):
         st = client.get(f"/api/admin/evals/run-status/{run_id}",
                         headers=admin_headers).json()
         if st["complete"]:
             break
-        _t.sleep(0.05)
+        _REAL_SLEEP(0.05)
     assert st["complete"], "eval run thread did not finish"
 
     # (1) the honesty judge graded the honesty row; the correctness judge the tuned one
