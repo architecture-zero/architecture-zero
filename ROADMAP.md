@@ -28,3 +28,10 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   the vector store as a server, which is what would make a broker and a
   worker container a gain rather than distribution bought with index
   integrity.
+- **Silent session refresh in the reference client** - the API mints and
+  rotates refresh tokens correctly and `POST /api/auth/refresh` works, but the
+  shipped client stores the refresh token without ever spending it, so a
+  session ends when its 30-minute access token expires. Keying a silent
+  refresh off a 401 changes what every request does on failure - including
+  mid-stream - so it wants its own tests rather than a release-eve patch. See
+  Known limitations in the README.

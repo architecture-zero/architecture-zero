@@ -214,25 +214,38 @@ def _run_ingest(job_id: str, filename: str, text: str, department: str,
     from app.metrics import increment
 
     update_job(job_id, status="running")
-    chunks = chunking.chunk_plain(text)
-    update_job(job_id, status="running", chunks_total=len(chunks))
+    # Bound BEFORE the try because both handlers below read it: widening the
+    # try to cover chunking means an early failure can now reach `except` with
+    # nothing assigned, and a NameError raised inside an except clause escapes
+    # the handler that was supposed to record the failure - trading a stuck row
+    # for a silent one.
+    new_items: list[tuple[str, int, str]] = []
+    # EVERYTHING from here is inside the try. It used to start below, after
+    # chunking and the two index reads - so a failure in chunk_plain or
+    # get_source_ids (a corrupt index, a chroma read error) escaped with the row
+    # still saying "running", and nothing ever moved it. The row then described
+    # work no thread was doing until the next restart, when
+    # reconcile_orphaned_jobs finally failed it - which is the status-surface-
+    # that-lies class this module's own docstring says is worse than no status.
+    try:
+        chunks = chunking.chunk_plain(text)
+        update_job(job_id, status="running", chunks_total=len(chunks))
 
     # ADD-FIRST-PRUNE-LAST with content-addressed ids - the same set diff the
     # upload handler runs, including .setdefault (first chunk wins on duplicate
     # text) and usedforsecurity=False. It has to hash the identical string, or
     # a document that switches between the sync and queued paths matches
     # nothing on the other side and re-embeds its whole generation.
-    desired: dict[str, tuple[int, str]] = {}
-    for i, chunk in enumerate(chunks):
-        doc_id = hashlib.md5(f"{department}::{filename}::{chunk}".encode(),
-                             usedforsecurity=False).hexdigest()
-        desired.setdefault(doc_id, (i, chunk))
-    existing = set(get_source_ids(filename, department))
-    new_items = [(doc_id, i, chunk) for doc_id, (i, chunk) in desired.items()
-                 if doc_id not in existing]
-    done_base = len(chunks) - len(new_items)   # already indexed verbatim
+        desired: dict[str, tuple[int, str]] = {}
+        for i, chunk in enumerate(chunks):
+            doc_id = hashlib.md5(f"{department}::{filename}::{chunk}".encode(),
+                                 usedforsecurity=False).hexdigest()
+            desired.setdefault(doc_id, (i, chunk))
+        existing = set(get_source_ids(filename, department))
+        new_items = [(doc_id, i, chunk) for doc_id, (i, chunk) in desired.items()
+                     if doc_id not in existing]
+        done_base = len(chunks) - len(new_items)   # already indexed verbatim
 
-    try:
         for n, (doc_id, i, chunk) in enumerate(new_items):
             add_document(doc_id, chunk,
                          {"source": filename, "chunk": i, **(extra_meta or {})},

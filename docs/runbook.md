@@ -43,10 +43,11 @@ for a cloud API.
 7. Ask your first question - about the platform itself. Sign in (POST
    /api/auth/login, same credentials as setup) and use the returned
    `access_token` as a Bearer token:
-   `curl -N -X POST localhost:8000/api/chat -H "Authorization: Bearer <access_token>" -H "Content-Type: application/json" -d "{\"prompt\":\"How do I add my first documents?\",\"use_rag\":true}"`
-   Set `use_rag` to true - that is what grounds the answer in the shipped
-   corpus with citations; without it the model answers from training
-   memory. The answer streams back as server-sent events. The corpus the
+   `curl -N -X POST localhost:8000/api/chat -H "Authorization: Bearer <access_token>" -H "Content-Type: application/json" -d "{\"prompt\":\"How do I add my first documents?\"}"`
+   No `use_rag` field is needed: omitted, it follows the instance's
+   `default_rag_enabled` setting, which ships true - so the answer is
+   grounded in the corpus with citations. Send `"use_rag": false` to ask
+   the model without the corpus. The answer streams back as server-sent events. The corpus the
    instance just booted with is its own manual, so it can onboard and
    troubleshoot you before you have ingested a single document.
 
@@ -201,8 +202,12 @@ vector index, ingest state). Two mechanisms:
 - On-demand: POST /api/admin/backup (Owner) writes a consistent snapshot
   archive under `backend/data/backups/` - SQLite is snapshotted via the
   backup API, safe against live writers; retention prunes old archives.
-- Scheduled: run a host cron that calls the endpoint (or archives the data
-  directory while the container is stopped).
+- Scheduled: run `scripts/backup_cron.py` INSIDE the container from a host
+  cron - `docker compose exec -T backend python /app/scripts/backup_cron.py`.
+  It takes the same snapshot as the button and writes `backup-status.json`.
+  It runs in-container on purpose: the endpoint is Owner-gated and the only
+  credential this platform issues expires in 30 minutes, so a nightly curl
+  would work once and 401 every night after.
 
 GET /api/backup-status is an unauthenticated probe that returns 503 when
 backups are missing, stale, or failed - point an uptime monitor at it so a
@@ -226,7 +231,12 @@ start running drills.
 - GET /api/status (authed) - the posture surface: which fail-open controls
   are actually on (rate limiting, injection scan mode, PII mode), provider
   config, agent-tool gates.
-- GET /metrics (authed) - Prometheus counters.
+- GET /metrics - Prometheus counters. Authenticated: a signed-in request
+works, and for a scraper set METRICS_TOKEN in the backend environment
+and send it as a bearer. A user session cannot serve a scraper - access
+tokens expire in 30 minutes and Prometheus cannot refresh one. The
+Monitoring tab's downloadable scrape config already carries the right
+target port and auth block.
 - GET /api/health/detailed (Owner) - disk, DB latency, provider health;
   fires configured alerts on disk pressure and Ollama outages.
 

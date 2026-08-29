@@ -63,7 +63,7 @@ def admin_audit_log(
     date_from: str | None = Query(None),
     date_to: str | None = Query(None),
     model: str | None = Query(None),
-    current_user: dict = Depends(require_permission("view_analytics")),
+    current_user: dict = Depends(require_permission("view_audit_log")),
 ):
     return get_audit_log(
         page=page,
@@ -80,7 +80,7 @@ def admin_audit_export(
     date_from: str | None = Query(None),
     date_to: str | None = Query(None),
     username: str | None = Query(None),
-    current_user: dict = Depends(require_permission("view_analytics")),
+    current_user: dict = Depends(require_permission("view_audit_log")),
 ):
     csv_content = export_audit_csv(date_from=date_from, date_to=date_to, username_filter=username)
     return Response(
@@ -163,6 +163,23 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
         raise HTTPException(
             status_code=400,
             detail="suggestions must be a list of strings")
+    # rag_similarity_threshold is read back with float() on the chat path, so a
+    # value that will not parse is not a bad setting - it is an outage. One
+    # typo in the admin field wrote "0.4 " or "high" and every subsequent chat
+    # request 500'd until someone edited the row back, with nothing in the UI
+    # to say why. Validated HERE, in the same pre-write block as suggestions,
+    # so the refusal happens before anything is stored.
+    if "rag_similarity_threshold" in body:
+        try:
+            _thr = float(body["rag_similarity_threshold"])
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail="rag_similarity_threshold must be a number between 0 and 1")
+        if not 0.0 <= _thr <= 1.0:
+            raise HTTPException(
+                status_code=400,
+                detail="rag_similarity_threshold must be between 0 and 1")
     written = []
     for key, value in body.items():
         if key == "suggestions":

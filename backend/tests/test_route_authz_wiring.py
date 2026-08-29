@@ -153,8 +153,15 @@ def test_query_kb_fails_closed_without_a_peer_scope(client):
 # to make it pass defeats the point - change the line you meant to change.
 REQUIRED_GUARD = {
     ("GET", "/"): "public",
-    ("GET", "/api/admin/audit"): "require_permission:view_analytics",
-    ("GET", "/api/admin/audit/export"): "require_permission:view_analytics",
+    # STRENGTHENED, deliberately: the audit log now sits behind its own
+    # view_audit_log scope instead of view_analytics. The role ladder already
+    # declared view_audit_log owner-tier while these two routes accepted the
+    # broader analytics scope, so an admin with usage-dashboard access could
+    # read and export the audit trail - including the record of their own
+    # actions. Separate scopes exist precisely so "can see usage" and "can read
+    # the audit trail" are different answers.
+    ("GET", "/api/admin/audit"): "require_permission:view_audit_log",
+    ("GET", "/api/admin/audit/export"): "require_permission:view_audit_log",
     ("POST", "/api/admin/backup"): "require_owner",
     ("GET", "/api/admin/backup/status"): "require_owner",
     ("GET", "/api/admin/config"): "require_permission:manage_system",
@@ -367,5 +374,5 @@ def test_the_pin_covers_every_route():
     silently fails to register would shrink this number with nothing else in
     the suite noticing."""
     assert len(_actual_guards()) == 98, (
-        f"expected 97 routes, found {len(_actual_guards())} - a router failed "
+        f"expected 98 routes, found {len(_actual_guards())} - a router failed "
         "to register, or routes were added without updating this count")

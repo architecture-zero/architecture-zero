@@ -461,6 +461,19 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
         st = _eval_runs.setdefault(run_id, {})
         st["complete"] = True
         st.setdefault("failed", False)
+        # The run just changed what the trust panel should say, so drop its
+        # cache here. clear_trust_cache existed and NOTHING called it, which
+        # left the 60-second TTL as the only path from "a measurement finished"
+        # to "the panel shows it" - so the first-measurement flow could complete
+        # while the page still read "no complete measured runs yet" to anyone
+        # who had opened it in the last minute. Runs on the failed path too: a
+        # crashed run can still have written partial rows, and a panel derived
+        # from half a run is exactly what must not be served as fresh.
+        try:
+            from app.trust_panel import clear_trust_cache
+            clear_trust_cache()
+        except Exception as _e:   # cache hygiene never kills the run's exit
+            log_error("trust_cache_clear_failed", run_id=run_id, error=str(_e))
         if _inj_planted:
             # A leftover plant moves the corpus fingerprint AND leaves live
             # poison in chat retrieval - clean even if the run died.

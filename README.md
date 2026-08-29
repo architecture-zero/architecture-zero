@@ -130,9 +130,9 @@ boot.
 So the moment the Owner account exists, you can ask the instance itself -
 "how do I add my first documents?", "why was my upload withheld?", "what
 does the recall number mean?" - and get a cited answer from its own
-corpus. Send chat requests with `"use_rag": true` so answers ground in
-the documents (the runbook shows the full call). The shipped evaluation
-seed asks the same class of support questions, so the very first eval run
+corpus - retrieval is on by default, so a plain request is already
+grounded (send `"use_rag": false` to ask without the corpus). The shipped
+evaluation seed asks the same class of support questions, so the first run
 scores how well the instance onboards its own operator - support quality
 as a measured number from day one.
 
@@ -224,6 +224,29 @@ CI runs both suites plus a full-history secret scan, a private-residue
 guard (a denylist grep that fails the build if lineage from the private
 deployments this template descends from appears in the tree), and both
 Docker image builds on every push to main.
+
+## Known limitations at v0.1.0
+
+Stated here rather than discovered later. Each is tracked in
+[ROADMAP.md](ROADMAP.md).
+
+- **Sessions end after 30 minutes and you sign in again.** The API issues a
+  refresh token and rotates it correctly, but the reference client does not
+  yet spend it, so an access token simply expires. It fails honestly - you
+  are told to sign in, nothing is lost but an unsent draft - and wiring
+  silent refresh changes how the client behaves on every 401, which wants
+  its own tests rather than a release-eve patch.
+- **One box.** Queued ingest runs on a worker thread inside the backend, not
+  a separate process, because the vector store is an embedded database on a
+  local directory - a second writing process would corrupt the index. This
+  scales up, not out.
+- **`/metrics` needs `METRICS_TOKEN` for a scraper.** A user session expires
+  faster than a scrape interval matters, so set the static token if you want
+  Prometheus to pull. Unset, the endpoint is still reachable with a normal
+  signed-in request.
+- **The client is a reference implementation.** It exercises the whole API
+  and is what the acceptance suite drives, but it is a starting point to
+  build on rather than a finished product surface.
 
 ## License
 

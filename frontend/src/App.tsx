@@ -440,14 +440,6 @@ export default function App() {
   const [sessionId, setSessionId] = useState<string>(getOrCreateSession)
   const [sessionList, setSessionList] = useState<SessionEntry[]>([])
   const [sysStatus, setSysStatus] = useState<SysStatus | null>(null)
-  // Display names for the providers this template can route to. Anything not
-  // listed renders under its own id rather than being silently relabelled -
-  // a wrong provider name is the bug this replaced.
-  const PROVIDER_LABELS: Record<string, string> = {
-    ollama: 'local model via Ollama', anthropic: 'Claude API', openai: 'OpenAI API',
-    gemini: 'Gemini API', mistral: 'Mistral API', groq: 'Groq API',
-    xai: 'xAI API', deepseek: 'DeepSeek API',
-  }
   const [analytics, setAnalytics] = useState<Analytics | null>(null)
   const [suggestions, setSuggestions] = useState<string[]>(DEFAULT_SUGGESTIONS)
   const [allowModelSelection, setAllowModelSelection] = useState(true)
@@ -461,6 +453,21 @@ export default function App() {
   const bottomRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const abortRef = useRef<AbortController | null>(null)
+  // STREAM IDENTITY. A captured bubble index alone is not enough: it only
+  // notices that the array SHRANK, never that it was REPLACED by a different
+  // conversation, and it says nothing about WHICH stream a late write belongs
+  // to. Both gaps were real - an in-flight answer kept writing into the
+  // conversation the user switched TO, and the first of two overlapping streams
+  // cleared the busy flag for the second on its way out.
+  //
+  // Every stream takes a ticket. Only the holder of the current ticket may
+  // write to messages or clear the guards; an abandoned stream is ignored in
+  // silence, which is what an abandoned stream deserves.
+  const streamSeq = useRef(0)
+  const activeStream = useRef<number | null>(null)
+  // sessionId as a ref so a running stream reads the CURRENT conversation
+  // rather than the one captured in its closure.
+  const sessionIdRef = useRef(sessionId)
 
   // Auth bootstrap - runs once on load.
   // Demo instances run ENABLE_AUTH=false (frictionless guest tour), but the owner
@@ -581,6 +588,8 @@ export default function App() {
         if (d.chat_model_effective) setEffectiveModel(d.chat_model_effective)
       })
   }, [view])
+
+  useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
 
   // Keep the browser tab title in sync with the (config-driven) brand name.
   useEffect(() => { if (instanceName) document.title = instanceName }, [instanceName])
@@ -729,13 +738,26 @@ export default function App() {
     setView('login')
   }
 
+  // Leaving a conversation ABANDONS its stream. Without this the in-flight
+  // answer kept running, kept holding the guards, and (before the identity
+  // check above) wrote into whichever transcript was loaded next.
+  const abandonStream = () => {
+    activeStream.current = null
+    abortRef.current?.abort()
+    abortRef.current = null
+    setStreaming(false)
+    setLoading(false)
+  }
+
   const switchSession = (id: string) => {
+    abandonStream()
     localStorage.setItem(sessionKey(currentUser?.id), id)
     setSessionId(id)
     setMessages([])
   }
 
   const deleteSession = async (id: string) => {
+    if (id === sessionId) abandonStream()
     await fetch(`${API}/api/history/${id}`, { method: 'DELETE', headers: authHeaders() })
     setSessionList(prev => prev.filter(s => s.session !== id))
     if (id === sessionId) {
@@ -758,6 +780,7 @@ export default function App() {
   }
 
   const newChat = () => {
+    abandonStream()
     // NO DELETE HERE. This used to fire DELETE /api/history/{sessionId} before
     // rotating the id, which hard-deletes the caller's message rows server-side
     // (chat.py delete_history -> clear_session). So the control labelled
@@ -781,6 +804,14 @@ export default function App() {
   const sendCore = async (prompt: string, historyForRequest: Array<{ role: string; content: string }>) => {
     const controller = new AbortController()
     abortRef.current = controller
+    const myStream = ++streamSeq.current
+    activeStream.current = myStream
+    // The conversation this answer belongs to. If it changes underneath us the
+    // stream would be writing into somebody else's transcript, which is worse
+    // than losing the answer.
+    const myConversation = sessionId
+    const mine = () => activeStream.current === myStream
+      && sessionIdRef.current === myConversation
     setStreaming(true)
     // The index of THIS stream's assistant bubble, captured when it is created.
     // Every write below used to target `next[next.length - 1]` - whatever
@@ -859,6 +890,7 @@ export default function App() {
             if (data.sources) {
               sources = data.sources
               setMessages(prev => {
+                if (!mine()) return prev
                 const next = [...prev]
                 if (slot < 0 || slot >= next.length) return prev
                 next[slot] = { role: 'assistant', content: assistantMsg, toolCalls, sources }
@@ -869,6 +901,7 @@ export default function App() {
             if (data.tool_call) {
               toolCalls = [...toolCalls, data.tool_call]
               setMessages(prev => {
+                if (!mine()) return prev
                 const next = [...prev]
                 if (slot < 0 || slot >= next.length) return prev
                 next[slot] = { role: 'assistant', content: assistantMsg, toolCalls, sources }
@@ -882,6 +915,7 @@ export default function App() {
             if (data.token) {
               assistantMsg += data.token
               setMessages(prev => {
+                if (!mine()) return prev
                 const next = [...prev]
                 if (slot < 0 || slot >= next.length) return prev
                 next[slot] = { role: 'assistant', content: assistantMsg, toolCalls, sources }
@@ -902,14 +936,28 @@ export default function App() {
       // Only retract the controller if it is still OURS. Clearing it blind let
       // an older stream's finally null a newer stream's controller, which left
       // Stop inert for the rest of the conversation once two had ever overlapped.
+      // Only the CURRENT stream retracts state. Clearing unconditionally let
+      // the older of two overlapping streams turn Stop back into Send while the
+      // newer one was still writing - exactly the state the guard exists to
+      // prevent.
       if (abortRef.current === controller) abortRef.current = null
-      setStreaming(false)
-      setLoading(false)
+      if (activeStream.current === myStream) {
+        activeStream.current = null
+        setStreaming(false)
+        setLoading(false)
+      }
     }
   }
 
-  const providerId = sysStatus?.provider?.provider
-  const providerLabel = providerId ? (PROVIDER_LABELS[providerId] || providerId) : ''
+  // NAME THE MODEL, NOT A GUESSED VENDOR. The first attempt at this read
+  // status.provider.provider - which is the ENABLED-PROVIDER SET, not the
+  // provider that answered: it reports the single enabled name, or literally
+  // "multi", and routing picks a provider per model prefix. So an instance with
+  // Ollama enabled and a cloud model pinned would have been labelled "local
+  // model via Ollama" while a hosted API answered - a worse lie than the
+  // hardcoded "Claude API" it replaced, because it looks specific.
+  // chat_model_effective is what the server says actually answers.
+  const providerLabel = effectiveModel || ''
   const guestTurnCount = isGuest ? messages.filter(m => m.role === 'user').length : 0
   const guestAtLimit = isGuest && guestTurnCount >= GUEST_TURN_LIMIT
   // One name for "a request is in flight", covering both the pre-first-token
@@ -936,9 +984,17 @@ export default function App() {
 
   const regenerate = async () => {
     if (busy || messages.length < 2) return
-    if (messages[messages.length - 1].role !== 'assistant') return
+    // CLAIM THE GUARD BEFORE AWAITING. The history trim below is a network
+    // round-trip, and until 5d80283's successor neither loading nor streaming
+    // was set across it - so `busy` stayed false for ~100ms and a Ctrl+Enter in
+    // that window started a second concurrent stream. Set here, and every exit
+    // path below must clear it.
+    setLoading(true)
+    // Both early exits happen AFTER the guard was claimed, so they have to
+    // give it back or the composer stays dead with no stream running.
+    if (messages[messages.length - 1].role !== 'assistant') { setLoading(false); return }
     const lastUserMsg = messages[messages.length - 2]
-    if (lastUserMsg.role !== 'user') return
+    if (lastUserMsg.role !== 'user') { setLoading(false); return }
 
     const truncated = messages.slice(0, -2)
     const history = truncated.map(m => ({ role: m.role, content: m.content }))
@@ -952,12 +1008,13 @@ export default function App() {
     setContextWarning(false)
     setContextSummarized(false)
     setMessages([...truncated, { role: 'user', content: prompt }])
-    setLoading(true)
     await sendCore(prompt, history)
   }
 
   const editAndRegenerate = async (msgIndex: number, newContent: string) => {
     if (busy) return
+    // Same await window as regenerate: claim the guard before the trim.
+    setLoading(true)
     const truncated = messages.slice(0, msgIndex)
     const countToRemove = messages.length - msgIndex
     const history = truncated.map(m => ({ role: m.role, content: m.content }))
@@ -970,7 +1027,6 @@ export default function App() {
     setContextWarning(false)
     setContextSummarized(false)
     setMessages([...truncated, { role: 'user', content: newContent }])
-    setLoading(true)
     await sendCore(newContent, history)
   }
 
@@ -1235,9 +1291,24 @@ export default function App() {
               </div>
               <h2 className="text-xl font-semibold text-white mb-2">{instanceName}</h2>
               <p className="text-gray-500 text-sm mb-8">
-                {(sysStatus?.provider?.provider ?? 'ollama') === 'ollama'
-                  ? 'A private, local AI assistant. Your data never leaves this machine.'
-                  : 'A cloud-powered AI assistant. Conversations are processed securely via API.'}
+                {/* NEVER PROMISE PRIVACY WE CANNOT SEE. This read
+                    `(sysStatus?.provider?.provider ?? 'ollama') === 'ollama'`,
+                    and a guest never receives /api/status - it is authenticated
+                    and 401s for them - so sysStatus is null and the fallback
+                    made EVERY anonymous visitor read "your data never leaves
+                    this machine", on any deployment, including one answering
+                    from a hosted API. That is the one claim on this screen a
+                    visitor cannot check for themselves, on a platform whose
+                    whole pitch is that trust is measured rather than asserted.
+                    Unknown now says something true instead of something
+                    flattering, and the local case drops the absolute
+                    data-egress guarantee: the answering model being local does
+                    not by itself prove nothing else is remote. */}
+                {!sysStatus?.provider?.provider
+                  ? 'Ask a question to get started.'
+                  : sysStatus.provider.provider === 'ollama'
+                    ? 'Answers come from a model running on this server.'
+                    : 'A cloud-powered AI assistant. Conversations are processed via a provider API.'}
               </p>
               <div className="w-full space-y-2">
                 {suggestions.map(s => (

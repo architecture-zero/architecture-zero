@@ -255,8 +255,17 @@ def run_evals(body: EvalRunRequest, current_user: dict = Depends(require_owner))
 @router.get("/api/admin/evals/run-status/{run_id}")
 def eval_run_status(run_id: str, current_user: dict = Depends(require_owner)):
     st = _eval_runs.get(run_id, {})
+    # failed/error are REPORTED, not merely recorded. The runner sets complete
+    # True from a finally precisely so a crashed run stops looking like it is
+    # still going - but this handler returned only total/done/complete, so a run
+    # that died mid-loop came back complete=True and read as a normal finish.
+    # The caller then went looking for results that were never written, with the
+    # crash reason sitting unreported in the same dict. `failed` is what tells a
+    # finished run from a dead one; without it, complete=True is exactly as
+    # misleading as the indefinite "running" it replaced.
     return {"run_id": run_id, "total": st.get("total"), "done": st.get("done", 0),
-            "complete": st.get("complete", False)}
+            "complete": st.get("complete", False),
+            "failed": st.get("failed", False), "error": st.get("error")}
 
 
 @router.get("/api/admin/evals/runs")

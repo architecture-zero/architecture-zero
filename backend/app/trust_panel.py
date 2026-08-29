@@ -30,7 +30,11 @@ from app.db import get_session
 
 
 _CACHE_TTL_SECONDS = 60
-_cache: dict = {"public": None, "admin": None, "at": 0.0}
+# PER-KEY timestamps. One shared "at" meant deriving either variant marked
+# BOTH fresh: loading the admin panel refreshed the clock for a public entry
+# computed up to 60s earlier, and alternating traffic could keep re-arming it
+# so a stale answer was served indefinitely. Two entries need two clocks.
+_cache: dict = {"public": None, "admin": None, "public_at": 0.0, "admin_at": 0.0}
 
 
 def _pct(vals) -> float | None:
@@ -55,7 +59,7 @@ def derive_trust_panel(admin: bool = False) -> dict:
     the page is public and the derivation walks every eval row."""
     now = time.time()
     key = "admin" if admin else "public"
-    if _cache[key] is not None and (now - _cache["at"]) < _CACHE_TTL_SECONDS:
+    if _cache[key] is not None and (now - _cache[key + "_at"]) < _CACHE_TTL_SECONDS:
         return _cache[key]
 
     from app.models import EvalQuestion, EvalResult
@@ -127,7 +131,7 @@ def derive_trust_panel(admin: bool = False) -> dict:
         result = {"available": False,
                   "reason": "no complete measured runs yet"}
         _cache[key] = result
-        _cache["at"] = now
+        _cache[key + "_at"] = now
         return result
 
     complete.sort(key=lambda c: c["run_at"])
@@ -196,11 +200,12 @@ def derive_trust_panel(admin: bool = False) -> dict:
             "judge_input_boundary": True,
         }
     _cache[key] = result
-    _cache["at"] = now
+    _cache[key + "_at"] = now
     return result
 
 
 def clear_trust_cache() -> None:
     _cache["public"] = None
     _cache["admin"] = None
-    _cache["at"] = 0.0
+    _cache["public_at"] = 0.0
+    _cache["admin_at"] = 0.0

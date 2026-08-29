@@ -539,6 +539,9 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
   // server's is true. The read failing and the save proceeding are two separate
   // events; only this flag connects them.
   const [controlsLoaded, setControlsLoaded] = useState(false)
+  // The prompt box has its own read, so it needs its own answer to the same
+  // question - did this value ever arrive from the server?
+  const [promptLoaded, setPromptLoaded] = useState(false)
   const [saveErr, setSaveErr] = useState('')
 
   useEffect(() => {
@@ -552,7 +555,10 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
     // whole fix, and it is why the guard returns null rather than throwing.
     guardedJson<AdminConfig>(
       fetch(`${api}/api/admin/config`, { headers: headers() }), 'Loading system prompt')
-      .then(d => { if (d) setPrompt(d.system_prompt || ''); setLoading(false) })
+      .then(d => {
+        if (d) { setPrompt(d.system_prompt || ''); setPromptLoaded(true) }
+        setLoading(false)
+      })
     guardedJson<{
       suggestions?: string[]
       allow_model_selection?: boolean
@@ -618,12 +624,26 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
   }
 
   const save = async () => {
+    // Same gate as saveControls, for the same reason: if the read failed this
+    // box holds the component's empty initial string rather than the operator's
+    // prompt, and saving would overwrite a configured system prompt with
+    // nothing - on a failure the screen otherwise renders as "loaded".
+    if (!promptLoaded) {
+      setSaveErr('NOT saved - the system prompt never loaded, so saving would '
+        + 'overwrite it with an empty value. Reload the page and try again.')
+      return
+    }
     if (!(await guardedPatch('/api/admin/config', { system_prompt: prompt }))) return
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
 
   const saveSuggestions = async () => {
+    if (!controlsLoaded) {
+      setSaveErr('NOT saved - these settings never loaded, so saving would '
+        + 'overwrite them. Reload the page and try again.')
+      return
+    }
     const list = suggestionsText.split('\n').map(s => s.trim()).filter(Boolean)
     if (!(await guardedPatch('/api/admin/config', { suggestions: list }))) return
     setSuggestionsSaved(true)
@@ -870,7 +890,7 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
             <p className="text-xs opacity-60 mt-0.5">
               {encryptionVerified
                 ? 'ENCRYPTION_AT_REST_VERIFIED=true - host-level encryption confirmed'
-                : 'Set ENCRYPTION_AT_REST_VERIFIED=true after enabling host-level or volume encryption. See docs/SECURITY-HARDENING.md'}
+                : 'Set ENCRYPTION_AT_REST_VERIFIED=true after enabling host-level or volume encryption - this flag records that you did it, it does not perform it.'}
             </p>
           </div>
         </div>
@@ -1416,7 +1436,9 @@ scrape_configs:
           <p className="text-sm font-medium">Prometheus</p>
           <p className="text-xs text-gray-500">
             <span className="font-mono text-gray-400">GET /metrics</span> exposes counters in Prometheus text format.
-            See <span className="font-mono text-gray-400">docs/OBSERVABILITY.md</span> for Grafana setup.
+            Set <span className="font-mono text-gray-400">METRICS_TOKEN</span> in the backend's
+            environment and paste the same value into the config above - a user
+            session expires in 30 minutes, which no scraper can hold.
           </p>
           <button onClick={downloadScrapeConfig}
             className="px-3 py-1.5 rounded-lg text-xs border border-gray-700 text-gray-300 hover:text-white hover:border-gray-500 transition-colors">
@@ -1520,17 +1542,24 @@ function BackupTab({ api, headers }: { api: string; headers: () => Record<string
       <div className="bg-gray-900 rounded-xl p-5 border border-gray-800 space-y-3">
         <p className="text-sm font-medium">Scheduled Backup (host cron)</p>
         <p className="text-xs text-gray-500">
-          Same snapshot as the button above, on a schedule. It calls the API, so
-          it needs an Owner token - mint one for a dedicated backup account
-          rather than reusing a person's login.
+          Same snapshot as the button above, on a schedule. It runs INSIDE the
+          container, so there is no token to manage - the API route is
+          Owner-gated and the only credential this platform issues expires in
+          30 minutes, which a nightly job cannot hold.
         </p>
         <pre className="text-xs text-gray-400 bg-gray-800 rounded-lg p-3 overflow-x-auto whitespace-pre">{`# /etc/cron.d/az-backup - daily at 2 am
-0 2 * * * root curl -fsS -X POST http://localhost:8000/api/admin/backup \
-  -H "Authorization: Bearer $AZ_OWNER_TOKEN" >> /var/log/az-backup.log 2>&1`}</pre>
+0 2 * * * root cd /opt/your-instance && docker compose exec -T backend \
+  python /app/scripts/backup_cron.py >> /var/log/az-backup.log 2>&1`}</pre>
         <p className="text-xs text-gray-500">
           Archives land in <span className="font-mono text-gray-400">/app/data/backups/</span> inside
           the container, which is the mounted data volume - copy them off the box
-          to survive losing it.
+          to survive losing it. The script also writes{' '}
+          <span className="font-mono text-gray-400">backup-status.json</span>, one of the TWO
+          heartbeats <span className="font-mono text-gray-400">GET /api/backup-status</span> requires.
+          The other is <span className="font-mono text-gray-400">drill-status.json</span>, the restore
+          DRILL's receipt - so "we take backups" and "we have restored one recently" are proven
+          separately. The probe stays 503 until both exist and are fresh, which is deliberate: a
+          backup nobody has ever restored is not yet a backup.
         </p>
       </div>
     </div>
