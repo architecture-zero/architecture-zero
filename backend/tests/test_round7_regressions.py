@@ -275,3 +275,4 @@ def test_cross_origin_is_still_refused(client, admin_headers):
                                  "Host": "myserver.example:5173"})
     assert r.status_code == 403, r.text
     assert "Origin not allowed" in r.json()["detail"]
+    assert "http_host" in r.json()["detail"], "the refusal must name the proxy fix"

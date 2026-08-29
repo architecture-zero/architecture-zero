@@ -236,10 +236,25 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
     if not _allow_all:
         origin = req.headers.get("origin", "")
         if origin and origin not in _all_origins:
+            # Compared verbatim, INCLUDING the port, because a different port is
+            # a different origin. That puts a requirement on any reverse proxy
+            # in front of this: it must forward the client's Host unchanged.
+            # nginx's $host drops the port and $http_host does not, and the
+            # shipped frontend config had the former - which made every
+            # same-origin request look cross-origin the moment the instance ran
+            # on any port but the default. The refusal names the fix, because an
+            # operator behind their own proxy will otherwise see only a 403 with
+            # nothing to act on.
             host = req.headers.get("host", "")
             same_origin = bool(host) and origin.split("://", 1)[-1] == host
             if not same_origin:
-                raise HTTPException(status_code=403, detail="Origin not allowed")
+                raise HTTPException(
+                    status_code=403,
+                    detail=(f"Origin not allowed: {origin} does not match this "
+                            f"server's host ({host or 'unset'}). If you are behind "
+                            "a reverse proxy, forward the client's Host header "
+                            "verbatim (nginx: proxy_set_header Host $http_host). "
+                            "For a genuinely different origin, set CORS_ORIGIN."))
 
     # Expired/invalid token presented: 401, the refresh signal - NOT the
     # guest 403 below, which the client's 401-keyed silent refresh never
