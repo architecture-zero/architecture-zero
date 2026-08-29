@@ -13,16 +13,17 @@ anonymous by design.
 """
 import os
 import json
+import secrets
 import logging
 import shutil
 import datetime as _dt
 
 import requests
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 
 from app.database import count_documents
 from app.config import get_config
-from app.jwt_auth import get_current_user, require_owner, require_permission
+from app.jwt_auth import get_current_user, oauth2_scheme, require_owner, require_permission
 from app.agent import get_tool_config
 # OLLAMA_BASE comes from providers, NOT from a copy of main.py's line 50 - the
 # two had different defaults and providers' is the one that was winning.
@@ -323,8 +324,35 @@ def health_detailed(current_user: dict = Depends(require_owner)):
     result["metrics"] = get_snapshot()
     return result
 
-@router.get("/metrics", dependencies=[Depends(get_current_user)])
-def metrics_endpoint():
+# A SCRAPER CANNOT HOLD A LOGIN. /metrics is authenticated (correctly - it
+# reports request volumes and error counts), but the only credential this
+# platform issued was a 30-minute access token, and Prometheus has no way to
+# refresh one. So the Monitoring tab shipped a "download scrape config" button
+# whose output could never work against any deployment: a scrape either 401s
+# forever or dies 30 minutes after an operator pastes a token in by hand.
+#
+# METRICS_TOKEN is the missing credential: a long-lived static secret that opens
+# THIS ONE read-only endpoint and nothing else. UNSET BY DEFAULT, in which case
+# the behaviour here is exactly what it was - a valid user session or nothing.
+# Compared with compare_digest because a scrape token is guessable by timing
+# otherwise, and an empty or whitespace value is treated as unset so a blank
+# line in .env cannot open the endpoint to everyone.
+async def _metrics_auth(request: Request, credentials=Depends(oauth2_scheme)):
+    token = (os.getenv("METRICS_TOKEN") or "").strip()
+    if token:
+        header = request.headers.get("Authorization", "")
+        if header.startswith("Bearer "):
+            presented = header.removeprefix("Bearer ").strip()
+            if secrets.compare_digest(presented, token):
+                return {"id": None, "username": "metrics-scraper", "role": "scraper"}
+    # No scrape token, or it did not match: fall back to a real session, which
+    # keeps the endpoint reachable from the admin UI and from a signed-in curl,
+    # and keeps the 401 identical to what it was when METRICS_TOKEN is unset.
+    return await get_current_user(credentials)
+
+
+@router.get("/metrics")
+def metrics_endpoint(_auth: dict = Depends(_metrics_auth)):
     return Response(content=prometheus_text(), media_type="text/plain; version=0.0.4; charset=utf-8")
 
 # -- Public trust panel --------------------------------------------------------

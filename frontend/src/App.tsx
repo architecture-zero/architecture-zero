@@ -440,6 +440,14 @@ export default function App() {
   const [sessionId, setSessionId] = useState<string>(getOrCreateSession)
   const [sessionList, setSessionList] = useState<SessionEntry[]>([])
   const [sysStatus, setSysStatus] = useState<SysStatus | null>(null)
+  // Display names for the providers this template can route to. Anything not
+  // listed renders under its own id rather than being silently relabelled -
+  // a wrong provider name is the bug this replaced.
+  const PROVIDER_LABELS: Record<string, string> = {
+    ollama: 'local model via Ollama', anthropic: 'Claude API', openai: 'OpenAI API',
+    gemini: 'Gemini API', mistral: 'Mistral API', groq: 'Groq API',
+    xai: 'xAI API', deepseek: 'DeepSeek API',
+  }
   const [analytics, setAnalytics] = useState<Analytics | null>(null)
   const [suggestions, setSuggestions] = useState<string[]>(DEFAULT_SUGGESTIONS)
   const [allowModelSelection, setAllowModelSelection] = useState(true)
@@ -900,6 +908,8 @@ export default function App() {
     }
   }
 
+  const providerId = sysStatus?.provider?.provider
+  const providerLabel = providerId ? (PROVIDER_LABELS[providerId] || providerId) : ''
   const guestTurnCount = isGuest ? messages.filter(m => m.role === 'user').length : 0
   const guestAtLimit = isGuest && guestTurnCount >= GUEST_TURN_LIMIT
   // One name for "a request is in flight", covering both the pre-first-token
@@ -1333,7 +1343,17 @@ export default function App() {
                 )}
               </button>
             </div>
-            <p className="text-center text-xs text-gray-600 mt-2">Powered by Architecture Zero · Claude API · responses are AI-generated</p>
+            {/* Names the provider ACTUALLY answering, from /api/status. It read
+                "Claude API" hardcoded - on a template that speaks to Ollama,
+                Anthropic, OpenAI, Gemini, Mistral, Groq, xAI and DeepSeek, and
+                whose shipped default is local Ollama with no Anthropic key
+                configured at all. So the stock deployment credited a vendor it
+                was not using, in the one line a visitor reads to find out what
+                answered them. Guests get no /api/status, so the segment is
+                omitted rather than guessed. */}
+            <p className="text-center text-xs text-gray-600 mt-2">
+              Powered by Architecture Zero{providerLabel ? ` · ${providerLabel}` : ''} · responses are AI-generated
+            </p>
           </div>
         </div>
 

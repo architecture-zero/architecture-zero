@@ -145,3 +145,44 @@ def test_the_masked_config_still_carries_the_ordinary_settings():
     body = get_all_config_masked()
     assert body["instance_name"] == "Acme Corp"
     assert "system_prompt" in body
+
+
+# -- METRICS_TOKEN: the scrape credential, and the guard around it ------------
+#
+# /metrics is authenticated on purpose - it reports request volumes and error
+# counts. But the only credential the platform issued was a 30-minute access
+# token, so the Monitoring tab's "download scrape config" button produced a file
+# that could never work: a scrape 401s forever, or dies half an hour after an
+# operator pastes a token in by hand. METRICS_TOKEN is that missing credential.
+# These pin that adding it did not open anything that was closed before.
+
+def test_metrics_still_requires_auth_when_no_token_is_set(client, monkeypatch):
+    monkeypatch.delenv("METRICS_TOKEN", raising=False)
+    assert client.get("/metrics").status_code == 401
+    # An unset token must not turn any bearer into a valid scraper.
+    assert client.get("/metrics", headers={"Authorization": "Bearer anything"}
+                      ).status_code == 401
+
+
+def test_metrics_token_opens_only_metrics(client, monkeypatch):
+    monkeypatch.setenv("METRICS_TOKEN", "scrape-secret-value")
+    r = client.get("/metrics", headers={"Authorization": "Bearer scrape-secret-value"})
+    assert r.status_code == 200
+    assert "az_chat_requests_total" in r.text
+    # The scrape credential is for THIS endpoint. It must not authenticate
+    # anything else - a metrics secret that is really a session would be a far
+    # larger grant than the feature asks for.
+    for path in ("/api/users", "/api/admin/config", "/api/sessions", "/api/auth/me"):
+        assert client.get(path, headers={"Authorization": "Bearer scrape-secret-value"}
+                          ).status_code in (401, 403), f"{path} accepted the metrics token"
+
+
+def test_a_wrong_or_blank_metrics_token_is_refused(client, monkeypatch):
+    monkeypatch.setenv("METRICS_TOKEN", "scrape-secret-value")
+    assert client.get("/metrics", headers={"Authorization": "Bearer wrong"}
+                      ).status_code == 401
+    # A blank/whitespace value in .env must read as UNSET, never as "any empty
+    # bearer matches" - that would publish the endpoint to the internet.
+    monkeypatch.setenv("METRICS_TOKEN", "   ")
+    assert client.get("/metrics", headers={"Authorization": "Bearer "}).status_code == 401
+    assert client.get("/metrics", headers={"Authorization": "Bearer    "}).status_code == 401

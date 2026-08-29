@@ -67,7 +67,20 @@ def _dep_calls(dependant, acc):
 def _route_protected(route) -> bool:
     acc = set()
     _dep_calls(route.dependant, acc)
-    return get_current_user in acc
+    if get_current_user in acc:
+        return True
+    # /metrics guards itself through _metrics_auth, which calls get_current_user
+    # from inside its body rather than declaring it - it has to, because it
+    # accepts EITHER a session or the METRICS_TOKEN scrape credential, and a
+    # declared dependency would enforce the session before the token is read.
+    # So this sweep cannot see the guard, and it is right that it could not.
+    #
+    # The exception is not taken on trust: test_a_protected_route_actually_401s_
+    # without_a_token below hits /metrics with no credentials and asserts 401,
+    # and test_hardening.py pins the token behaviour in all three directions.
+    # This route stays protected by assertion, not by this list.
+    from app.routers.system import _metrics_auth
+    return _metrics_auth in acc
 
 
 def test_every_route_is_protected_or_deliberately_public():
@@ -240,11 +253,27 @@ REQUIRED_GUARD = {
     ("PATCH", "/api/users/{user_id}/permissions"): "require_permission:manage_users",
     ("PATCH", "/api/users/{user_id}/role"): "require_permission:manage_users",
     ("GET", "/api/version"): "public",
-    ("GET", "/metrics"): "get_current_user",
+    # _metrics_auth delegates to get_current_user unless METRICS_TOKEN is set
+    # AND matches - a scraper cannot hold a 30-minute session. Unset (the
+    # default) this route behaves exactly as it did.
+    ("GET", "/metrics"): "_metrics_auth",
 }
 
+# _metrics_auth ranks WITH get_current_user, and the reason it needs an entry
+# at all is worth stating: this sweep reads DECLARED dependencies, and
+# _metrics_auth calls get_current_user from inside its own body rather than
+# declaring it. Statically the route therefore looks unguarded, and the sweep
+# said so - correctly, on the evidence it can see. It is not unguarded: with
+# METRICS_TOKEN unset the route 401s exactly as before, and the token only ever
+# opens /metrics.
+#
+# A name in this table is a claim the static scan cannot verify, so the claim is
+# carried by BEHAVIOUR instead - test_hardening.py's three METRICS_TOKEN tests
+# assert the 401 with no token, the 401 on a wrong or blank one, and that the
+# token authenticates nothing but this endpoint. If those are ever deleted, this
+# entry becomes an unbacked assertion and should go with them.
 _RANK = {"require_owner": 3, "require_permission": 2, "get_current_user": 1,
-         "optional_user": 0, "public": -1}
+         "_metrics_auth": 1, "optional_user": 0, "public": -1}
 
 
 def _rank(ident: str) -> int:

@@ -164,8 +164,26 @@ function UsersTab({ api, headers }: { api: string; headers: () => Record<string,
     mutate(jsonPatch(`/api/users/${id}/permissions`, { permissions: perms }),
            'Updating permissions')
 
+  // What the user ACTUALLY has right now - the client-side mirror of the
+  // server's effective_permissions (permissions.py): a non-empty stored list is
+  // an explicit override, otherwise the role preset applies.
+  //
+  // THE BUG THIS EXISTS TO PREVENT: the pills read the STORED list, which is
+  // empty for everyone who has never been given an override - i.e. every user
+  // on a fresh deployment. So a member with the full member preset rendered
+  // with every pill dark, and the first click sent a ONE-ELEMENT list, silently
+  // revoking every other permission their role grants. The screen looked like
+  // "grant this one thing" and behaved like "replace everything with this one
+  // thing", and it was unreachable until the round-1 blocker fix, so it was
+  // being used for the first time.
+  const effectivePerms = (u: User): string[] => {
+    const stored = u.permissions
+    if (stored && stored.length) return stored
+    return permMeta?.presets?.[u.role] || []
+  }
+
   const togglePerm = (u: User, scope: string) => {
-    const current = u.permissions || []
+    const current = effectivePerms(u)
     const next = current.includes(scope) ? current.filter(p => p !== scope) : [...current, scope]
     setPermissions(u.id, next)
   }
@@ -310,7 +328,7 @@ function UsersTab({ api, headers }: { api: string; headers: () => Record<string,
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {permMeta.scopes.map(scope => {
-                    const active = u.permissions?.includes(scope)
+                    const active = effectivePerms(u).includes(scope)
                     return (
                       <button
                         key={scope}
@@ -328,6 +346,11 @@ function UsersTab({ api, headers }: { api: string; headers: () => Record<string,
                 </div>
                 <p className="text-xs text-gray-600 mt-2">
                   Preset ({u.role}): {(permMeta.presets[u.role] || []).join(', ') || '-'}
+                </p>
+                <p className="text-xs text-gray-600 mt-1">
+                  {u.permissions && u.permissions.length
+                    ? 'Using a per-user override.'
+                    : `Following ${u.role} defaults - changing a pill here creates an override for this user.`}
                 </p>
               </div>
             )}
@@ -507,6 +530,15 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
   const [guestEnvAllowed, setGuestEnvAllowed] = useState(true)
   const [availableModels, setAvailableModels] = useState<{ value: string; label: string }[]>([])
   const [controlsSaved, setControlsSaved] = useState(false)
+  // Did /api/config actually answer? The `if (!d) return` guards below stop a
+  // failed read from writing WRONG values into state - they do not stop the
+  // component from SAVING the state it still has, which is its initial
+  // defaults. saveControls PATCHes all five keys together, so one toggle after
+  // a failed read overwrites the operator's real settings with those defaults -
+  // including default_rag_enabled, whose initial value here is false while the
+  // server's is true. The read failing and the save proceeding are two separate
+  // events; only this flag connects them.
+  const [controlsLoaded, setControlsLoaded] = useState(false)
   const [saveErr, setSaveErr] = useState('')
 
   useEffect(() => {
@@ -543,6 +575,7 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
         // deliberate setting whenever the env half was off.
         if (d.guest_mode_configured !== undefined) setGuestChatEnabled(d.guest_mode_configured)
         if (d.guest_mode_env_allowed !== undefined) setGuestEnvAllowed(d.guest_mode_env_allowed)
+        setControlsLoaded(true)
       })
     guardedJson<{ groups?: { models: { value: string; label: string }[] }[] }>(
       fetch(`${api}/api/models`, { headers: headers() }), 'Loading models')
@@ -604,6 +637,14 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
     defRag = defaultRagEnabled,
     guestChat = guestChatEnabled,
   ) => {
+    // REFUSE to write settings we never successfully read. This block sends all
+    // five keys at once, so saving one control from unhydrated state silently
+    // rewrites the other four to this component's initial values.
+    if (!controlsLoaded) {
+      setSaveErr('NOT saved - these settings never loaded, so saving would '
+        + 'overwrite them with defaults. Reload the page and try again.')
+      return
+    }
     // Every key here must be in the backend's config allowlist. It rejects an
     // unknown key BY NAME with a 400 and validates the whole body before
     // writing any of it, so one stale key takes the entire block down with it -
@@ -1224,14 +1265,36 @@ function MonitoringTab({ api, headers }: { api: string; headers: () => Record<st
   }, [])
 
   const downloadScrapeConfig = () => {
+    // THREE things were wrong with the file this used to hand out, and each one
+    // alone made it useless. Port 80 is not published by the shipped compose
+    // (8000 is the backend, 5173 the client), so the scrape got connection
+    // refused. Pointing it at the client port instead returns HTTP 200 and an
+    // HTML page - the SPA fallback answers any unmatched path, and nginx only
+    // proxies /api/, so Prometheus would have parsed index.html as metrics.
+    // And /metrics is authenticated, so even the right host and port answered
+    // 401 unless a credential rides along - which no scraper could hold,
+    // because the only credential this platform issued was a 30-minute access
+    // token. METRICS_TOKEN now exists for exactly this.
     const yaml = `# Prometheus scrape config for Architecture Zero
 # Add under scrape_configs in prometheus.yml
+#
+# /metrics is authenticated. Set METRICS_TOKEN in the backend's .env to a long
+# random string and paste the SAME value below - a user login will not work
+# here, because its access token expires in 30 minutes and Prometheus cannot
+# refresh one.
+#
+# The target is the BACKEND port (8000 in the shipped compose), not the client
+# port: nginx only proxies /api/, so /metrics on the client port returns the
+# HTML page with a 200 and Prometheus would scrape markup.
 scrape_configs:
   - job_name: 'architecture-zero'
     static_configs:
-      - targets: ['YOUR_HOST:80']
+      - targets: ['YOUR_HOST:8000']
     metrics_path: /metrics
     scrape_interval: 30s
+    authorization:
+      type: Bearer
+      credentials: 'YOUR_METRICS_TOKEN'
 `
     const a = document.createElement('a')
     a.href = URL.createObjectURL(new Blob([yaml], { type: 'text/yaml' }))
@@ -1457,14 +1520,17 @@ function BackupTab({ api, headers }: { api: string; headers: () => Record<string
       <div className="bg-gray-900 rounded-xl p-5 border border-gray-800 space-y-3">
         <p className="text-sm font-medium">Scheduled Backup (host cron)</p>
         <p className="text-xs text-gray-500">
-          Run <span className="font-mono text-gray-400">scripts/backup.sh</span> on a schedule from
-          the host to write backups to an external location with 30-day rotation.
+          Same snapshot as the button above, on a schedule. It calls the API, so
+          it needs an Owner token - mint one for a dedicated backup account
+          rather than reusing a person's login.
         </p>
         <pre className="text-xs text-gray-400 bg-gray-800 rounded-lg p-3 overflow-x-auto whitespace-pre">{`# /etc/cron.d/az-backup - daily at 2 am
-0 2 * * * root cd /opt/your-instance && ./scripts/backup.sh`}</pre>
+0 2 * * * root curl -fsS -X POST http://localhost:8000/api/admin/backup \
+  -H "Authorization: Bearer $AZ_OWNER_TOKEN" >> /var/log/az-backup.log 2>&1`}</pre>
         <p className="text-xs text-gray-500">
-          See <span className="font-mono text-gray-400">docs/DISASTER-RECOVERY.md</span> for full
-          restore procedures and off-site backup recommendations.
+          Archives land in <span className="font-mono text-gray-400">/app/data/backups/</span> inside
+          the container, which is the mounted data volume - copy them off the box
+          to survive losing it.
         </p>
       </div>
     </div>
@@ -1627,16 +1693,22 @@ function IngestQueueTab({ api, headers }: { api: string; headers: () => Record<s
 
       <div className="bg-gray-800/30 border border-gray-700/50 rounded-xl p-4 space-y-2">
         <p className="text-xs text-gray-400 font-medium uppercase tracking-widest">Setup</p>
-        <p className="text-xs text-gray-500">Enable the Celery worker in <span className="font-mono text-gray-400">docker-compose.yml</span>:</p>
-        <pre className="text-xs text-gray-400 bg-gray-800 rounded-lg p-3 overflow-x-auto whitespace-pre">{`# Uncomment in docker-compose.yml
-celery-worker:
-  build: ./backend
-  command: celery -A app.jobs.celery_app worker --loglevel=info
-  env_file: .env
-  environment:
-    - ENABLE_ASYNC_JOBS=true
-  volumes:
-    - ./backend/data:/app/data`}</pre>
+        <p className="text-xs text-gray-500">
+          Set one variable and restart the backend. There is no worker container
+          and no broker to run:
+        </p>
+        <pre className="text-xs text-gray-400 bg-gray-800 rounded-lg p-3 overflow-x-auto whitespace-pre">{`# .env
+ENABLE_ASYNC_JOBS=true
+
+docker compose up -d backend`}</pre>
+        <p className="text-xs text-gray-500">
+          Queued ingest runs on a worker <span className="text-gray-400">thread inside the backend</span>,
+          not a separate process. That is deliberate: the vector store is an
+          embedded database on a local directory, so a second process would be a
+          second writer against one index with no cross-process locking - the
+          vector-loss failure this platform already had to repair once. The
+          trade is honest: this scales to one box.
+        </p>
       </div>
     </div>
   )
