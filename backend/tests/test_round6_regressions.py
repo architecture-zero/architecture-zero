@@ -76,18 +76,16 @@ def test_threshold_still_accepts_a_real_value(client, admin_headers):
                          headers=admin_headers)
         assert r.status_code == 200, r.text
     finally:
-        # The stored value can legitimately be blank - the key exists in config
-        # with an empty default and the runtime falls back. Restoring blind
-        # raised ValueError in the full-suite run while passing in isolation,
-        # which is a test-isolation bug of exactly the kind this file is about.
-        try:
-            restore = float(original)
-        except (TypeError, ValueError):
-            restore = None
-        if restore is not None:
-            client.patch("/api/admin/config",
-                         json={"rag_similarity_threshold": restore},
-                         headers=admin_headers)
+        # RESTORE THROUGH THE CONFIG LAYER, not the API. The stored value is
+        # legitimately blank on a fresh instance (the key exists with an empty
+        # default and the runtime falls back), and the endpoint's own validator
+        # correctly refuses "" - so an API restore silently skipped, and this
+        # test left 0.5 behind in a session-scoped database for every test that
+        # runs after it. The first version of this teardown raised ValueError
+        # instead; the second swallowed it and did nothing while the docstring
+        # still said "restored afterwards". Both are the same class this file
+        # exists to pin, committed in the file pinning it.
+        config.set_config("rag_similarity_threshold", original)
 
 
 # -- 2. PUT /api/settings stopped discarding in silence ----------------------

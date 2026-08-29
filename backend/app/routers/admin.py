@@ -170,10 +170,18 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
     # every earlier key in the body already written and the audit line skipped -
     # a partial write reported as refused, the same lying-response class as the
     # bare `continue` this endpoint was cured of the same day.
-    if "suggestions" in body and not isinstance(body["suggestions"], list):
-        raise HTTPException(
-            status_code=400,
-            detail="suggestions must be a list of strings")
+    # The error string says "a list of strings" and the check only tested LIST,
+    # so a list CONTAINING a non-string passed here and was then silently
+    # dropped element-by-element in the write loop below - the element-level
+    # survivor of the very silent-drop class this endpoint was cured of. An
+    # operator posting ["a", 42, "b"] got 200 and two suggestions. Refuse what
+    # the message already claims to refuse.
+    if "suggestions" in body:
+        _sugg = body["suggestions"]
+        if not isinstance(_sugg, list) or any(not isinstance(s, str) for s in _sugg):
+            raise HTTPException(
+                status_code=400,
+                detail="suggestions must be a list of strings")
     # rag_similarity_threshold is read back with float() on the chat path, so a
     # value that will not parse is not a bad setting - it is an outage. One
     # typo in the admin field wrote "0.4 " or "high" and every subsequent chat
@@ -223,7 +231,11 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
     written = []
     for key, value in body.items():
         if key == "suggestions":
-            value = json.dumps([s for s in value if isinstance(s, str) and s.strip()])
+            # Type is guaranteed by the pre-write validator, so this only drops
+            # blank entries. Content is stored VERBATIM - no .strip() - because
+            # silently rewriting what an operator typed is the smaller cousin of
+            # silently discarding it.
+            value = json.dumps([s for s in value if s.strip()])
         elif key in ("allow_model_selection", "allow_rag_toggle", "default_rag_enabled", "guest_mode_enabled"):
             # NOT `"true" if value else "false"`. That is Python truthiness on
             # the raw JSON value, so the STRING "false" - and "no", and "0" -
@@ -237,7 +249,14 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
             value = "true" if value else "false"
         set_config(key, str(value))
         written.append(key)
-    # written, not submitted: the log is the record of what CHANGED.
+    # Accumulated in the loop rather than taken from body.keys(), so it stays
+    # honest if a skip is ever reintroduced. Be clear about what it does and
+    # does not prove TODAY: nothing in the loop skips - every unwritable key is
+    # refused with 400 or 403 before it - so this list currently equals the
+    # submitted keys, and the earlier "record of what CHANGED" wording claimed
+    # more than that. It is also not a transaction receipt: set_config opens and
+    # commits its own session per key, so an exception partway through leaves
+    # the earlier keys committed and no line here at all.
     log("admin_config_update", admin_id=current_user["id"], keys=sorted(written))
     return get_all_config_masked()
 

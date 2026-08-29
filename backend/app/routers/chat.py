@@ -179,8 +179,9 @@ def delete_history(session_id: str, current_user: dict = Depends(get_current_use
 @router.delete("/api/history/{session_id}/tail")
 def delete_history_tail(session_id: str, count: int = Query(1, ge=1),
                         current_user: dict = Depends(get_current_user)):
-    delete_tail_messages(session_id, count, current_user["id"])
-    return {"status": "ok", "deleted": count}
+    # Report what was DELETED, not what was ASKED FOR - see delete_tail_messages.
+    deleted = delete_tail_messages(session_id, count, current_user["id"])
+    return {"status": "ok", "deleted": deleted, "requested": count}
 
 
 def _estimate_tokens(messages: list[dict]) -> int:
@@ -460,21 +461,28 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
                 old_msgs = request.history[:-keep]
                 recent_msgs = request.history[-keep:]
                 summary = _summarize_history(old_msgs, request.model)
-                clear_session(request.session_id, uid)
-                save_message(request.session_id, "assistant",
-                             f"[CONTEXT SUMMARY]: {summary}", request.model, user_id=uid)
-                for m in recent_msgs:
-                    save_message(request.session_id, m.role, m.content, request.model, user_id=uid)
-                # RE-SAVE THE TURN IN FLIGHT. clear_session above deleted every
-                # row for this session INCLUDING the user row written for this
-                # request, and request.history is built by the client BEFORE it
-                # appends the new prompt, so recent_msgs never contains it. The
-                # current question was therefore destroyed and never rewritten:
-                # the answer about to stream had no question above it on reload,
-                # and the stored row set stopped matching the client's bubbles,
-                # which is the premise the regenerate/edit trims depend on.
-                save_message(request.session_id, "user", request.prompt,
-                             request.model, user_id=uid)
+                # SUMMARISE THE CONTEXT SENT TO THE MODEL. DO NOT TOUCH STORED
+                # HISTORY. This block used to call clear_session() - the same
+                # primitive DELETE /api/history/{id} uses - and then write back
+                # only the summary, the last six turns, and the current prompt.
+                # Every older row was permanently gone, on every over-limit turn,
+                # for every user of the instance, with no confirmation and no
+                # undo. The admin control that arms this says "compress context
+                # silently" and the chat banner says "Older messages were
+                # summarized"; neither says deleted.
+                #
+                # The deletion was never load-bearing. What reaches the model is
+                # `history_raw`, rebuilt in memory immediately below - the stored
+                # rows are not consulted for context at all. So the whole write
+                # was cost with no benefit, and it took the failure mode with it:
+                # _summarize_history swallows provider errors and returns a fixed
+                # placeholder string, which is what an arbitrarily long transcript
+                # was being replaced with whenever the summariser was down.
+                #
+                # Removing it also restores the invariant the ephemeral flag
+                # depends on: stored rows now stay in one-to-one correspondence
+                # with the client's non-ephemeral bubbles, so the regenerate and
+                # edit trims keep counting the right thing.
                 history_raw = [
                     {"role": "system", "content": f"Earlier conversation summary: {summary}"},
                     *[{"role": m.role, "content": m.content} for m in recent_msgs],
@@ -616,25 +624,38 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
                     response_text = "".join(full_response)
                     yield f"data: {json.dumps({'token': fallback})}\n\n"
             save_message(request.session_id, "assistant", response_text, request.model, user_id=uid)
-            if ENABLE_AUDIT_LOG:
-                log_audit_entry(
-                    user_id=current_user.get("id") if current_user else None,
-                    username=current_user.get("username") if current_user else None,
-                    session_id=request.session_id,
-                    prompt=request.prompt,
-                    response_length=len(response_text),
-                    model=request.model,
-                    use_rag=use_rag,
-                    sources=rag_sources,
-                    duration_ms=int((time.monotonic() - _t0) * 1000),
-                    ttft_ms=ttft_ms,
-                    answer_lane="model",
-                    rerank_ms=_rr_stats.get("rerank_ms"),
-                    rerank_pool=_rr_stats.get("rerank_pool"),
-                    rerank_provider=_rr_stats.get("rerank_provider"),
-                )
-            log("chat_response", session_id=request.session_id,
-                model=request.model, chars=len(response_text), ttft_ms=ttft_ms)
+            # PAST THIS POINT THE ANSWER IS STORED, so nothing below may report
+            # the turn as failed. Everything after the save is bookkeeping -
+            # audit row, log line, the [DONE] sentinel - and an exception in any
+            # of it used to fall into the handler below and emit an `error`
+            # event for an answer that is sitting in the database. The client
+            # reads that event as "no row was written" and leaves the bubble
+            # marked unstored, so the next Regenerate trims one row too few and
+            # the stored answer is orphaned. Bookkeeping failures are logged and
+            # swallowed; the turn succeeded.
+            try:
+                if ENABLE_AUDIT_LOG:
+                    log_audit_entry(
+                        user_id=current_user.get("id") if current_user else None,
+                        username=current_user.get("username") if current_user else None,
+                        session_id=request.session_id,
+                        prompt=request.prompt,
+                        response_length=len(response_text),
+                        model=request.model,
+                        use_rag=use_rag,
+                        sources=rag_sources,
+                        duration_ms=int((time.monotonic() - _t0) * 1000),
+                        ttft_ms=ttft_ms,
+                        answer_lane="model",
+                        rerank_ms=_rr_stats.get("rerank_ms"),
+                        rerank_pool=_rr_stats.get("rerank_pool"),
+                        rerank_provider=_rr_stats.get("rerank_provider"),
+                    )
+                log("chat_response", session_id=request.session_id,
+                    model=request.model, chars=len(response_text), ttft_ms=ttft_ms)
+            except Exception as bookkeeping_error:
+                log_error("chat_bookkeeping_error", session_id=request.session_id,
+                          error=str(bookkeeping_error))
             yield "data: [DONE]\n\n"
         except Exception as e:
             increment("chat_errors_total")

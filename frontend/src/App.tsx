@@ -475,6 +475,11 @@ export default function App() {
   const [contextSummarized, setContextSummarized] = useState(false)
   const [modelGroups, setModelGroups] = useState<ModelGroup[]>([])
   const [model, setModel] = useState('')
+  // Did the USER pick this model from the selector? Same distinction as
+  // ragTouched: `model` is seeded from the server's default, so its mere
+  // presence says nothing about intent, and sending it unconditionally
+  // suppressed the operator's chat_model pin for every signed-in caller.
+  const [modelTouched, setModelTouched] = useState(false)
   const [useRag, setUseRag] = useState(true)
   // Whether useRag reflects the SERVER's configured default or is still this
   // component's optimistic initial value. Guests never learn it - /api/config
@@ -565,6 +570,7 @@ export default function App() {
     setUseRag(true)
     setRagKnown(false)
     setRagTouched(false)
+    setModelTouched(false)
   }
 
   // Auth bootstrap - runs once on load.
@@ -711,6 +717,12 @@ export default function App() {
     } catch { /* keep the login payload; the boot path fills it in on reload */ }
     setCurrentUser(resolved)
     setIsGuest(false)
+    // Signing IN is an identity transition too. A guest can be mid-answer when
+    // they click Sign in, and that stream keeps its ticket, keeps owning
+    // streaming/loading, and goes on writing into the transcript the new
+    // account is about to be shown. Sign-out was fixed for this; the door in
+    // the other direction was not.
+    abandonStream()
     // Clear the transcript on the way IN as well as out. The history effect
     // below replaces messages only `if (data?.messages?.length)`, so signing
     // into an account whose session is empty left the PREVIOUS account's
@@ -723,6 +735,10 @@ export default function App() {
   }
 
   const handleGuest = () => {
+    // Same reason as handleLogin: continuing as guest leaves whatever
+    // conversation was on screen, so any stream still running must be dropped
+    // rather than left writing into the guest's fresh transcript.
+    abandonStream()
     setIsGuest(true)
     setCurrentUser(null)
     setMessages([])
@@ -737,18 +753,25 @@ export default function App() {
     // was about to use. The token is still in localStorage at this point, so
     // authHeaders() below is unaffected by doing this first.
     abandonStream()
+    // LEAVE THE CHAT VIEW FIRST, in the same synchronous batch as the state
+    // reset below. clearIdentityState rotates sessionId, and the history effect
+    // keys on [sessionId, view, isGuest] - so rotating while `view` was still
+    // 'chat' and the token was still in localStorage fired an authenticated
+    // fetch for a session id that had existed for microseconds. Harmless (the
+    // response is empty and the effect ignores empty), but it is a request the
+    // product has no reason to make while signing someone out.
+    setView('login')
     // Signing out has to leave NOTHING on screen or in state for the next
     // person at this machine - see clearIdentityState for what "nothing" turned
     // out to include beyond the transcript.
     clearIdentityState()
+    setCurrentUser(null)
+    setIsGuest(false)
     try {
       await fetch(`${API}/api/auth/logout`, { method: 'POST', headers: authHeaders() })
     } catch { /* ignore */ }
     localStorage.removeItem('az_jwt_token')
     localStorage.removeItem('az_jwt_refresh')
-    setCurrentUser(null)
-    setIsGuest(false)
-    setView('login')
   }
 
   // Chat data polling - hooks must be declared before any early returns
@@ -788,9 +811,21 @@ export default function App() {
   useEffect(() => {
     if (view !== 'chat') return
     if (isGuest) return
+    // NEVER RELOAD OVER A LIVE STREAM. This effect re-runs on `view`, so simply
+    // opening and closing the Admin panel mid-answer replaced `messages`
+    // wholesale - which discards the partial answer AND desynchronises `slot`,
+    // the index the running stream is writing into. The stream then wrote its
+    // remaining tokens over whatever row happened to land at that index.
+    // A stream is authoritative for its own conversation while it runs: the
+    // rows it is about to produce do not exist server-side yet, so the server's
+    // copy is strictly staler than what is on screen.
+    if (activeStream.current !== null) return
     guardedJson<{ messages?: Array<{ role: 'user' | 'assistant'; content: string }> }>(
       fetch(`${API}/api/history/${sessionId}`, { headers: authHeaders() }), 'Loading chat history')
       .then(data => {
+        // Re-check after the await: a send() can start between the request and
+        // its response, and the guard above cannot see the future.
+        if (activeStream.current !== null) return
         if (data?.messages?.length) {
           setMessages(data.messages.map(m => ({ role: m.role, content: m.content })))
         }
@@ -875,7 +910,17 @@ export default function App() {
     const err = await actionError(fetch(`${API}/api/feedback`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ session_id: sessionId, turn_index: msgIndex, value }),
+      // STORED-ROW ORDINAL, NOT THE BUBBLE INDEX. turn_index is meant to
+      // identify a row on the server, and the client's array now legitimately
+      // contains bubbles that have no row - the stopped notice, error bubbles,
+      // an unsaved partial answer. Counting them shifts every later index, so
+      // a thumb landed on the wrong turn. Same non-ephemeral counting the trims
+      // use.
+      body: JSON.stringify({
+        session_id: sessionId,
+        turn_index: messages.slice(0, msgIndex).filter(m => !m.ephemeral).length,
+        value,
+      }),
     }), 'Saving feedback')
     if (err) emitError(err)
   }
@@ -940,7 +985,17 @@ export default function App() {
         // default; a signed-in client that HAS read the config still sends the
         // explicit value, including whatever the user toggled.
         body: JSON.stringify({
-          prompt, model, history: historyForRequest, session_id: sessionId,
+          prompt, history: historyForRequest, session_id: sessionId,
+          // SEND A MODEL ONLY IF THE USER PICKED ONE. `model` is seeded from
+          // /api/config's default_model, which is never empty, so this client
+          // always sent an explicit model - and chat.py applies the operator's
+          // `chat_model` pin only `if not request.model`. The pin was therefore
+          // inert for every signed-in user, while the header badge and footer
+          // rendered `chat_model_effective` (the pin) as the model that
+          // answered. The instance named one model and used another. Omitting
+          // the field lets the server's own resolution chain run, which is what
+          // the badge is already reporting.
+          ...(modelTouched ? { model } : {}),
           // Sent when the server told us its default (so we can echo the
           // user's choice), OR when the user has actually touched the toggle -
           // an explicit choice must reach the server even from a guest whose
@@ -958,8 +1013,14 @@ export default function App() {
         const fallback = res.status === 429
           ? 'Guest limit reached. Sign in to continue.'
           : `Error: the server returned ${res.status}.`
-        setMessages(prev => [...prev, { role: 'assistant', content: errData.detail || fallback, ephemeral: true }])
-        setLoading(false)
+        // mine(), like the other two error appends. This was the third one and
+        // it was the one still missing the guard, so a rejected send from an
+        // abandoned stream wrote its error into whatever conversation was on
+        // screen by then and cleared that conversation's loading state.
+        if (mine()) {
+          setMessages(prev => [...prev, { role: 'assistant', content: errData.detail || fallback, ephemeral: true }])
+          setLoading(false)
+        }
         return
       }
       if (!res.body) throw new Error('No response body')
@@ -1049,9 +1110,14 @@ export default function App() {
                     content: assistantMsg,
                     toolCalls,
                     sources,
+                    // Say it was not saved. The Stop notice tells the user that
+                    // ("This partial answer was not saved."); this one did not,
+                    // and it is the same fact - no assistant row is written when
+                    // the generator raises. A partial answer that silently
+                    // vanishes on the next reload is the thing to warn about.
                     notice: assistantMsg
-                      ? 'The answer stopped early: the provider failed mid-response.'
-                      : 'The provider failed before any of the answer arrived.',
+                      ? 'The answer stopped early: the provider failed mid-response. This partial answer was not saved.'
+                      : 'The provider failed before any of the answer arrived. Nothing was saved.',
                   }
                   return next
                 })
@@ -1417,7 +1483,7 @@ export default function App() {
                       {group.models.map((m: ModelOption) => (
                         <button
                           key={m.value}
-                          onClick={() => setModel(m.value)}
+                          onClick={() => { setModel(m.value); setModelTouched(true) }}
                           className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm transition-all ${
                             model === m.value ? '' : 'text-gray-400 hover:bg-gray-800 hover:text-white'
                           }`}
@@ -1713,14 +1779,23 @@ export default function App() {
                 )}
               </button>
             </div>
-            {/* Names the provider ACTUALLY answering, from /api/status. It read
-                "Claude API" hardcoded - on a template that speaks to Ollama,
-                Anthropic, OpenAI, Gemini, Mistral, Groq, xAI and DeepSeek, and
-                whose shipped default is local Ollama with no Anthropic key
-                configured at all. So the stock deployment credited a vendor it
-                was not using, in the one line a visitor reads to find out what
-                answered them. Guests get no /api/status, so the segment is
-                omitted rather than guessed. */}
+            {/* Names the MODEL actually answering: chat_model_effective from
+                /api/config - the server's own resolved value, not an inference
+                this client makes. (The comment here used to say /api/status;
+                that is where an earlier version read status.provider.provider,
+                which is the ENABLED-PROVIDER SET rather than the thing that
+                answered, and reports the literal string "multi" when more than
+                one is on.) It read "Claude API" hardcoded before that - on a
+                template that speaks to Ollama, Anthropic, OpenAI, Gemini,
+                Mistral, Groq, xAI and DeepSeek, and whose shipped default is
+                local Ollama with no Anthropic key configured at all. So the
+                stock deployment credited a vendor it was not using, in the one
+                line a visitor reads to find out what answered them.
+                This client never sends `model` unless the user picked one, so
+                the server's chat_model pin resolves and what is named here is
+                what ran. A guest's boot read of /api/config is skipped (no
+                token), so effectiveModel stays empty and the segment is omitted
+                rather than guessed. */}
             <p className="text-center text-xs text-gray-600 mt-2">
               Powered by Architecture Zero{providerLabel ? ` · ${providerLabel}` : ''} · responses are AI-generated
             </p>

@@ -77,6 +77,25 @@ def get_settings(current_user: dict = Depends(require_owner)):
 @router.put("/api/settings")
 def update_settings(body: ProviderSettingsRequest, current_user: dict = Depends(require_owner)):
     _MASKED = {"***", "········", ""}
+    # VALIDATE BEFORE WRITING ANYTHING. This check used to sit at the bottom,
+    # after eight set_config calls had already committed - and the admin UI
+    # sends the whole body at once, so one bad threshold wrote the providers,
+    # the base URL, the keys and the model, and THEN answered 400. The operator
+    # read "Save failed" over a half-applied change, which is worse than the
+    # silent discard it replaced: that at least left the response and the
+    # database agreeing. PATCH /api/admin/config already validates in a
+    # pre-write block for exactly this reason, with a comment saying so.
+    #
+    # NaN is rejected explicitly because every comparison against it is False,
+    # so it fails the range test for the wrong reason and would otherwise be
+    # indistinguishable from an ordinary refusal.
+    if body.rag_similarity_threshold is not None:
+        _thr = body.rag_similarity_threshold
+        if _thr != _thr or not (0.0 <= _thr <= 1.0):
+            raise HTTPException(
+                status_code=400,
+                detail="rag_similarity_threshold must be a number between 0 and 1")
+
     if body.ollama_enabled is not None:
         set_config("provider_ollama_enabled", "true" if body.ollama_enabled else "false")
     if body.anthropic_enabled is not None:
@@ -94,19 +113,8 @@ def update_settings(body: ProviderSettingsRequest, current_user: dict = Depends(
     if body.default_model is not None:
         set_config("default_model", body.default_model.strip())
     if body.rag_similarity_threshold is not None:
-        # REFUSE OUT OF RANGE, do not discard it. This `if` had no `else`, while
-        # the log line and the success response below run unconditionally - so
-        # an out-of-range value was dropped and the operator was told "Saved".
-        # The field is a bare float with no ge/le, so Pydantic did not refuse it
-        # either. NaN is rejected explicitly because every comparison against it
-        # is False, so it fails the range test for the wrong reason and would
-        # otherwise be indistinguishable from an ordinary refusal.
-        _thr = body.rag_similarity_threshold
-        if _thr != _thr or not (0.0 <= _thr <= 1.0):
-            raise HTTPException(
-                status_code=400,
-                detail="rag_similarity_threshold must be a number between 0 and 1")
-        set_config("rag_similarity_threshold", str(_thr))
+        # Already range-checked in the pre-write block above; this only writes.
+        set_config("rag_similarity_threshold", str(body.rag_similarity_threshold))
     log("settings_update", admin_id=current_user["id"])
     return _settings_dict()
 

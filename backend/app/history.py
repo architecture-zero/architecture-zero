@@ -41,7 +41,15 @@ def clear_session(session: str, user_id: int | None = None):
         _scope(db.query(Message), session, user_id).delete()
 
 
-def delete_tail_messages(session_id: str, count: int, user_id: int | None = None) -> None:
+def delete_tail_messages(session_id: str, count: int, user_id: int | None = None) -> int:
+    """Delete the newest `count` rows of a session. Returns how many actually
+    went, which is not always `count`: the session may hold fewer rows, or none
+    at all. The route used to answer `deleted: count` from the REQUEST rather
+    than from the result, so a client asking to trim two rows off a one-row
+    session was told two were deleted. That is the same
+    reports-success-regardless shape this codebase has been pulling out of every
+    other write path, and it matters here because the caller uses the number to
+    reason about what the stored set now contains."""
     with get_session() as db:
         rows = (
             _scope(db.query(Message.id), session_id, user_id)
@@ -50,8 +58,10 @@ def delete_tail_messages(session_id: str, count: int, user_id: int | None = None
             .all()
         )
         ids = [r.id for r in rows]
-        if ids:
-            db.query(Message).filter(Message.id.in_(ids)).delete(synchronize_session=False)
+        if not ids:
+            return 0
+        return db.query(Message).filter(
+            Message.id.in_(ids)).delete(synchronize_session=False)
 
 
 def purge_anonymous_sessions(days: int) -> dict:
