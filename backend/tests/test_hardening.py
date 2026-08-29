@@ -3,6 +3,7 @@ boot guard, proxy-aware client IP resolution, and WAL-safe backups."""
 
 import importlib
 import pytest
+from fastapi import HTTPException
 
 
 def test_mfa_challenge_token_rejected_as_access(client, admin_headers):
@@ -186,3 +187,32 @@ def test_a_wrong_or_blank_metrics_token_is_refused(client, monkeypatch):
     monkeypatch.setenv("METRICS_TOKEN", "   ")
     assert client.get("/metrics", headers={"Authorization": "Bearer "}).status_code == 401
     assert client.get("/metrics", headers={"Authorization": "Bearer    "}).status_code == 401
+
+
+def test_a_non_ascii_bearer_is_refused_not_a_500(monkeypatch):
+    """A wrong credential must answer 401, never crash the handler.
+
+    secrets.compare_digest raises TypeError the moment either str holds a
+    non-ASCII character, and the presented half comes straight off the wire - so
+    a bearer with an accent turned a failed auth into an unhandled 500 on a
+    route any unauthenticated caller can reach. Comparing bytes fixes it.
+
+    The dependency is called DIRECTLY here because the test client cannot send
+    this request: httpx encodes header values as ASCII and raises client-side.
+    A real server does not get that protection - uvicorn decodes header bytes as
+    latin-1, so a raw socket sending byte 0xE9 hands Python a str containing an
+    accented character. Verified against the running container with a raw
+    socket, which returned 401 after this fix.
+    """
+    import asyncio
+    from app.routers.system import _metrics_auth
+    monkeypatch.setenv("METRICS_TOKEN", "scrape-secret-value")
+
+    class _Req:
+        def __init__(self, value):
+            self.headers = {"Authorization": value}
+
+    for bad in ("café-token", "tökén", "日本語"):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(_metrics_auth(_Req(f"Bearer {bad}"), credentials=None))
+        assert exc.value.status_code == 401, f"{bad!r} did not 401"

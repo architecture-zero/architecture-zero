@@ -343,7 +343,13 @@ async def _metrics_auth(request: Request, credentials=Depends(oauth2_scheme)):
         header = request.headers.get("Authorization", "")
         if header.startswith("Bearer "):
             presented = header.removeprefix("Bearer ").strip()
-            if secrets.compare_digest(presented, token):
+            # ENCODE BOTH. compare_digest on str raises TypeError the moment
+            # either side holds a non-ASCII character ("comparing strings with
+            # non-ASCII characters is not supported"), and the presented half is
+            # attacker-controlled - so `Authorization: Bearer cafe` with an
+            # accent turned a wrong credential into an unhandled 500 on a route
+            # anyone can reach. Bytes compare in constant time for any input.
+            if secrets.compare_digest(presented.encode("utf-8"), token.encode("utf-8")):
                 return {"id": None, "username": "metrics-scraper", "role": "scraper"}
     # No scrape token, or it did not match: fall back to a real session, which
     # keeps the endpoint reachable from the admin UI and from a signed-in curl,
