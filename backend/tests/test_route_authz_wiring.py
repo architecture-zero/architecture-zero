@@ -220,6 +220,11 @@ REQUIRED_GUARD = {
     ("POST", "/api/peers/{peer_id}/reset-breaker"): "require_owner",
     ("GET", "/api/query-kb"): "public",
     ("GET", "/api/sessions"): "require_permission:view_analytics",
+    # The caller's OWN sessions - deliberately a LOWER tier than the
+    # all_users operator view above. The chat sidebar reads this one; a
+    # personal history list on the view_analytics route is how members got
+    # 403 and operators got other people's conversations.
+    ("GET", "/api/sessions/mine"): "require_permission:view_history",
     ("POST", "/api/sessions"): "get_current_user",
     ("DELETE", "/api/sessions/{session_id}"): "get_current_user",
     ("PATCH", "/api/sessions/{session_id}"): "get_current_user",
@@ -332,6 +337,6 @@ def test_the_pin_covers_every_route():
     """Cheap canary: the split moves routes between files, and a router that
     silently fails to register would shrink this number with nothing else in
     the suite noticing."""
-    assert len(_actual_guards()) == 97, (
+    assert len(_actual_guards()) == 98, (
         f"expected 97 routes, found {len(_actual_guards())} - a router failed "
         "to register, or routes were added without updating this count")

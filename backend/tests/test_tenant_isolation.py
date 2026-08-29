@@ -521,3 +521,55 @@ def test_restricted_measured_no_leak_across_probes(monkeypatch):
     n = len(probes)
     assert member_leaks == 0, f"Member pool leaked restricted on {member_leaks}/{n}"
     assert owner_hits == n, f"Owner lost restricted recall on {n - owner_hits}/{n}"
+
+
+def test_my_sessions_is_owner_scoped_not_the_operator_view(client, admin_headers):
+    """The personal history route must never show another account's sessions.
+
+    THE BUG THIS PINS: /api/sessions/mine did not exist, so the reference
+    client's chat sidebar was wired to /api/sessions - view_analytics-gated and
+    deliberately all_users=True. Ordinary members got 403 and saw no history at
+    all, including their own; operators saw everyone's conversations listed as
+    their own history, each titled with that conversation's FIRST MESSAGE.
+    """
+    import app.history as h
+
+    # Two owners with a conversation each. The admin fixture is user 1.
+    me = client.get("/api/auth/me", headers=admin_headers).json()
+    h.save_message("mine-own-sess", "user", "my own question", user_id=me["id"])
+    h.save_message("someone-elses-sess", "user", "their private first line", user_id=9101)
+
+    r = client.get("/api/sessions/mine", headers=admin_headers)
+    assert r.status_code == 200
+    names = [s["session"] for s in r.json()["sessions"]]
+    assert "mine-own-sess" in names
+    assert "someone-elses-sess" not in names, (
+        "the personal history route leaked another owner's session")
+
+    # And the leak this replaced: the operator route DOES still show both -
+    # that is its documented job, which is exactly why a sidebar must not use it.
+    r_all = client.get("/api/sessions", headers=admin_headers)
+    assert r_all.status_code == 200
+    all_names = [s["session"] for s in r_all.json()["sessions"]]
+    assert "someone-elses-sess" in all_names
+
+
+def test_my_sessions_requires_only_view_history(client, admin_headers):
+    """A plain member must be able to read their OWN history list.
+
+    view_history is what the taxonomy defines as "see own conversation history";
+    before this route existed there was nothing serving that permission, so the
+    sidebar answered 403 for every non-operator.
+    """
+    client.post("/api/users",
+                json={"username": "member-hist", "password": "MemberPass1!",
+                      "role": "member", "department": "general"},
+                headers=admin_headers)
+    tok = client.post("/api/auth/login",
+                      json={"username": "member-hist", "password": "MemberPass1!"}
+                      ).json()["access_token"]
+    member_headers = {"Authorization": f"Bearer {tok}"}
+
+    assert client.get("/api/sessions/mine", headers=member_headers).status_code == 200
+    # The operator view stays shut to them.
+    assert client.get("/api/sessions", headers=member_headers).status_code == 403

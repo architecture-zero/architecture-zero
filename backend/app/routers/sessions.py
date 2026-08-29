@@ -67,6 +67,28 @@ def sessions(category: str | None = None, current_user: dict = Depends(require_p
     return {"sessions": all_sessions}
 
 
+@router.get("/api/sessions/mine")
+def my_sessions(category: str | None = None,
+                current_user: dict = Depends(require_permission("view_history"))):
+    """The caller's OWN conversations - what a chat sidebar wants.
+
+    This route did not exist, so the reference client's personal "History" list
+    was wired to /api/sessions above. That one is view_analytics-gated and
+    deliberately all_users=True, which made the sidebar dead for every ordinary
+    member (403 - no history at all, their own included) and cross-user for
+    operators: another account's conversation listed as your own history, titled
+    with ITS FIRST MESSAGE, opening to nothing because /api/history stayed
+    correctly owner-scoped.
+
+    view_history is the permission the taxonomy already defines as "see own
+    conversation history". It simply had no route serving it.
+    """
+    mine = list_sessions(user_id=current_user["id"])
+    if category:
+        mine = [s for s in mine if s.get("category") == category]
+    return {"sessions": mine}
+
+
 class SessionCreateRequest(BaseModel):
     session_id: str
     name: str | None = None

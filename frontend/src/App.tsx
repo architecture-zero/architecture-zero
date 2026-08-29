@@ -423,6 +423,14 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  // TRUE for the whole stream, not just until the first token. `loading` flips
+  // false the moment anything arrives (that is what swaps the thinking dots for
+  // text), and it was ALSO the only guard on send / regenerate / edit / the
+  // textarea / the send-stop button flip. So from the first token onward the
+  // composer re-enabled mid-answer, Stop turned back into Send - making a long
+  // generation unstoppable, which is the one thing Stop exists for - and a
+  // second request could be started into the same message slot.
+  const [streaming, setStreaming] = useState(false)
   const [contextWarning, setContextWarning] = useState(false)
   const [contextSummarized, setContextSummarized] = useState(false)
   const [modelGroups, setModelGroups] = useState<ModelGroup[]>([])
@@ -516,9 +524,20 @@ export default function App() {
   // Fetch available models and public config (provider-aware; sends the auth
   // token when present - the endpoint 401s signed-out callers under ENABLE_AUTH)
   useEffect(() => {
-    // Runs once at mount, possibly pre-auth: a 401 here (signed-out boot under
-    // ENABLE_AUTH) resolves before any ErrorSurface host is mounted, so it
-    // stays quiet by construction - only genuine failures reach a chat viewer.
+    // BOTH READS ARE AUTHENTICATED, so a caller with no token must not make
+    // them. The comment here used to say a 401 "resolves before any
+    // ErrorSurface host is mounted, so it stays quiet by construction" - that
+    // was true of the FIRST run and untrue of every later one, because this
+    // effect is keyed on [view] and re-runs when a guest crosses from login to
+    // chat, where the surface IS mounted. guardedJson maps 401 to
+    // emitAuthExpired, so every guest session opened under a sticky
+    // "Session expired - your login is no longer valid" banner with no dismiss,
+    // before they had done anything at all.
+    //
+    // A guest keeps the client-side defaults, which is what they got anyway:
+    // the two calls could only ever 401 for them.
+    const signedIn = !!localStorage.getItem('az_jwt_token')
+    if (!signedIn) return
     guardedJson<{ groups?: ModelGroup[] }>(
       fetch(`${API}/api/models`, { headers: authHeaders() }), 'Loading models')
       .then(d => {
@@ -573,6 +592,13 @@ export default function App() {
     } catch { /* keep the login payload; the boot path fills it in on reload */ }
     setCurrentUser(resolved)
     setIsGuest(false)
+    // Clear the transcript on the way IN as well as out. The history effect
+    // below replaces messages only `if (data?.messages?.length)`, so signing
+    // into an account whose session is empty left the PREVIOUS account's
+    // conversation rendered - and since send() builds its history array from
+    // messages, that transcript was then posted with the new account's token
+    // and read by the model as context for their questions.
+    setMessages([])
     setSessionId(getOrCreateSession(resolved.id))
     setView('chat')
   }
@@ -593,6 +619,12 @@ export default function App() {
     localStorage.removeItem('az_jwt_refresh')
     setCurrentUser(null)
     setIsGuest(false)
+    // Signing out has to leave nothing on screen for the next person at this
+    // machine. Only handleGuest cleared this before, so a shared browser kept
+    // the previous account's conversation visible behind the login form and
+    // straight through the next sign-in.
+    setMessages([])
+    setInput('')
     setView('login')
   }
 
@@ -614,7 +646,13 @@ export default function App() {
     }
     const fetchSessions = () => {
       if (isGuest) return
-      guardedPoll<{ sessions?: SessionEntry[] }>(fetch(`${API}/api/sessions`, { headers: authHeaders() }))
+      // /api/sessions/mine, NOT /api/sessions. The latter is the operator
+      // analytics view - view_analytics-gated and all_users=True - so pointing a
+      // personal history sidebar at it gave ordinary members a silent 403 and no
+      // history at all, while operators got other people's conversations listed
+      // as their own, titled with those conversations' first messages, each one
+      // opening empty because /api/history is correctly owner-scoped.
+      guardedPoll<{ sessions?: SessionEntry[] }>(fetch(`${API}/api/sessions/mine`, { headers: authHeaders() }))
         .then(d => { if (d) setSessionList(d.sessions || []) })
     }
     fetchStatus()
@@ -711,8 +749,15 @@ export default function App() {
     if (err) emitError(err)
   }
 
-  const newChat = async () => {
-    await fetch(`${API}/api/history/${sessionId}`, { method: 'DELETE', headers: authHeaders() }).catch(() => {})
+  const newChat = () => {
+    // NO DELETE HERE. This used to fire DELETE /api/history/{sessionId} before
+    // rotating the id, which hard-deletes the caller's message rows server-side
+    // (chat.py delete_history -> clear_session). So the control labelled
+    // "+ New Chat", sitting directly above a History list whose whole purpose is
+    // returning to past conversations, destroyed the conversation it was
+    // leaving - no confirmation, no undo, and the failure swallowed by a bare
+    // .catch. Starting a new conversation is not a request to erase the old one;
+    // the sidebar already has an explicit per-session delete for that.
     const newId = crypto.randomUUID()
     localStorage.setItem(sessionKey(currentUser?.id), newId)
     // Reset in place - NO full page reload. (The reload also wiped the View-as
@@ -728,6 +773,16 @@ export default function App() {
   const sendCore = async (prompt: string, historyForRequest: Array<{ role: string; content: string }>) => {
     const controller = new AbortController()
     abortRef.current = controller
+    setStreaming(true)
+    // The index of THIS stream's assistant bubble, captured when it is created.
+    // Every write below used to target `next[next.length - 1]` - whatever
+    // happened to be last at that instant - and to write its own accumulated
+    // string. With two streams alive that meant the older one dumped its whole
+    // answer into the newer one's bubble and abandoned its own: whole answers
+    // swapped places rather than interleaving, which is exactly why it read as
+    // a harmless duplicate. The guard above should now prevent a second stream,
+    // and this makes the write correct even if one ever gets through.
+    let slot = -1
 
     try {
       const res = await fetch(`${API}/api/chat`, {
@@ -785,7 +840,10 @@ export default function App() {
             }
 
             if (!assistantStarted && (data.sources || data.tool_call || data.token)) {
-              setMessages(prev => [...prev, { role: 'assistant', content: '', toolCalls: [], sources: [] }])
+              setMessages(prev => {
+                slot = prev.length            // this stream's own bubble, for good
+                return [...prev, { role: 'assistant', content: '', toolCalls: [], sources: [] }]
+              })
               setLoading(false)
               assistantStarted = true
             }
@@ -794,7 +852,8 @@ export default function App() {
               sources = data.sources
               setMessages(prev => {
                 const next = [...prev]
-                next[next.length - 1] = { role: 'assistant', content: assistantMsg, toolCalls, sources }
+                if (slot < 0 || slot >= next.length) return prev
+                next[slot] = { role: 'assistant', content: assistantMsg, toolCalls, sources }
                 return next
               })
             }
@@ -803,7 +862,8 @@ export default function App() {
               toolCalls = [...toolCalls, data.tool_call]
               setMessages(prev => {
                 const next = [...prev]
-                next[next.length - 1] = { role: 'assistant', content: assistantMsg, toolCalls, sources }
+                if (slot < 0 || slot >= next.length) return prev
+                next[slot] = { role: 'assistant', content: assistantMsg, toolCalls, sources }
                 return next
               })
             }
@@ -815,7 +875,8 @@ export default function App() {
               assistantMsg += data.token
               setMessages(prev => {
                 const next = [...prev]
-                next[next.length - 1] = { role: 'assistant', content: assistantMsg, toolCalls, sources }
+                if (slot < 0 || slot >= next.length) return prev
+                next[slot] = { role: 'assistant', content: assistantMsg, toolCalls, sources }
                 return next
               })
             }
@@ -830,16 +891,24 @@ export default function App() {
       setMessages(prev => [...prev, { role: 'assistant', content: 'Error: Could not reach the backend.' }])
       setLoading(false)
     } finally {
-      abortRef.current = null
+      // Only retract the controller if it is still OURS. Clearing it blind let
+      // an older stream's finally null a newer stream's controller, which left
+      // Stop inert for the rest of the conversation once two had ever overlapped.
+      if (abortRef.current === controller) abortRef.current = null
+      setStreaming(false)
+      setLoading(false)
     }
   }
 
   const guestTurnCount = isGuest ? messages.filter(m => m.role === 'user').length : 0
   const guestAtLimit = isGuest && guestTurnCount >= GUEST_TURN_LIMIT
+  // One name for "a request is in flight", covering both the pre-first-token
+  // wait and the stream itself. Every entry point guards on this.
+  const busy = loading || streaming
 
   const send = async (text?: string) => {
     const prompt = (text || input).trim()
-    if (!prompt || loading || guestAtLimit) return
+    if (!prompt || busy || guestAtLimit) return
     setInput('')
     setContextWarning(false)
     setContextSummarized(false)
@@ -856,7 +925,7 @@ export default function App() {
   }
 
   const regenerate = async () => {
-    if (loading || messages.length < 2) return
+    if (busy || messages.length < 2) return
     if (messages[messages.length - 1].role !== 'assistant') return
     const lastUserMsg = messages[messages.length - 2]
     if (lastUserMsg.role !== 'user') return
@@ -878,7 +947,7 @@ export default function App() {
   }
 
   const editAndRegenerate = async (msgIndex: number, newContent: string) => {
-    if (loading) return
+    if (busy) return
     const truncated = messages.slice(0, msgIndex)
     const countToRemove = messages.length - msgIndex
     const history = truncated.map(m => ({ role: m.role, content: m.content }))
@@ -1177,7 +1246,7 @@ export default function App() {
               {messages.map((m, i) => (
                 <Message key={i} role={m.role} content={m.content} toolCalls={m.toolCalls}
                   sources={m.sources} msgIndex={i}
-                  isStreaming={loading}
+                  isStreaming={busy}
                   // Guests have no session; /api/feedback needs one, and a 401 here
                     // raises the sticky session-expired banner at someone who never
                     // logged in. Withhold the control rather than the error.
@@ -1232,18 +1301,18 @@ export default function App() {
                 placeholder={guestAtLimit ? 'Sign in to continue chatting…' : `Message ${instanceName}...  (Ctrl+Enter to send)`}
                 value={input}
                 rows={1}
-                disabled={loading || guestAtLimit}
+                disabled={busy || guestAtLimit}
                 onChange={onInput}
                 onKeyDown={onKeyDown}
               />
               <button
-                onClick={loading ? stopGeneration : () => send()}
-                disabled={guestAtLimit || (!loading && !input.trim())}
+                onClick={busy ? stopGeneration : () => send()}
+                disabled={guestAtLimit || (!busy && !input.trim())}
                 className="w-9 h-9 disabled:bg-gray-700 disabled:cursor-not-allowed rounded-xl flex items-center justify-center transition-colors flex-shrink-0 shadow-sm"
-                style={loading ? { backgroundColor: '#dc2626' } : (!input.trim() ? {} : { backgroundColor: PRIMARY_COLOR })}
-                title={loading ? 'Stop generation' : 'Send message'}
+                style={busy ? { backgroundColor: '#dc2626' } : (!input.trim() ? {} : { backgroundColor: PRIMARY_COLOR })}
+                title={busy ? 'Stop generation' : 'Send message'}
               >
-                {loading ? (
+                {busy ? (
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
                     <rect x="3" y="3" width="18" height="18" rx="2" />
                   </svg>
