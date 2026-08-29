@@ -205,3 +205,73 @@ def test_suggestions_stores_strings_verbatim(client, admin_headers):
             "stored content was rewritten"
     finally:
         config.set_config("suggestions", original)
+
+
+# -- The origin gate must accept same-origin requests ------------------------
+
+def _origin_gate_armed():
+    """Turn the origin gate ON for a test.
+
+    IT IS OFF IN EVERY OTHER TEST IN THIS REPO, and that is why nothing here
+    ever caught the defect below: conftest.py sets CORS_ORIGIN="*" for the whole
+    session, which makes `_allow_all` True, which makes the check a no-op. The
+    first version of these two tests did not patch it, so all three "same-origin
+    is accepted" assertions passed against a gate that never ran and the
+    cross-origin test could not fail. Eight green assertions about nothing -
+    the exact class this repo keeps producing, committed in the file pinning it.
+    Patch the module globals the handler actually reads.
+    """
+    return (
+        patch("app.routers.chat._allow_all", False),
+        patch("app.routers.chat._all_origins",
+              ["http://localhost:5173", "http://localhost:3000"]),
+    )
+
+
+def test_same_origin_is_accepted_on_any_host(client, admin_headers):
+    """THE LIVE-LEG FIND, and no code-read round caught it in seven attempts.
+
+    The allow-list is CORS_ORIGIN (default http://localhost:5173) plus two
+    hardcoded dev origins. Browsers send Origin on same-origin POSTs, and nginx
+    forwards it untouched - so an operator who followed the README and browsed
+    to their own server on any other host or port got 403 on every question,
+    while .env.example told them the value was never consulted with the shipped
+    compose. Found by running the reference client on port 5174.
+    """
+    allow_all, origins = _origin_gate_armed()
+    for host in ("myserver.example:5173", "ai.example.com", "localhost:5174"):
+        with allow_all, origins, \
+             patch("app.routers.chat.guest_chat_available", return_value=True), \
+             patch("app.routers.chat.get_config", side_effect=_cfg("warn")), \
+             patch("app.routers.chat.stream_chat_events",
+                   side_effect=_capturing_stream({})):
+            r = client.post("/api/chat",
+                            json={"prompt": "hi", "model": "test-model",
+                                  "session_id": "r7-origin", "use_rag": False},
+                            headers={**admin_headers,
+                                     "Origin": "http://" + host,
+                                     "Host": host})
+        assert r.status_code == 200, f"same-origin request from {host}: {r.text}"
+
+
+def test_cross_origin_is_still_refused(client, admin_headers):
+    """The guard must keep doing its real job. A page on another site posting
+    here sends its OWN origin against this server's Host, so the two differ and
+    it is still refused - which is the whole point of the check.
+
+    This is the assertion that proves the test above is not vacuous: if the gate
+    were off, this would return 200."""
+    allow_all, origins = _origin_gate_armed()
+    with allow_all, origins, \
+         patch("app.routers.chat.guest_chat_available", return_value=True), \
+         patch("app.routers.chat.get_config", side_effect=_cfg("warn")), \
+         patch("app.routers.chat.stream_chat_events",
+               side_effect=_capturing_stream({})):
+        r = client.post("/api/chat",
+                        json={"prompt": "hi", "model": "test-model",
+                              "session_id": "r7-origin-x", "use_rag": False},
+                        headers={**admin_headers,
+                                 "Origin": "https://evil.example",
+                                 "Host": "myserver.example:5173"})
+    assert r.status_code == 403, r.text
+    assert "Origin not allowed" in r.json()["detail"]

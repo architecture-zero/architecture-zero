@@ -214,11 +214,32 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
     check_injection(request.prompt)
 
     # Server-side origin validation - blocks cross-origin browser requests
-    # from unlisted domains
+    # from unlisted domains.
+    #
+    # SAME-ORIGIN ALWAYS PASSES, and without this the shipped configuration only
+    # worked on localhost. Browsers send `Origin` on same-origin POSTs too, and
+    # nginx forwards it untouched, so the reference client hit this gate on its
+    # own requests: the allow-list is CORS_ORIGIN (default
+    # http://localhost:5173) plus two hardcoded dev origins, so an operator who
+    # followed the README and browsed to their server on any other host or port
+    # got 403 "Origin not allowed" on every single question. `.env.example` told
+    # them the value was "never consulted" with the shipped compose, which was
+    # true only by the coincidence of the default matching localhost.
+    #
+    # An Origin equal to this request's own Host is same-origin by construction
+    # and cannot be forged from another site: the browser sets both, Host being
+    # the server it is talking to and Origin the page it came from, so a page on
+    # evil.com posting here still sends Origin: evil.com against Host: myserver
+    # and is still refused. The allow-list keeps doing its real job - genuine
+    # CROSS-origin callers such as an embedded widget, via CORS_ORIGIN and
+    # WIDGET_ORIGINS.
     if not _allow_all:
         origin = req.headers.get("origin", "")
         if origin and origin not in _all_origins:
-            raise HTTPException(status_code=403, detail="Origin not allowed")
+            host = req.headers.get("host", "")
+            same_origin = bool(host) and origin.split("://", 1)[-1] == host
+            if not same_origin:
+                raise HTTPException(status_code=403, detail="Origin not allowed")
 
     # Expired/invalid token presented: 401, the refresh signal - NOT the
     # guest 403 below, which the client's 401-keyed silent refresh never
