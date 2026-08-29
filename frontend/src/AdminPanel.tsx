@@ -1868,7 +1868,7 @@ function TrustTab({ api, headers, currentUser }: {
       for (let i = 0; i < 600; i++) {
         await new Promise(r => setTimeout(r, 1000))
         const st = await guardedPoll<{ done?: number; total?: number; complete?: boolean;
-                                       failed?: boolean; error?: string }>(
+                                       failed?: boolean; error?: string; known?: boolean }>(
           fetch(`${api}/api/admin/evals/run-status/${run.run_id}`, { headers: headers() }))
         if (!st) {
           // guardedPoll returns null on ANY non-2xx and on any thrown error,
@@ -1876,6 +1876,16 @@ function TrustTab({ api, headers, currentUser }: {
           // there is no next tick - this break ends the poll for good. A single
           // transient failure therefore looked identical to a finished run.
           emitError('Lost contact with the eval run - it may still be going. Reload to check.')
+          ended = true
+          break
+        }
+        if (st.known === false) {
+          // The backend has never heard of this run id. _eval_runs is an
+          // in-process dict, so this means the backend restarted and the run
+          // died with it - previously indistinguishable from "just started",
+          // which is what made the operator wait out the full ten minutes.
+          emitError('The eval run is gone - the backend restarted while it was '
+            + 'running. Start it again.')
           ended = true
           break
         }

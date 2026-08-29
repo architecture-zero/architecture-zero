@@ -522,6 +522,14 @@ export default function App() {
   // sessionId as a ref so a running stream reads the CURRENT conversation
   // rather than the one captured in its closure.
   const sessionIdRef = useRef(sessionId)
+  // IDENTITY TICKET, same idea as the stream ticket above and for the same
+  // reason. clearIdentityState resets eleven pieces of state, but the polls
+  // that fill three of them are already in flight when it runs - so a
+  // /api/status, /api/analytics or /api/sessions/mine response belonging to the
+  // account that just signed out could land afterwards and put its data back on
+  // a screen that had been cleared. Every identity transition takes a new
+  // ticket; a response holding a stale one is dropped in silence.
+  const identityGen = useRef(0)
 
   // Leaving a conversation ABANDONS its stream. Without this the in-flight
   // answer kept running, kept holding the guards, and (before the identity
@@ -558,6 +566,8 @@ export default function App() {
   // credentials. The rotated id is deliberately NOT written to localStorage:
   // the next sign-in restores that account's own stored session.
   const clearIdentityState = () => {
+    // Invalidate every identity-scoped read already in flight - see identityGen.
+    identityGen.current += 1
     setMessages([])
     setInput('')
     setSessionId(crypto.randomUUID())
@@ -777,18 +787,23 @@ export default function App() {
   // Chat data polling - hooks must be declared before any early returns
   useEffect(() => {
     if (view !== 'chat') return
+    // Captured once per effect run. Each of the three polls below checks it
+    // before writing, so a response that outlives its identity is dropped
+    // rather than repainting the previous account's data.
+    const myIdentity = identityGen.current
+    const stillMine = () => identityGen.current === myIdentity
     const fetchStatus = () => {
       // /api/status is authenticated here, so a guest has nothing to send.
       if (isGuest || !currentUser) return
       guardedPoll<SysStatus>(fetch(`${API}/api/status`, { headers: authHeaders() }))
-        .then(d => { if (d) setSysStatus(d) })
+        .then(d => { if (d && stillMine()) setSysStatus(d) })
     }
     const fetchAnalytics = () => {
       // Guests have no view_analytics permission - their 401 here is by design,
       // not an expired session; skip instead of tripping the expired banner.
       if (isGuest) return
       guardedPoll<Analytics>(fetch(`${API}/api/analytics`, { headers: authHeaders() }))
-        .then(d => { if (d) setAnalytics(d) })
+        .then(d => { if (d && stillMine()) setAnalytics(d) })
     }
     const fetchSessions = () => {
       if (isGuest) return
@@ -799,7 +814,7 @@ export default function App() {
       // as their own, titled with those conversations' first messages, each one
       // opening empty because /api/history is correctly owner-scoped.
       guardedPoll<{ sessions?: SessionEntry[] }>(fetch(`${API}/api/sessions/mine`, { headers: authHeaders() }))
-        .then(d => { if (d) setSessionList(d.sessions || []) })
+        .then(d => { if (d && stillMine()) setSessionList(d.sessions || []) })
     }
     fetchStatus()
     fetchAnalytics()

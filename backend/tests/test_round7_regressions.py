@@ -276,3 +276,40 @@ def test_cross_origin_is_still_refused(client, admin_headers):
     assert r.status_code == 403, r.text
     assert "Origin not allowed" in r.json()["detail"]
     assert "http_host" in r.json()["detail"], "the refusal must name the proxy fix"
+
+
+# -- Bucket-2 cleanup: the leftovers the tag should not carry ----------------
+
+def test_run_status_distinguishes_a_lost_run_from_a_running_one(client, admin_headers):
+    """_eval_runs is an in-process dict with no persistence, so a backend
+    restart mid-run erased it - and the answer for a vanished run was
+    complete=false, failed=false, done=0, byte-identical to a run that had just
+    started. The poller could wait out its full ten minutes on a run that no
+    longer existed."""
+    r = client.get("/api/admin/evals/run-status/no-such-run-id", headers=admin_headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["known"] is False, r.json()
+
+
+def test_bad_numeric_env_refuses_to_boot_and_says_which(monkeypatch):
+    """A typo in one .env line used to surface as a bare ValueError from inside
+    an import chain, naming nothing. It still REFUSES - falling back to the
+    default would be the silent-discard shape this whole arc removed - but it
+    now names the variable, the bad value and the default."""
+    from app.runtime_config import _env_num
+
+    monkeypatch.setenv("RAG_SIMILARITY_THRESHOLD", "high")
+    with pytest.raises(ValueError) as exc:
+        _env_num("RAG_SIMILARITY_THRESHOLD", "0.40", float)
+    msg = str(exc.value)
+    assert "RAG_SIMILARITY_THRESHOLD" in msg, msg
+    assert "high" in msg, msg
+    assert "0.40" in msg, msg
+
+
+def test_good_numeric_env_still_parses(monkeypatch):
+    from app.runtime_config import _env_num
+    monkeypatch.setenv("MAX_CONTEXT_TOKENS", " 1234 ")
+    assert _env_num("MAX_CONTEXT_TOKENS", "6000", int) == 1234
+    monkeypatch.delenv("MAX_CONTEXT_TOKENS")
+    assert _env_num("MAX_CONTEXT_TOKENS", "6000", int) == 6000

@@ -263,7 +263,19 @@ def eval_run_status(run_id: str, current_user: dict = Depends(require_owner)):
     # crash reason sitting unreported in the same dict. `failed` is what tells a
     # finished run from a dead one; without it, complete=True is exactly as
     # misleading as the indefinite "running" it replaced.
-    return {"run_id": run_id, "total": st.get("total"), "done": st.get("done", 0),
+    # `known` distinguishes A RUN WE HAVE NEVER HEARD OF from one that is
+    # genuinely still going. _eval_runs is a plain in-process dict with no
+    # persistence, so a backend restart mid-run erases it - and without this
+    # field the answer for a vanished run was complete=false, failed=false,
+    # done=0, byte-identical to a run that had just started. A caller could poll
+    # a dead run forever.
+    #
+    # Added as a FIELD rather than by switching to 404, deliberately: the only
+    # shipped consumer maps any non-2xx to a generic "lost contact, it may still
+    # be going" toast, which is worse for this case than the message it already
+    # prints. A new field is correct standing alone and cannot half-land.
+    return {"run_id": run_id, "known": run_id in _eval_runs,
+            "total": st.get("total"), "done": st.get("done", 0),
             "complete": st.get("complete", False),
             "failed": st.get("failed", False), "error": st.get("error")}
 

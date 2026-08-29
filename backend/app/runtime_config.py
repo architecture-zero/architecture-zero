@@ -31,13 +31,44 @@ from app.providers import _get_runtime, _ollama_headers, OLLAMA_BASE
 # where nothing is listening, and no test would catch it: /api/health is public
 # by design and nothing asserts on its body.
 DEFAULT_MODEL               = os.getenv("DEFAULT_MODEL", "qwen3:8b")
+def _env_num(name: str, default: str, cast):
+    """Parse a numeric env var, and FAIL LOUDLY BUT LEGIBLY if it is not one.
+
+    Deliberately still raises. The obvious "fix" for a bad value here is to warn
+    and fall back to the default, and that would be the silent-discard shape
+    this codebase has spent an entire review arc removing from every other write
+    path: the operator sets a value, the instance ignores it, and nothing says
+    so. A misconfigured deployment should refuse to boot.
+
+    What was actually wrong is the MESSAGE. `int(os.getenv(...))` raises a bare
+    ValueError from inside an import chain, so a typo in one .env line surfaced
+    as a traceback that never named the variable the operator had just edited.
+
+    Note for anyone extending this: roughly two dozen other numeric envs are
+    parsed the same bare way across alerting, jobs, jwt_auth, peers, providers,
+    rag_config and main. They have the same unhelpful failure and should adopt
+    this helper; that sweep is tracked on the roadmap rather than done here,
+    because a ten-module edit is not what belongs in a release-eve commit.
+    """
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        raw = default
+    try:
+        return cast(raw.strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{name}={raw!r} is not a valid {cast.__name__}. "
+            f"Fix it in .env (the default is {default}) and restart."
+        ) from exc
+
+
 # Answer-mode judge: pinned CLOUD model (not the opportunistic local tier, not
 # the answer model under test) so the measurement instrument stays constant
 # across runs. Overridable at runtime via config key eval_judge_model.
 EVAL_JUDGE_MODEL_DEFAULT    = os.getenv("EVAL_JUDGE_MODEL", "claude-sonnet-4-6")
-MAX_CONTEXT_TOKENS          = int(os.getenv("MAX_CONTEXT_TOKENS", "6000"))
+MAX_CONTEXT_TOKENS          = _env_num("MAX_CONTEXT_TOKENS", "6000", int)
 RAG_ONLY_MODE               = os.getenv("RAG_ONLY_MODE", "false").lower() == "true"
-RAG_SIMILARITY_THRESHOLD    = float(os.getenv("RAG_SIMILARITY_THRESHOLD", "0.40"))
+RAG_SIMILARITY_THRESHOLD    = _env_num("RAG_SIMILARITY_THRESHOLD", "0.40", float)
 PII_SCAN_MODE               = os.getenv("PII_SCAN_MODE", "off").lower()
 # Private by default. Guest (unauthenticated) access is OFF unless explicitly
 # opted in here AND enabled in admin config. Without this env var set, the
@@ -55,7 +86,7 @@ ALLOW_GUEST_MODE            = os.getenv("ALLOW_GUEST_MODE", "false").lower() == 
 # SETUP_CLAIM_CODE carries.
 # Read by the chat handler (enforcement) and by /api/status (the positive
 # signal), so it is shared rather than either module's.
-DEMO_DAILY_GUEST_LIMIT      = int(os.getenv("DEMO_DAILY_GUEST_LIMIT", "0"))
+DEMO_DAILY_GUEST_LIMIT      = _env_num("DEMO_DAILY_GUEST_LIMIT", "0", int)
 ENCRYPTION_AT_REST_VERIFIED = os.getenv("ENCRYPTION_AT_REST_VERIFIED", "false").lower() == "true"
 _DATA_DIR                   = os.getenv("DATA_DIR", "/app/data")
 # Read by main (the boot-time purge) and by the chat handler (whether to write
