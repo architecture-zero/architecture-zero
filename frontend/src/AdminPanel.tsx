@@ -177,6 +177,15 @@ function UsersTab({ api, headers }: { api: string; headers: () => Record<string,
   // thing", and it was unreachable until the round-1 blocker fix, so it was
   // being used for the first time.
   const effectivePerms = (u: User): string[] => {
+    // AN OWNER HOLDS EVERYTHING, and not because of a stored list. The server
+    // short-circuits before effective_permissions is ever consulted
+    // (require_permission returns early on is_owner, require_owner tests it
+    // directly), so mirroring only the stored-list logic made this screen
+    // authoritative-looking and wrong in the PERMISSIVE direction for exactly
+    // the account that matters most: it would show an Owner missing pills they
+    // in fact have, and a click to "revoke" one would report success while
+    // changing nothing the server enforces.
+    if (u.role === 'owner') return permMeta?.scopes || []
     const stored = u.permissions
     if (stored && stored.length) return stored
     return permMeta?.presets?.[u.role] || []
@@ -348,9 +357,11 @@ function UsersTab({ api, headers }: { api: string; headers: () => Record<string,
                   Preset ({u.role}): {(permMeta.presets[u.role] || []).join(', ') || '-'}
                 </p>
                 <p className="text-xs text-gray-600 mt-1">
-                  {u.permissions && u.permissions.length
-                    ? 'Using a per-user override.'
-                    : `Following ${u.role} defaults - changing a pill here creates an override for this user.`}
+                  {u.role === 'owner'
+                    ? 'Owner - holds every permission by role, and the server checks that before any stored list. Editing these pills will not restrict an Owner.'
+                    : u.permissions && u.permissions.length
+                      ? 'Using a per-user override.'
+                      : `Following ${u.role} defaults - changing a pill here creates an override for this user.`}
                 </p>
               </div>
             )}
@@ -663,7 +674,7 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
     if (!controlsLoaded) {
       setSaveErr('NOT saved - these settings never loaded, so saving would '
         + 'overwrite them with defaults. Reload the page and try again.')
-      return
+      return false
     }
     // Every key here must be in the backend's config allowlist. It rejects an
     // unknown key BY NAME with a 400 and validates the whole body before
@@ -676,9 +687,10 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
       default_rag_enabled: defRag,
       guest_mode_enabled: guestChat,
     })
-    if (!ok) return
+    if (!ok) return false
     setControlsSaved(true)
     setTimeout(() => setControlsSaved(false), 2000)
+    return true
   }
 
   const saveStrategy = async (s: 'warn' | 'summarize') => {
@@ -806,7 +818,7 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
             <p className="text-xs text-gray-500 mt-0.5">Users can switch models in the sidebar</p>
           </div>
           <button
-            onClick={() => { setAllowModelSelection(!allowModelSelection); saveControls(!allowModelSelection, allowRagToggle, defaultModel, defaultRagEnabled) }}
+            onClick={() => { setAllowModelSelection(!allowModelSelection); saveControls(!allowModelSelection, allowRagToggle, defaultModel, defaultRagEnabled).then(ok => { if (!ok) setAllowModelSelection(allowModelSelection) }) }}
             className={`w-10 h-5 rounded-full transition-colors relative flex-shrink-0 ${allowModelSelection ? 'bg-blue-600' : 'bg-gray-600'}`}
           >
             <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all duration-200 ${allowModelSelection ? 'left-5' : 'left-0.5'}`} />
@@ -820,7 +832,7 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
             <p className="text-xs text-gray-500 mt-0.5">Knowledge base active for all new conversations</p>
           </div>
           <button
-            onClick={() => { setDefaultRagEnabled(!defaultRagEnabled); saveControls(allowModelSelection, allowRagToggle, defaultModel, !defaultRagEnabled) }}
+            onClick={() => { setDefaultRagEnabled(!defaultRagEnabled); saveControls(allowModelSelection, allowRagToggle, defaultModel, !defaultRagEnabled).then(ok => { if (!ok) setDefaultRagEnabled(defaultRagEnabled) }) }}
             className={`w-10 h-5 rounded-full transition-colors relative flex-shrink-0 ${defaultRagEnabled ? 'bg-blue-600' : 'bg-gray-600'}`}
           >
             <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all duration-200 ${defaultRagEnabled ? 'left-5' : 'left-0.5'}`} />
@@ -834,7 +846,7 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
             <p className="text-xs text-gray-500 mt-0.5">Users can enable/disable knowledge base in the sidebar</p>
           </div>
           <button
-            onClick={() => { setAllowRagToggle(!allowRagToggle); saveControls(allowModelSelection, !allowRagToggle, defaultModel, defaultRagEnabled) }}
+            onClick={() => { setAllowRagToggle(!allowRagToggle); saveControls(allowModelSelection, !allowRagToggle, defaultModel, defaultRagEnabled).then(ok => { if (!ok) setAllowRagToggle(allowRagToggle) }) }}
             className={`w-10 h-5 rounded-full transition-colors relative flex-shrink-0 ${allowRagToggle ? 'bg-blue-600' : 'bg-gray-600'}`}
           >
             <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all duration-200 ${allowRagToggle ? 'left-5' : 'left-0.5'}`} />
@@ -853,7 +865,7 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
             </p>
           </div>
           <button
-            onClick={() => { setGuestChatEnabled(!guestChatEnabled); saveControls(allowModelSelection, allowRagToggle, defaultModel, defaultRagEnabled, !guestChatEnabled) }}
+            onClick={() => { setGuestChatEnabled(!guestChatEnabled); saveControls(allowModelSelection, allowRagToggle, defaultModel, defaultRagEnabled, !guestChatEnabled).then(ok => { if (!ok) setGuestChatEnabled(guestChatEnabled) }) }}
             className={`w-10 h-5 rounded-full transition-colors relative flex-shrink-0 ${guestChatEnabled ? 'bg-blue-600' : 'bg-gray-600'}`}
           >
             <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all duration-200 ${guestChatEnabled ? 'left-5' : 'left-0.5'}`} />
@@ -1643,8 +1655,10 @@ function IngestQueueTab({ api, headers }: { api: string; headers: () => Record<s
         <div className="bg-yellow-900/30 border border-yellow-700/50 rounded-xl p-4">
           <p className="text-sm text-yellow-300 font-medium">Async jobs disabled</p>
           <p className="text-xs text-yellow-500 mt-1">
-            Set <span className="font-mono">ENABLE_ASYNC_JOBS=true</span> and start the Celery worker
-            service to enable background ingestion. Uploads currently run synchronously.
+            Set <span className="font-mono">ENABLE_ASYNC_JOBS=true</span> and restart the backend to
+            enable background ingestion. Uploads currently run synchronously - the request stays open
+            until the document is indexed. There is no worker service to start: ingestion runs on a
+            thread inside the backend.
           </p>
         </div>
       )}

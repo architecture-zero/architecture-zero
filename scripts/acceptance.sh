@@ -133,19 +133,38 @@ ans=$(curl -s -m 300 -X POST "$BASE/api/chat" -H 'Content-Type: application/json
   -H "Authorization: Bearer $TOK" \
   -d '{"prompt":"What is Architecture Zero?","history":[],"session_id":"acceptance"}')
 if grep -q '\[DONE\]' <<<"$ans"; then ok "the answer streamed to [DONE]"; else bad "chat stream" "$(head -c 400 <<<"$ans")"; fi
-if grep -qi 'sources' <<<"$ans"; then
+# The QUOTED form. `grep -qi 'sources'` matched the word anywhere in the body -
+# and the body is every streamed answer token, not just the events. With
+# retrieval off the system prompt actively steers the model to explain that
+# retrieval is off, so the loose match could be satisfied by the prose while
+# proving nothing. The event is emitted as `data: {"sources": [...]}`.
+if grep -qi '"sources"' <<<"$ans"; then
   ok "a bare question retrieved - the configured default reached the answer path"
 else
   bad "sources" "a request with no use_rag field answered ungrounded: $(head -c 400 <<<"$ans")"
 fi
 
 echo "== 9. an explicit use_rag:false is still honoured =="
-# The other half of the same contract: a default applies when the caller is
-# silent and must never override a caller who spoke.
+# SKIPPED under RAG_ONLY_MODE, which the chat handler deliberately ORs on top of
+# the resolved value as the deployment-level "never answer ungrounded". Without
+# this the check reports a failure for behaviour the code intends - a test that
+# calls a documented guarantee a defect.
+# It also asserts [DONE]: a purely negative assertion ("no sources event") passes
+# against a dead backend, an error page, or an empty body.
 off=$(curl -s -m 300 -X POST "$BASE/api/chat" -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $TOK" \
   -d '{"prompt":"What is Architecture Zero?","use_rag":false,"history":[],"session_id":"acceptance-ragoff"}')
-if grep -qi '"sources"' <<<"$off"; then
+# From /api/status, which is where rag_only_mode is reported - NOT /api/config,
+# which does not carry the key at all. Reading it off the wrong payload would
+# have made this skip unreachable, which is the same shape as a check that
+# cannot fail.
+stat=$(curl -s -m 10 "$BASE/api/status" -H "Authorization: Bearer $TOK")
+rag_only=$(grep -qi '"rag_only_mode":true' <<<"${stat// /}" && echo yes || echo no)
+if [ "$rag_only" = "yes" ]; then
+  echo "  SKIP  RAG_ONLY_MODE is on - retrieval is forced by deployment policy"
+elif ! grep -q '\[DONE\]' <<<"$off"; then
+  bad "use_rag:false" "the request did not stream to [DONE]: $(head -c 200 <<<"$off")"
+elif grep -qi '"sources"' <<<"$off"; then
   bad "explicit use_rag:false" "retrieval ran anyway - the caller no longer controls it"
 else
   ok "use_rag:false answered without retrieval"

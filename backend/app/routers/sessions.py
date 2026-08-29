@@ -9,7 +9,7 @@ them from app.history and this router imports them independently. Neither is
 re-exported from the other - two importers of the same module function, which
 is the shape that keeps patch targets unambiguous.
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.feedback import save_feedback, get_feedback_summary
@@ -69,6 +69,7 @@ def sessions(category: str | None = None, current_user: dict = Depends(require_p
 
 @router.get("/api/sessions/mine")
 def my_sessions(category: str | None = None,
+                limit: int = Query(200, ge=1, le=1000),
                 current_user: dict = Depends(require_permission("view_history"))):
     """The caller's OWN conversations - what a chat sidebar wants.
 
@@ -83,7 +84,13 @@ def my_sessions(category: str | None = None,
     view_history is the permission the taxonomy already defines as "see own
     conversation history". It simply had no route serving it.
     """
-    mine = list_sessions(user_id=current_user["id"])
+    # PASS THE LIMIT. list_sessions defaults to 50, and now that "+ New Chat"
+    # correctly stops deleting the conversation it leaves, sessions accumulate -
+    # so past 50 the older ones fell off the ONLY surface that can reach them.
+    # The rows survive and /api/history/{id} would still serve them; the client
+    # just had no way left to learn the session id. Bounded rather than
+    # unbounded because this is one query feeding one sidebar.
+    mine = list_sessions(user_id=current_user["id"], limit=limit)
     if category:
         mine = [s for s in mine if s.get("category") == category]
     return {"sessions": mine}

@@ -185,6 +185,15 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
         if key == "suggestions":
             value = json.dumps([s for s in value if isinstance(s, str) and s.strip()])
         elif key in ("allow_model_selection", "allow_rag_toggle", "default_rag_enabled", "guest_mode_enabled"):
+            # NOT `"true" if value else "false"`. That is Python truthiness on
+            # the raw JSON value, so the STRING "false" - and "no", and "0" -
+            # are all truthy and were written as "true", inverting exactly the
+            # intent an operator expressed. Harmless while these keys only drove
+            # checkboxes; default_rag_enabled now decides whether retrieval runs
+            # for every caller that omits use_rag, so a writer that flips an
+            # operator's "off" into "on" changes what the instance serves.
+            if isinstance(value, str):
+                value = value.strip().lower() not in ("false", "0", "no", "off", "")
             value = "true" if value else "false"
         set_config(key, str(value))
         written.append(key)

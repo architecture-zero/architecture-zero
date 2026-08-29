@@ -218,7 +218,9 @@ interface MessageProps {
   msgIndex: number
   onFeedback?: (msgIndex: number, value: number) => void
   onRegenerate?: () => void
-  onEdit?: (newContent: string) => void
+  // Returns false when the edit was REFUSED (a stream is in flight), so the
+  // editor can keep the user's text instead of silently discarding it.
+  onEdit?: (newContent: string) => boolean | void
   isStreaming?: boolean
 }
 
@@ -243,9 +245,15 @@ function Message({ role, content, toolCalls, sources, msgIndex, onFeedback, onRe
 
   const submitEdit = () => {
     if (!editText.trim()) return
+    // Do NOT close the editor or reset the draft until the handler has accepted
+    // it. editAndRegenerate returns immediately while a stream is running, and
+    // this used to have already discarded the user's rewritten text - typing
+    // gone, editor closed, nothing said. Widening the guard to cover the whole
+    // stream turned that from a sub-second window into the entire generation,
+    // and re-enabling the composer mid-stream made it easy to walk into.
+    if (onEdit?.(editText.trim()) === false) return
     setEditing(false)
     setEditText(content)
-    onEdit?.(editText.trim())
   }
 
   // Edit mode - replaces the user bubble with an inline textarea
@@ -436,6 +444,10 @@ export default function App() {
   const [modelGroups, setModelGroups] = useState<ModelGroup[]>([])
   const [model, setModel] = useState('')
   const [useRag, setUseRag] = useState(true)
+  // Whether useRag reflects the SERVER's configured default or is still this
+  // component's optimistic initial value. Guests never learn it - /api/config
+  // is authenticated - so they must not assert one.
+  const [ragKnown, setRagKnown] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [sessionId, setSessionId] = useState<string>(getOrCreateSession)
   const [sessionList, setSessionList] = useState<SessionEntry[]>([])
@@ -579,7 +591,7 @@ export default function App() {
         if (d.allow_model_selection !== undefined) setAllowModelSelection(d.allow_model_selection)
         if (d.allow_rag_toggle !== undefined) setAllowRagToggle(d.allow_rag_toggle)
         if (d.default_model) setModel(d.default_model)
-        if (d.default_rag_enabled !== undefined) setUseRag(d.default_rag_enabled)
+        if (d.default_rag_enabled !== undefined) { setUseRag(d.default_rag_enabled); setRagKnown(true) }
         if (d.guest_mode_enabled !== undefined) setGuestModeEnabled(d.guest_mode_enabled)
         if (d.instance_name) setInstanceName(d.instance_name)
         // The server's EFFECTIVE model - what actually answers. The backend
@@ -822,12 +834,26 @@ export default function App() {
     // a harmless duplicate. The guard above should now prevent a second stream,
     // and this makes the write correct even if one ever gets through.
     let slot = -1
+    // Hoisted out of the try: the AbortError handler needs to know whether an
+    // assistant bubble was ever created, and a stop before the first token is
+    // exactly the case where it was not.
+    let assistantStarted = false
 
     try {
       const res = await fetch(`${API}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ prompt, model, use_rag: useRag, history: historyForRequest, session_id: sessionId }),
+        // OMIT use_rag when this client was never told what the default is.
+        // /api/config is authenticated, so a guest's boot read never happens and
+        // useRag is only the hardcoded initial true - which would override an
+        // operator who turned retrieval off, for exactly the visitors who have
+        // no way to know. Omitted, the server applies its own configured
+        // default; a signed-in client that HAS read the config still sends the
+        // explicit value, including whatever the user toggled.
+        body: JSON.stringify({
+          prompt, model, history: historyForRequest, session_id: sessionId,
+          ...(ragKnown ? { use_rag: useRag } : {}),
+        }),
         signal: controller.signal,
       })
 
@@ -851,7 +877,6 @@ export default function App() {
       // tokens. The answer still renders, just missing pieces - which is why
       // this is easy to ship and hard to notice.
       let buf = ''
-      let assistantStarted = false
       let assistantMsg = ''
       let toolCalls: ToolCall[] = []
       let sources: string[] = []
@@ -927,6 +952,14 @@ export default function App() {
       }
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') {
+        // Stopping BEFORE the first token means no assistant bubble was ever
+        // created, so the transcript ended on the user's question with nothing
+        // saying it had been cancelled - and Regenerate refuses to run unless
+        // the last message is an assistant one, so there was no way back to it
+        // either. Say what happened, in the shape the rest of the UI can act on.
+        if (!assistantStarted && mine()) {
+          setMessages(prev => [...prev, { role: 'assistant', content: '_Stopped before the answer started._' }])
+        }
         setLoading(false)
         return
       }
@@ -1011,8 +1044,17 @@ export default function App() {
     await sendCore(prompt, history)
   }
 
-  const editAndRegenerate = async (msgIndex: number, newContent: string) => {
-    if (busy) return
+  const editAndRegenerate = (msgIndex: number, newContent: string): boolean => {
+    // Refusal is REPORTED, not silent - the caller keeps the user's draft.
+    if (busy) {
+      emitError('Still answering - stop the current reply before editing.')
+      return false
+    }
+    void _editAndRegenerate(msgIndex, newContent)
+    return true
+  }
+
+  const _editAndRegenerate = async (msgIndex: number, newContent: string) => {
     // Same await window as regenerate: claim the guard before the trim.
     setLoading(true)
     const truncated = messages.slice(0, msgIndex)
