@@ -1301,7 +1301,16 @@ export default function App() {
                 placeholder={guestAtLimit ? 'Sign in to continue chatting…' : `Message ${instanceName}...  (Ctrl+Enter to send)`}
                 value={input}
                 rows={1}
-                disabled={busy || guestAtLimit}
+                // Typing is allowed mid-answer; SENDING is not. send() carries
+                // the real guard (busy), so a draft cannot become a second
+                // concurrent stream. Disabling the box outright also prevented
+                // the overlap, but it locked the composer for the whole answer -
+                // on a long one you could not even draft the next question, and
+                // an unlucky keystroke landed nowhere. Before the streaming fix
+                // this box re-enabled a second in, at the first token, which is
+                // what let a second stream start; the fix belongs on the send
+                // path, not on the keyboard.
+                disabled={guestAtLimit}
                 onChange={onInput}
                 onKeyDown={onKeyDown}
               />
