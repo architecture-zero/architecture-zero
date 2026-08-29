@@ -75,12 +75,19 @@ def test_chat_rag_off_discloses_retrieval_status(client):
     # knowledge question gets "RAG is switched off" instead of a misleading
     # "not on record" - the miss is otherwise indistinguishable from a
     # retrieval failure.
+    #
+    # use_rag IS SENT EXPLICITLY, and that matters: omitting it used to mean
+    # False, so this test read as "rag off" while actually testing "field
+    # absent". Now an omitted field resolves to the instance's
+    # default_rag_enabled, and a test that pins RAG-OFF behaviour has to say
+    # RAG off. Exactly the shape acceptance.sh had, where a check named for the
+    # default proved it by overriding the default.
     captured = {}
     with patch("app.routers.chat.guest_chat_available", return_value=True), \
          patch("app.routers.chat.get_config", side_effect=_guest_enabled_cfg), \
          patch("app.routers.chat.stream_chat_events", side_effect=_capturing_stream(captured)):
         r = client.post("/api/chat", json={"prompt": "what did the last eval round measure?",
-                                           "model": "test-model"})
+                                           "model": "test-model", "use_rag": False})
     assert r.status_code == 200
     system = captured["messages"][0]
     assert system["role"] == "system"
@@ -300,3 +307,60 @@ def test_auth_config_is_reachable_without_a_token():
     from app.auth import EXCLUDED_PATHS
     assert "/api/auth/config" in EXCLUDED_PATHS
     assert "/api/auth/needs-setup" in EXCLUDED_PATHS
+
+
+def _rag_default_cfg(value):
+    """Config where default_rag_enabled is `value` and the guest gate is open."""
+    def _cfg(key, default=None):
+        if key == "guest_mode_enabled":
+            return "true"
+        if key == "default_rag_enabled":
+            return value
+        return default
+    return _cfg
+
+
+def test_omitted_use_rag_follows_the_configured_default(client):
+    # THE REGRESSION THIS PINS: use_rag was `bool = False` on the request model,
+    # so every caller that did not send the field answered ungrounded - a curl, a
+    # script, a widget, an evaluator - no matter what the operator had set.
+    # default_rag_enabled existed but was read ONLY by the React client and by
+    # /api/config reporting itself back, so a retrieval product's API defaulted
+    # to no-retrieval. Live symptom: a bare first question replied "According to
+    # my training data" about the product whose corpus was mounted beside it.
+    captured = {}
+    with patch("app.routers.chat.guest_chat_available", return_value=True), \
+         patch("app.routers.chat.get_config", side_effect=_rag_default_cfg("true")), \
+         patch("app.routers.chat.stream_chat_events", side_effect=_capturing_stream(captured)):
+        r = client.post("/api/chat", json={"prompt": "what is this instance?",
+                                           "model": "test-model"})
+    assert r.status_code == 200
+    system = captured["messages"][0]["content"]
+    assert "TURNED OFF" not in system, "an omitted use_rag ignored default_rag_enabled=true"
+
+
+def test_omitted_use_rag_honours_a_default_of_false(client):
+    # The same resolution in the other direction: an operator who turns
+    # retrieval off gets it off for silent callers too. A default that only
+    # works in the direction you wanted is not a default.
+    captured = {}
+    with patch("app.routers.chat.guest_chat_available", return_value=True), \
+         patch("app.routers.chat.get_config", side_effect=_rag_default_cfg("false")), \
+         patch("app.routers.chat.stream_chat_events", side_effect=_capturing_stream(captured)):
+        r = client.post("/api/chat", json={"prompt": "what is this instance?",
+                                           "model": "test-model"})
+    assert r.status_code == 200
+    assert "TURNED OFF" in captured["messages"][0]["content"]
+
+
+def test_explicit_use_rag_beats_the_configured_default(client):
+    # A caller who speaks always wins. Without this, "fixing" the default would
+    # quietly take the toggle away from every API consumer that relies on it.
+    captured = {}
+    with patch("app.routers.chat.guest_chat_available", return_value=True), \
+         patch("app.routers.chat.get_config", side_effect=_rag_default_cfg("true")), \
+         patch("app.routers.chat.stream_chat_events", side_effect=_capturing_stream(captured)):
+        r = client.post("/api/chat", json={"prompt": "what is this instance?",
+                                           "model": "test-model", "use_rag": False})
+    assert r.status_code == 200
+    assert "TURNED OFF" in captured["messages"][0]["content"]

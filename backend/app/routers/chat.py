@@ -123,7 +123,16 @@ class Message(BaseModel):
 class ChatRequest(BaseModel):
     prompt: str
     model: str = ""
-    use_rag: bool = False
+    # None = "caller did not say", which is NOT the same as False. Omitted, the
+    # instance's own default_rag_enabled decides (resolved per-request below);
+    # sent explicitly, the caller wins either way. It was a plain `bool = False`,
+    # which made every non-browser caller - curl, a script, a widget, an
+    # evaluator - answer ungrounded no matter what the operator had configured,
+    # because default_rag_enabled was only ever read by the React client and by
+    # /api/config reporting itself back. A retrieval product whose API defaults
+    # to no-retrieval reads as an empty corpus to anyone who has not read the
+    # client's source.
+    use_rag: bool | None = None
     use_peers: bool = False
     history: list[Message] = []
     session_id: str = "default"
@@ -255,7 +264,14 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
     # others. Guests (current_user is None) resolve to GUEST_LEVEL.
     caller_level = effective_level(current_user)
 
-    use_rag = request.use_rag or RAG_ONLY_MODE
+    # The operator's configured default applies when the caller omitted the
+    # field; an explicit false from the caller still means false. RAG_ONLY_MODE
+    # overrides both - it is the deployment-level "never answer ungrounded".
+    if request.use_rag is None:
+        use_rag = get_config("default_rag_enabled", "true") == "true"
+    else:
+        use_rag = request.use_rag
+    use_rag = use_rag or RAG_ONLY_MODE
 
     if use_rag:
         increment("rag_requests_total")

@@ -124,14 +124,31 @@ else
 fi
 
 echo "== 8. a first question is answered, and grounded =="
+# NO use_rag FIELD, on purpose. This is what a curl, a script, a widget or an
+# evaluator actually sends, and it is the only probe that exercises the default
+# check 7 asserts. Sending "use_rag":true here OVERRIDES that default instead of
+# testing it - which is how this suite passed 16/16 twice while a bare question
+# answered from training memory with zero sources.
 ans=$(curl -s -m 300 -X POST "$BASE/api/chat" -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $TOK" \
-  -d '{"prompt":"What is Architecture Zero?","use_rag":true,"history":[],"session_id":"acceptance"}')
+  -d '{"prompt":"What is Architecture Zero?","history":[],"session_id":"acceptance"}')
 if grep -q '\[DONE\]' <<<"$ans"; then ok "the answer streamed to [DONE]"; else bad "chat stream" "$(head -c 400 <<<"$ans")"; fi
 if grep -qi 'sources' <<<"$ans"; then
-  ok "the answer carried sources - retrieval ran"
+  ok "a bare question retrieved - the configured default reached the answer path"
 else
-  bad "sources" "answered without citing the corpus: $(head -c 400 <<<"$ans")"
+  bad "sources" "a request with no use_rag field answered ungrounded: $(head -c 400 <<<"$ans")"
+fi
+
+echo "== 9. an explicit use_rag:false is still honoured =="
+# The other half of the same contract: a default applies when the caller is
+# silent and must never override a caller who spoke.
+off=$(curl -s -m 300 -X POST "$BASE/api/chat" -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOK" \
+  -d '{"prompt":"What is Architecture Zero?","use_rag":false,"history":[],"session_id":"acceptance-ragoff"}')
+if grep -qi '"sources"' <<<"$off"; then
+  bad "explicit use_rag:false" "retrieval ran anyway - the caller no longer controls it"
+else
+  ok "use_rag:false answered without retrieval"
 fi
 
 echo
