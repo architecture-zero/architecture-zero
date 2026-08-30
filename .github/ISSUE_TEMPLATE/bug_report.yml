@@ -1,0 +1,95 @@
+name: Bug report
+description: Something behaves differently than documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        **Not for security vulnerabilities.** Those go through
+        [private reporting](https://github.com/architecture-zero/architecture-zero/security/advisories/new)
+        so a fix can land before the details are public.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: A tag, or the commit you are on.
+      placeholder: v0.1.1
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: >-
+        The exact steps. A curl command or a request/response pair is worth more
+        than a description of one.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where does it happen
+      multiple: true
+      options:
+        - Reference web client
+        - API directly (curl, script, another client)
+        - Ingestion / the corpus
+        - Retrieval or answer quality
+        - Evals or the trust panel
+        - Eco Mode federation
+        - Deployment / boot / migrations
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: deployment
+    attributes:
+      label: Deployment shape
+      description: >-
+        The shipped `docker compose` on one box, or something else? Behind a
+        reverse proxy? Which chat and embedding providers? A surprising number
+        of reports turn out to be deployment-shaped rather than code-shaped -
+        the `v0.1.0` origin bug only appeared off localhost and only through a
+        proxy.
+      placeholder: |
+        - shipped docker compose, single box
+        - behind nginx, custom domain, port 8443
+        - chat: claude-sonnet-4-6 / embeddings: local Ollama
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: >-
+        `docker compose logs backend`. Please redact secrets - the logs should
+        not contain any, but check rather than assume.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: >-
+            I checked `/api/health/ready` and the embedding provider is
+            reachable. An unreachable embedder makes ingestion fail per file and
+            retrieval-backed questions return 500 while `/api/health` still
+            reports healthy - this is a known limitation, documented in the
+            README.
+          required: true
+        - label: >-
+            This is not a security vulnerability.
+          required: true
