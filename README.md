@@ -229,7 +229,7 @@ guard (a denylist grep that fails the build if lineage from the private
 deployments this template descends from appears in the tree), and both
 Docker image builds on every push to main.
 
-## Known limitations at v0.1.0
+## Known limitations at v0.1.1
 
 Stated here rather than discovered later. Each is tracked in
 [ROADMAP.md](ROADMAP.md).
