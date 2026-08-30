@@ -33,8 +33,9 @@ aspirational.
   endpoint for a GPU box, or a hosted API - selected per call by config,
   with a fallback chain that degrades to slower, never dumber.
 - **Departments and tiers** - corpus partitions with clearance floors,
-  enforced identically at retrieval, at the file tools, and at the answer
-  layer. Unlisted departments fail closed to Owner-only. A long-running
+  enforced identically at retrieval, at the file tools, at the answer
+  layer, and on both sides of the federation seam. Unlisted departments
+  fail closed to Owner-only. A long-running
   work log lives in its own department, searched only when a question is
   actually history-shaped, with recency weighting inside it.
 - **The injection gate** - every document is scanned at ingestion for
@@ -53,7 +54,10 @@ aspirational.
   ROADMAP).
 - **Eco Mode** - federate instances: peers contribute labeled,
   boundary-scanned chunks to answers, with per-peer health tracking and a
-  circuit breaker so a down peer costs nothing.
+  circuit breaker so a down peer costs nothing. Clearance holds across the
+  seam without either instance trusting the other's word for it: a peer
+  key's scope bounds what LEAVES, a local clearance floor bounds who may
+  RECEIVE, and both answer to the same ladder.
 - **Operations** - route-level authorization on every endpoint pinned by a
   two-sided test sweep, TOTP MFA with optional enforcement, audit receipts
   per answer (latency, time-to-first-token, which rerank provider actually

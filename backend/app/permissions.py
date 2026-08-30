@@ -61,6 +61,39 @@ def effective_level(user: dict | None) -> int:
     return ROLE_LEVELS.get(user.get("role", "member"), MEMBER_LEVEL)
 
 
+# A federated peer key's scope is a CLEARANCE GRANT, expressed on the ladder
+# above so the federation seam is gated by the same rungs as every other
+# retrieval surface. It used to be a free-standing vocabulary that bypassed the
+# ladder entirely: 'all' meant "every department except general", which reached
+# `restricted` and `history` (both Owner-only) and every UNLISTED department -
+# and unlisted is exactly what DEPARTMENT_DEFAULT_MIN_LEVEL fails closed to
+# Owner. The serve path calls query_similar() directly, and query_similar takes
+# no clearance argument (the gate lives one layer up, in rerank.retrieve), so
+# nothing downstream caught it. A word that reads like "the shared stuff"
+# handed an off-box caller the operator's internal docs.
+#
+#   public -> Guest rung: the global collection only.
+#   all    -> Admin rung: every department the operator DELIBERATELY shared at
+#             or below Admin. Owner-only departments stay home. This is the
+#             sane default for "federate with a trusted peer".
+#   owner  -> Owner rung: everything, internal docs included. Named separately
+#             so it cannot be reached by picking the friendly-sounding word -
+#             an operator who wants this has to say this.
+PEER_SCOPE_LEVELS: dict[str, int] = {
+    "public": GUEST_LEVEL,
+    "all":    ADMIN_LEVEL,
+    "owner":  OWNER_LEVEL,
+}
+
+
+def peer_scope_level(scope: str | None) -> int | None:
+    """Clearance rung a peer-key scope grants, or None if the scope is unknown.
+    None is the refusal signal - an unrecognized scope grants nothing."""
+    if not scope:
+        return None
+    return PEER_SCOPE_LEVELS.get(scope.strip())
+
+
 def is_owner(user: dict | None) -> bool:
     """The single god-mode gate: Owner bypasses every permission and level
     check. Everyone else, admin included, is bounded by their preset and

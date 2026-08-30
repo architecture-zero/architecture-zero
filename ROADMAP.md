@@ -44,6 +44,33 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   main, and they still fail as an unattributed `ValueError` from inside an
   import chain. Mechanical, but a ten-module edit wants its own change rather
   than riding a release.
+- **Question-set fingerprinting for evaluation banding** - the trust panel
+  bands runs sharing a writer, a corpus fingerprint, a judge-instrument era
+  and an exam SHAPE, where shape is `n_rest`: a count of non-honesty rows.
+  A count is not an identity. Two exams with the same number of questions
+  band together whatever those questions are, and moving one question
+  between the tuned and holdout cohorts leaves the count untouched while
+  changing what correctness, holdout and gap each mean. The fix is a hash
+  over question id, content, category, expected source, as_level, holdout
+  flag and setup turns, stamped on the run and added to the band key - the
+  same move the corpus fingerprint already makes, one axis over. Until then
+  a band can silently span two different exams.
+- **Refresh-token reuse detection** - rotation is correct (opaque token,
+  hash-at-rest, revoke-then-mint, Redis with a DB fallback) but the read,
+  the revoke and the mint are three steps rather than one, so two concurrent
+  refreshes can both observe a live token. The race is the smaller half. The
+  larger one is that a replayed token produces no signal at all: whoever
+  presents it second simply gets a 401 and signs in again, which is exactly
+  what a legitimate user does after a thief wins the race. Rotation without
+  reuse detection cannot tell those apart. Wants a compare-and-revoke with a
+  single-use guarantee, plus family revocation on a detected replay.
+- **Readiness that covers the retrieval dependencies** - `/api/health/ready`
+  treats only the database as critical; the embedding provider, the vector
+  store and the configured answering provider are unchecked or advisory. An
+  instance therefore reports ready while every retrieval-backed question
+  returns a 500. Documented in the README rather than hidden, but the honest
+  probe is the better answer: per-dependency status, and a 503 when the
+  pieces retrieval actually needs are down.
 - **Widen client test coverage** - the tests that mount the chat client cover
   the stored-row invariant across every stream outcome, which is where the
   defects were. Not yet covered: the admin panel, the setup wizard, model

@@ -36,9 +36,17 @@ ALGORITHM       = "HS256"
 WATCHER_API_KEY = os.getenv("WATCHER_API_KEY", "")
 
 # ── Peer federation keys (per-caller scope) ──────────────────────────────────
-# PEER_KEYS = comma-separated <key>:<scope> pairs, scope in {"all", "public"}:
-#   all    -> may read the global KB plus every private department
-#   public -> global/public KB only; a ?department= request is ignored
+# PEER_KEYS = comma-separated <key>:<scope> pairs. A scope is a CLEARANCE rung
+# (permissions.PEER_SCOPE_LEVELS), and the serve route filters departments by
+# the same department_min_level() the rest of retrieval uses:
+#   public -> the global KB only; a ?department= request is ignored
+#   all    -> global, plus departments the operator shared at or below Admin
+#   owner  -> everything, internal/Owner-only departments included
+# `all` no longer means "every department". It meant that until v0.1.1, which
+# reached `restricted`, `history` and every unlisted (fail-closed Owner-only)
+# department - so the friendly-sounding word shipped an operator's internal
+# docs off-box. Serving those now requires typing `owner`, deliberately.
+# An unrecognized scope grants nothing (the route 403s).
 # One key per caller, so a leaked key revokes one peer, not the federation.
 # Plain text (no JSON/quotes) so docker compose's .env parser accepts it.
 ECO_EXPOSE_KB = os.getenv("ECO_EXPOSE_KB", "false").lower() == "true"
@@ -48,6 +56,7 @@ def _load_peer_key_scopes() -> dict:
     scopes: dict[str, str] = {}
     for entry in os.getenv("PEER_KEYS", "").split(","):
         key, _, scope = entry.strip().partition(":")
+        scope = scope.strip()
         if key and scope:
             scopes[key] = scope
     return scopes

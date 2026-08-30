@@ -35,6 +35,7 @@ from app.jwt_auth import get_current_user
 from app.logger import log, log_error
 from app.metrics import increment, record_request
 from app.peers import get_peers, query_peer_kb
+from app.permissions import MEMBER_LEVEL
 from app.pii import apply_blocklist
 from app.providers import stream_chat_events, non_stream_tool_call, supports_tools
 from app.security import (check_rate_limit, check_injection, client_ip_from_request,
@@ -55,6 +56,12 @@ router = APIRouter()
 
 GUEST_MAX_TURNS              = int(os.getenv("GUEST_MAX_TURNS", "10"))
 GUEST_MAX_TOKENS             = int(os.getenv("GUEST_MAX_TOKENS", "1024"))
+# Eco Mode CONSUME floor: the local clearance a caller needs before federated
+# content may enter their answer. Member by default - a guest on a public demo
+# surface has no business reading another instance's corpus. See the gate in
+# the chat handler for why this is a local floor and not a level shipped to
+# the peer.
+PEER_CONSUME_MIN_LEVEL       = int(os.getenv("PEER_CONSUME_MIN_LEVEL", str(MEMBER_LEVEL)))
 # Identity card - the owner's profile, pinned into chat so the assistant
 # always knows who it's talking to, independent of RAG retrieval (retrieval
 # can miss it when the query doesn't semantically match the profile). Path is
@@ -145,20 +152,33 @@ def query_kb_for_peer(req: Request, q: str, n: int = Query(8, ge=1, le=20)):
     """Serve this instance's KB to a federated peer. The gate is the peer-key
     middleware (X-Peer-Key against PEER_KEYS, only when ECO_EXPOSE_KB=true) -
     it stamps request.state.peer_scope; this route fails closed without the
-    stamp, so it is sealed even if the middleware is off. Scope semantics:
-    'public' serves the global collection only (a department ask is ignored);
-    'all' also searches the non-general departments. Chunks return with their
-    trust metadata; the CONSUMING side labels them external and re-scans at
-    its own boundary."""
+    stamp, so it is sealed even if the middleware is off.
+
+    CLEARANCE: the scope is a rung on the access ladder (permissions.
+    PEER_SCOPE_LEVELS), and departments are filtered by the SAME
+    department_min_level() every other retrieval surface uses. 'public' serves
+    the global collection only; 'all' adds departments the operator shared at
+    or below Admin; 'owner' adds the internal ones, and has to be asked for by
+    name. This route calls query_similar() directly - deliberately, it wants
+    the raw candidates, not a reranked answer set - and query_similar takes no
+    clearance argument, so the gate has to be HERE. It used to not be: 'all'
+    meant every non-general department, which is where `restricted`, `history`
+    and every fail-closed unlisted department live.
+
+    Chunks return with their trust metadata; the CONSUMING side labels them
+    external and re-scans at its own boundary."""
+    from app.permissions import peer_scope_level
+    from app.rag_config import department_min_level
     scope = getattr(req.state, "peer_scope", None)
-    if scope not in ("all", "public"):
+    level = peer_scope_level(scope)
+    if level is None:
         raise HTTPException(status_code=403,
                             detail="Peer KB serving is not enabled on this instance.")
-    departments = None
-    if scope == "all":
-        departments = [d for d in list_departments() if d != "general"]
-    results = query_similar(q, n_results=n, department=departments)
-    log("peer_kb_served", scope=scope, results=len(results))
+    departments = [d for d in list_departments()
+                   if d != "general" and department_min_level(d) <= level]
+    results = query_similar(q, n_results=n, department=departments or None)
+    log("peer_kb_served", scope=scope, level=level,
+        departments=len(departments), results=len(results))
     return {"results": results}
 
 
@@ -379,7 +399,25 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
     # Query enabled peer knowledge bases in parallel - returns raw chunks, no
     # AI call
     peer_chunks: list[dict] = []
-    if request.use_peers:
+    # CLEARANCE AT THE FEDERATION SEAM. Peer chunks never pass retrieve(), so
+    # the department gate that protects local retrieval never sees them - which
+    # made federation the one retrieval surface where clearance was not
+    # enforced, against a guarantee the README makes out loud.
+    #
+    # The caller's level is deliberately NOT shipped to the peer. A clearance
+    # asserted over the wire is the asking instance vouching for its own user,
+    # which is worth exactly nothing to the peer - it would be authorization by
+    # self-report across a trust boundary. So each side owns one half instead:
+    # the SERVE side decides what may LEAVE (the peer key's scope, mapped onto
+    # the access ladder - see query_kb_for_peer), and the CONSUME side decides
+    # who may RECEIVE it, here. Both halves answer to the same ladder, and
+    # neither depends on the other being honest.
+    if request.use_peers and caller_level < PEER_CONSUME_MIN_LEVEL:
+        logger.info("Peer query refused - caller level %d below floor %d",
+                    caller_level, PEER_CONSUME_MIN_LEVEL)
+        log("peer_query_refused", level=caller_level,
+            required=PEER_CONSUME_MIN_LEVEL)
+    elif request.use_peers:
         all_peers = get_peers()
         enabled_peers = [p for p in all_peers if p.get("enabled")]
         logger.info("Peer query requested - %d peers registered, %d enabled", len(all_peers), len(enabled_peers))

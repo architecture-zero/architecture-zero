@@ -33,9 +33,12 @@ manifests.
 Particularly interesting, because these are where the interesting failures live:
 
 - **Authorization that holds on one surface but not another.** Access is enforced
-  at retrieval, at the agent's file tools, and at the answering endpoint. A path
-  that reaches content through one of those while bypassing another is exactly
-  the class worth reporting.
+  at retrieval, at the agent's file tools, at the answering endpoint, and on both
+  sides of the Eco Mode federation seam. A path that reaches content through one
+  of those while bypassing another is exactly the class worth reporting - v0.1.1
+  fixed one: federation was missing from that list in the code as well as in this
+  sentence, and a peer key scoped `all` served departments that fail closed to
+  Owner everywhere else.
 - **Anything that makes a control report success without acting.** Several fixes
   in this repo's history are precisely that: a write path that answered 200 and
   discarded the write, an editor that saved a row the server never read. A
