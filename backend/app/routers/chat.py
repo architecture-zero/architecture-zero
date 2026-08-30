@@ -177,7 +177,11 @@ def query_kb_for_peer(req: Request, q: str, n: int = Query(8, ge=1, le=20)):
     departments = [d for d in list_departments()
                    if d != "general" and department_min_level(d) <= level]
     results = query_similar(q, n_results=n, department=departments or None)
-    log("peer_kb_served", scope=scope, level=level,
+    # NOT `level=` - app/logger.py's formatter writes the severity under that
+    # key and then update()s the caller's fields over it, so a clearance rung
+    # would silently replace "INFO" with an integer on exactly the events an
+    # operator most wants to filter by severity. Found by running it.
+    log("peer_kb_served", scope=scope, scope_level=level,
         departments=len(departments), results=len(results))
     return {"results": results}
 
@@ -415,7 +419,7 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
     if request.use_peers and caller_level < PEER_CONSUME_MIN_LEVEL:
         logger.info("Peer query refused - caller level %d below floor %d",
                     caller_level, PEER_CONSUME_MIN_LEVEL)
-        log("peer_query_refused", level=caller_level,
+        log("peer_query_refused", caller_level=caller_level,
             required=PEER_CONSUME_MIN_LEVEL)
     elif request.use_peers:
         all_peers = get_peers()
