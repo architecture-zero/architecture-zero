@@ -4,7 +4,7 @@ A self-hosted AI assistant platform where trust is measured, not claimed.
 
 Most "AI systems" are a text box, an API key, and a prompt. This is the
 rest: hybrid retrieval with a cross-encoder reranker behind a swappable
-provider seam, tiered access control enforced at three surfaces, an
+provider seam, tiered access control enforced at four surfaces, an
 ingest-time injection gate that quarantines hostile content before it can
 reach an answer, and a judged evaluation harness that scores the system's
 correctness, groundedness, freshness, and honesty - then publishes those

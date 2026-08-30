@@ -78,8 +78,9 @@ the peers toggle on, a question also queries each enabled peer's knowledge
 base; their chunks arrive labeled as EXTERNAL PEER CONTENT, are scanned at
 the boundary like any untrusted input, and supplement your own corpus in
 the same answer. Serving your OWN knowledge base to peers is a deliberate
-opt-in (ECO_EXPOSE_KB plus per-peer keys, each scoped to public-only or
-all departments). A down peer is skipped by a circuit breaker instead of
+opt-in (ECO_EXPOSE_KB plus per-peer keys, each scoped `public`, `all`, or
+`owner` - rungs on the same clearance ladder retrieval uses, so `all`
+stops below the Owner-only departments and reaching those takes `owner`). A down peer is skipped by a circuit breaker instead of
 stalling every chat, and per-peer health is visible at /api/peers/status.
 
 ## Can the assistant browse the web?

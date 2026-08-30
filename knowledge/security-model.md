@@ -42,16 +42,27 @@ redefine who the user is. The assistant is also forbidden from emitting
 markdown images or links built from context data, which closes the classic
 render-time exfiltration channel.
 
-## Access tiers enforced three times
+## Access tiers enforced four times
 
 A clearance level guards content at every surface that could serve it:
 retrieval drops departments above the caller's level (including
 query-routed ones), the assistant's file tools refuse reads above level
 (and hide even the NAMES of higher-tier files in listings and searches),
-and the answer layer itself carries a non-owner rule that refuses to
+the answer layer itself carries a non-owner rule that refuses to
 recount internal operational history even if fragments of it leaked into
-general-floor context. Three surfaces, one shared clearance map - they
-cannot drift apart because they read the same configuration.
+general-floor context, and federation gates both directions - a peer
+key's scope is a rung on this same ladder, and a local clearance floor
+decides who may receive what a peer sends back. Four surfaces, one
+shared clearance map - they cannot drift apart because they read the
+same configuration.
+
+Federation became the fourth in v0.1.1, and the reason is worth stating
+plainly: before it, a peer key scoped `all` reached every non-general
+department - the Owner-only ones included, and every department an
+operator had created and never classified. The serve path calls the
+similarity search directly, and that function takes no clearance
+argument, because the gate lived one layer above it on a path peers
+never touch.
 
 ## Authentication hardening
 
@@ -104,9 +115,11 @@ refuses to write on any finding, because a hit there means the generator
 is broken rather than that the corpus is quoting an attack.
 
 The records are Owner clearance. One consequence worth knowing before
-enabling peer serving: that clearance is also what an `all`-scoped peer
-key receives, so an instance serving its knowledge base to peers serves
-its posture record with it.
+enabling peer serving: a peer key scoped `owner` is granted that same
+rung, so an instance serving under that scope serves its posture record
+with it. A key scoped `all` sits at the Admin rung and does not - which
+is the whole reason `owner` has to be typed out rather than reached by
+picking the friendlier-sounding word.
 
 ## Fail-open controls get positive signals
 

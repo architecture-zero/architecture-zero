@@ -120,8 +120,9 @@ access if you enable it) and a department. Documents live in departments
 too: "general" is the shared floor everyone can read; departments listed
 with a higher clearance floor (like the built-in "restricted" and
 "history") are only retrievable by tiers cleared for them. Retrieval, the
-assistant's file tools, and the answer layer all enforce the same tiers, so
-a lower tier cannot pull higher-tier content into an answer by any path.
+assistant's file tools, the answer layer, and both sides of the federation
+seam all enforce the same tiers, so a lower tier cannot pull higher-tier
+content into an answer by any path.
 Add users via POST /api/users, and set role, department, and permissions
 through the same users API.
 

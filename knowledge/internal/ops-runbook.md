@@ -4,7 +4,7 @@
 
 This file lives under internal/, which the default department map routes
 to the restricted department - Owner-only at retrieval, in the file tools,
-and at the answer layer. It exists so a fresh install can demonstrate the
+at the answer layer, and on the peer-serve path. It exists so a fresh install can demonstrate the
 access-tier machinery with real-feeling internal content: ask about the
 runbook as a Member or Guest and the assistant declines; ask as Owner and
 it answers with citations.
