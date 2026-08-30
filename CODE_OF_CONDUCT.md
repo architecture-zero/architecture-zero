@@ -59,8 +59,18 @@ representative at an online or offline event.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the maintainer at **contact@mrjstickel.com**. All complaints will be
-reviewed and investigated promptly and fairly.
+reported privately through
+[GitHub's private reporting form](https://github.com/architecture-zero/architecture-zero/security/advisories/new).
+It is nominally the security channel; it is used here because it is the only
+private, authenticated route into this repository, and a conduct report should
+not have to be filed in public. Say plainly at the top that it is a conduct
+report rather than a vulnerability.
+
+If you would rather not use that form, open a public issue containing only "I
+have a conduct report, please open a channel" and nothing else, and one will be
+opened for you.
+
+All complaints will be reviewed and investigated promptly and fairly.
 
 This project is maintained by one person, so here is the honest version of what
 that means: reports are read by a human who is also writing the code, and the
