@@ -68,6 +68,19 @@ Two settings matter more than the rest, and both default to the safe option:
 `ENABLE_AGENT_TOOLS` is off by default and should stay off unless you have read
 what the tool surface does. The shell tool is a real shell.
 
+**Keep the vector store embedded.** `database.py` builds a
+`chromadb.PersistentClient` in-process. Three CVEs against chromadb
+(CVE-2026-45830, -45831, -45833 - two at 8.8, one remote code execution via
+`trust_remote_code` on a collection-update route) affect every released version
+from 0.4.17 through 1.5.9, so there is nothing to upgrade to. All three
+describe the chroma **server**: its HTTP `/api/v2/tenants` routes, its
+authorization provider, its tenant model. None of it exists in this process,
+which is the only reason those findings are not live here. Swapping in an
+`HttpClient` or standing up a chroma server turns all three on, and no
+dependency bump will turn them back off.
+`backend/tests/test_chroma_embedded_only.py` fails the build if the code drifts
+that way, so you will find out at CI rather than in an advisory.
+
 ## A note on what "secure" means here
 
 This project's claim is that trust should be measured rather than asserted, and
