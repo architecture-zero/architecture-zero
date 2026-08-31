@@ -248,8 +248,11 @@ python -m venv .venv
 cd backend && ../.venv/bin/python -m pytest tests -q           # Windows: ..\.venv\Scripts\python
 ```
 The suite mocks the vector store and embedder - it needs no Ollama, no
-network, and no API keys. CI runs the same suite plus a secret scan and a
-private-residue guard (see `.github/residue-denylist.txt`) on every push.
+network, and no API keys. CI runs the same suite plus a secret scan, a
+private-residue guard (see `.github/residue-denylist.txt`), and dependency
+and static-analysis scanning (pip-audit, bandit, trivy) on every push. The
+scanners and the suite also run on a daily schedule; the secret scan and the
+residue guard do not, because they only have something to say about a diff.
 
 ## Running an evaluation
 

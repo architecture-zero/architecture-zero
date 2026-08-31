@@ -170,7 +170,7 @@ core and how modules graduate into it.
 ## Repository layout
 
 - `backend/app/` - the platform (FastAPI)
-- `backend/tests/` - the suite CI runs on every push
+- `backend/tests/` - the suite CI runs on every push and on the daily schedule
 - `backend/scripts/` - the measurement harness (retrieval A/B arms, noise
   bands, answer-layer runs, outside-model holdout authoring, the live-fire
   injection probe)

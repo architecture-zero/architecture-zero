@@ -61,15 +61,26 @@ debugging your change.
 
 ## What CI runs
 
-Five jobs, all of which must pass:
+Eight jobs, all of which must pass:
 
 | Job | What it does |
 |---|---|
 | private-residue guard | Greps the tree against `.github/residue-denylist.txt`. This template is derived from private deployments, and no term from that lineage may appear in it. |
 | gitleaks | Full-history secret scan. |
+| pip-audit | Dependency CVEs. Findings that cannot be fixed are answered in the workflow's `ignore-vulns` block, each with its reasoning and what would retire it, rather than muted. |
+| bandit | SAST over `backend/app` at medium severity and confidence. |
+| trivy | Vulnerabilities, secrets and misconfiguration across the tree, lockfiles and container definitions. Deferrals live in `.trivyignore` with their reasoning. |
 | test suite | pytest, with the junit rule above. |
 | frontend | Type-check, tests, build. |
 | docker image builds | Both images. |
+
+The workflow also runs daily on a schedule, because a new CVE against a pin
+that has not moved does not arrive with a commit. On that scheduled run only
+the three scanners and the test suite execute - the residue guard, gitleaks
+and the frontend job are diff-triggered, since a tree that has not changed
+has nothing new to tell them. GitHub disables a scheduled workflow after 60
+days with no repository activity, so if the Actions tab says the schedule is
+off, that is why.
 
 ## The bar for a change
 
