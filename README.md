@@ -226,8 +226,14 @@ up --build` builds the client inside Linux, where the policy does not apply.
 
 CI runs both suites plus a full-history secret scan, a private-residue
 guard (a denylist grep that fails the build if lineage from the private
-deployments this template descends from appears in the tree), and both
-Docker image builds on every push to main.
+deployments this template descends from appears in the tree), dependency
+and static-analysis scanning (pip-audit, bandit, trivy), and both Docker
+image builds on every push to main. The scanning jobs and the backend
+suite also run daily, because the two things they catch - a new CVE filed
+against a pin that has not moved, and a guard that quietly stopped
+holding - both arrive without a commit. Findings that cannot be fixed are
+not silently muted: every entry in the pip-audit ignore list carries its
+reasoning, what the ignore rests on, and what would retire it.
 
 ## Known limitations at v0.1.1
 

@@ -71,6 +71,20 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   returns a 500. Documented in the README rather than hidden, but the honest
   probe is the better answer: per-dependency status, and a 503 when the
   pieces retrieval actually needs are down.
+- **FastAPI and starlette onto a fixed line** - seven starlette findings sit
+  behind the pin at fastapi 0.115.5, and clearing them needs starlette 1.3.1
+  or later, which only arrives with a FastAPI major bump. Two of the seven
+  are reachable here rather than theoretical: a parsing slowdown on large
+  multipart bodies, which the admin upload route accepts, and a Host header
+  that goes unvalidated into `request.url.path`, which matters to anyone
+  running path-based rules in a proxy in front of this. They are deferred
+  rather than accepted, and the distinction is the whole point - an
+  acceptance says a finding cannot reach you, while this one says it can and
+  the fix has a cost worth naming. That cost is changing the web framework
+  underneath everyone who deploys this template, which wants the acceptance
+  suite run against it rather than a version number edited to turn a scanner
+  green. The ignore list in `.github/workflows/ci.yml` names each finding and
+  why it is still there.
 - **Widen client test coverage** - the tests that mount the chat client cover
   the stored-row invariant across every stream outcome, which is where the
   defects were. Not yet covered: the admin panel, the setup wizard, model
