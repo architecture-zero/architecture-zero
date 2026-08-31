@@ -84,7 +84,7 @@ them was a guard written to prevent exactly the class it failed to catch.
 **Run it before you call it done.** The last three defects found before and
 after `v0.1.0` came from executing the product, not from reading it - a default
 that only worked on localhost, a proxy stripping a port from a forwarded header,
-and a log field silently overwriting log severity that 596 passing tests were
+and a log field silently overwriting log severity that 592 passing tests were
 blind to. Reviews read code. Running tests deployment. They find different bugs.
 
 **Say why in the code, not just what.** This codebase carries long comments

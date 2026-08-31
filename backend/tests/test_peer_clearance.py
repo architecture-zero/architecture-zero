@@ -1,9 +1,10 @@
 """Clearance at the Eco Mode federation seam - both halves of it.
 
 Every other retrieval surface gates on department_min_level(). Federation did
-not, and nothing here noticed, because the peer lane's only test coverage was
-the injection scan (test_peer_boundary_scan.py). Two independent holes met in
-the middle:
+not, and nothing here noticed. The peer lane looked well tested - an injection
+scan (test_peer_boundary_scan.py), a circuit breaker (test_peers_breaker.py),
+an SSRF guard (test_ssrf_peer_urls.py) - and not one of those asked how much an
+authorized key was allowed to see. Two independent holes met in the middle:
 
   SERVE - `query_kb_for_peer` mapped scope 'all' to "every department except
   general" and called query_similar() directly. query_similar takes no
