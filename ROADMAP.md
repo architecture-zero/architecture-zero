@@ -71,6 +71,17 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   returns a 500. Documented in the README rather than hidden, but the honest
   probe is the better answer: per-dependency status, and a 503 when the
   pieces retrieval actually needs are down.
+- **Non-root containers** - both images run as root, which trivy flags as
+  DS-0002 and which is worth fixing rather than arguing with. The reason it
+  is not a one-line change is the data directory: it arrives as a bind mount
+  of a host path, so it keeps that host directory's ownership, and a user
+  inside the container has to line up with a uid the template cannot know in
+  advance. Getting it right means creating the user, taking ownership of the
+  paths the image itself owns, and giving existing v0.1.x deployments an
+  upgrade note for the directory their new container would otherwise be
+  unable to write. Deferred with that reasoning in `.trivyignore` rather than
+  dropped out of the scanner's range, because a suppression nobody can read
+  is how a finding stops existing.
 - **FastAPI and starlette onto a fixed line** - seven starlette findings sit
   behind the pin at fastapi 0.115.5, and clearing them needs starlette 1.3.1
   or later, which only arrives with a FastAPI major bump. Two of the seven

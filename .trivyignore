@@ -1,0 +1,29 @@
+# Everything on this list is a triaged, documented deferral rather than a
+# silent suppression. A new or undocumented vulnerability, secret or
+# misconfiguration still fails the build. The value of the list is that what
+# is on it can be read and disagreed with; an entry with no reasoning under
+# it does not belong here.
+
+# --- Both containers run as root ---
+# AVD-DS-0002, raised against backend/Dockerfile and frontend/Dockerfile.
+# Real, worth fixing, and not fixed - so it is written down rather than
+# quietly dropped from the scanner's severity range.
+#
+# What makes it more than adding one USER line: the backend writes to bind
+# mounts of host directories (./backend/data holds the SQLite databases, the
+# vector index and backups). A bind mount keeps the host directory's
+# ownership, so a non-root user inside the container has to match a uid that
+# only the operator's machine knows. Adding USER without solving that gives a
+# container that cannot write its own database on first boot, and solving it
+# properly still leaves anyone already running v0.1.x with a data directory
+# their upgraded container can no longer write. That is a change carrying an
+# upgrade note for existing deployments, not a build fix, so it wants its own
+# release rather than a quiet edit. Tracked in ROADMAP.md.
+#
+# What bounds it meanwhile, from docker-compose.yml: neither container is
+# privileged, neither adds capabilities, and nothing outside this project
+# directory is mounted - the corpus, the operator docs and the eval seed are
+# all read-only. Root here is root inside a container whose only writable
+# mount is its own data directory. That is a weaker boundary than a non-root
+# user, which is why this is a deferral and not an acceptance.
+AVD-DS-0002
