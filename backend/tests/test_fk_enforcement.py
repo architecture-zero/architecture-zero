@@ -1,11 +1,11 @@
-"""SQLite FK enforcement (2026-09-04, fleet-wide alongside az-personal).
+"""SQLite FK enforcement (2026-09-04).
 
 SQLite ships with foreign-key enforcement OFF, so a ForeignKey declared in
 models.py was decorative - a deleted parent silently orphans its children,
-and sqlite id-reuse can then cross-wire an orphan onto a brand-new row (the
-az-personal connector incident). This surface declares no ondelete rules, so
-what enforcement buys here is refusing NEW orphans; the boot sweep clears any
-the unenforced past already left.
+and sqlite id-reuse can then cross-wire an orphan onto a brand-new row
+(observed on a downstream deployment). This template declares no ondelete
+rules, so what enforcement buys here is refusing NEW orphans; the boot sweep
+clears any the unenforced past already left.
 """
 import pytest
 from sqlalchemy import text

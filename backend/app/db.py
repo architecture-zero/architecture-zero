@@ -24,7 +24,7 @@ if _sqlite:
         # foreign_keys: SQLite ships with FK enforcement OFF, so a ForeignKey
         # declared in models.py was decorative - a deleted parent silently
         # orphans its children, and sqlite id-reuse can then cross-wire an
-        # orphan onto a brand-new row (the az-personal connector incident,
+        # orphan onto a brand-new row (observed on a downstream deployment,
         # 2026-09-04). Per-connection by design in SQLite, hence here.
         # sweep_fk_orphans() (called from init_db) cleans what the unenforced
         # past left behind; this governs every write from now on.
