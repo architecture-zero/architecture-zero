@@ -201,12 +201,33 @@ def mfa_complete(request: MFACompleteRequest):
     }
 
 
+class MFASetupRequest(BaseModel):
+    rekey: bool = False
+
+
 @router.post("/api/auth/mfa/setup")
-def mfa_setup(current_user: dict = Depends(get_current_user)):
+def mfa_setup(request: MFASetupRequest | None = None,
+              current_user: dict = Depends(get_current_user)):
     """Generate a new TOTP secret and return the provisioning URI + QR code
-    PNG (base64)."""
+    PNG (base64).
+
+    Re-key guard (2026-09-05, readiness-audit port): calling this while MFA
+    is ENABLED replaces the secret and flips mfa_enabled off - so any holder
+    of a live access token could strip an account's second factor with one
+    bodyless POST. An enabled account must now say rekey explicitly; on
+    refusal the stored secret is untouched.
+    """
     import pyotp, qrcode, base64
     from io import BytesIO
+    if current_user.get("mfa_enabled"):
+        if not (request and request.rekey):
+            raise HTTPException(
+                status_code=409,
+                detail="MFA is already enabled for this account. Pass rekey=true "
+                       "to deliberately re-enroll; that replaces the secret and "
+                       "disables MFA until the new code verifies.")
+        log("auth_mfa_rekey_started", user_id=current_user["id"],
+            username=current_user["username"])
     secret = pyotp.random_base32()
     set_mfa_secret(current_user["id"], secret)
     instance_name = os.getenv("VITE_INSTANCE_NAME", "Architecture Zero")
@@ -309,6 +330,10 @@ def me(current_user: dict = Depends(get_current_user)):
         "role": current_user["role"],
         "department": current_user.get("department", "general"),
         "permissions": effective_permissions(current_user),
+        # Enrollment state (2026-09-05, with the re-key guard below): a client
+        # that cannot see the truth renders "Set up authenticator" to enrolled
+        # accounts, and one tap of that used to silently de-enroll them.
+        "mfa_enabled": bool(current_user.get("mfa_enabled")),
     }
 
 
