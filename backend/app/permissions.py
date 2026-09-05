@@ -114,8 +114,10 @@ def can_grant(actor: dict | None, target: dict | None,
     effective_permissions treats a non-empty stored list as an override that
     REPLACES the preset. So an Admin with manage_users could PATCH itself
     manage_system, and walk straight through the Owner-only door to
-    /api/admin/config, where provider API keys live in cleartext. Locking one
-    axis while the other can override it locks nothing.
+    /api/admin/config - which USED TO return provider API keys in cleartext
+    (masked on both verbs via get_all_config_masked; the escalation itself is
+    what this guard closes). Locking one axis while the other can override it
+    locks nothing.
 
     Self-targeting needs no separate case: under 'only what you hold' a write
     to your own row can narrow or preserve your authority, never raise it.
