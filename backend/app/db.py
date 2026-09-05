@@ -21,9 +21,17 @@ if _sqlite:
         # read - e.g. an endpoint doing HTTP work inside an open session -
         # starve every writer into "database is locked"). busy_timeout: brief
         # write contention waits instead of erroring at sqlite's 5s default.
+        # foreign_keys: SQLite ships with FK enforcement OFF, so a ForeignKey
+        # declared in models.py was decorative - a deleted parent silently
+        # orphans its children, and sqlite id-reuse can then cross-wire an
+        # orphan onto a brand-new row (the az-personal connector incident,
+        # 2026-09-04). Per-connection by design in SQLite, hence here.
+        # sweep_fk_orphans() (called from init_db) cleans what the unenforced
+        # past left behind; this governs every write from now on.
         cur = dbapi_conn.cursor()
         cur.execute("PRAGMA journal_mode=WAL")
         cur.execute("PRAGMA busy_timeout=15000")
+        cur.execute("PRAGMA foreign_keys=ON")
         cur.close()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -140,8 +148,67 @@ def _rebuild_chat_sessions_unique():
             print("chat_sessions unique rebuild FAILED: %s" % exc, flush=True)
 
 
+def sweep_fk_orphans() -> dict:
+    """One boot-time pass: remove/null child rows whose parent no longer exists.
+
+    FK enforcement (the connect listener above) governs writes from NOW ON; it
+    does nothing about rows an unenforced past already orphaned, and sqlite
+    id-reuse can cross-wire such a row onto a brand-new parent. Fixpoint loop
+    because deleting an orphan can orphan its own children; SET NULL
+    declarations are honored by nulling instead of deleting. Runs on a DIRECT
+    sqlite3 connection OUTSIDE the engine pool: per-connection pragma state
+    rides a pooled connection back into the pool, so flipping FK off on one
+    would disable enforcement for whichever request checks it out next (the
+    fork suites caught exactly that on this sweep's first version) - and a
+    fresh sqlite3 connection's own default is already the FK-OFF this sweep
+    needs, which matters because under enforcement an orphan that is itself a
+    parent cannot be deleted while its children exist. Cheap on a healthy
+    file - PRAGMA
+    foreign_key_check on a small DB is milliseconds - and returns counts so
+    the boot log can say what moved.
+    """
+    if not _sqlite:
+        return {"deleted": {}, "nulled": {}}
+    deleted: dict = {}
+    nulled: dict = {}
+    import sqlite3
+    raw = sqlite3.connect(engine.url.database)
+    try:
+        cur = raw.cursor()
+        cur.execute("PRAGMA busy_timeout=15000")
+        for _ in range(10):
+            violations = cur.execute("PRAGMA foreign_key_check").fetchall()
+            if not violations:
+                break
+            for table, rowid, _parent, fkid in violations:
+                if rowid is None:  # WITHOUT ROWID table - none in this schema
+                    continue
+                on_delete, cols = "", []
+                for r in cur.execute(
+                        f'PRAGMA foreign_key_list("{table}")').fetchall():
+                    if r[0] == fkid:
+                        on_delete = (r[6] or "").upper()
+                        cols.append(r[3])
+                if on_delete == "SET NULL" and cols:
+                    sets = ", ".join(f'"{c}" = NULL' for c in cols)
+                    cur.execute(f'UPDATE "{table}" SET {sets} WHERE rowid = ?',
+                                (rowid,))
+                    nulled[table] = nulled.get(table, 0) + 1
+                else:
+                    cur.execute(f'DELETE FROM "{table}" WHERE rowid = ?',
+                                (rowid,))
+                    deleted[table] = deleted.get(table, 0) + 1
+        raw.commit()
+    finally:
+        raw.close()
+    return {"deleted": deleted, "nulled": nulled}
+
+
 def init_db():
     from app import models  # noqa: F401 - register all ORM models
     Base.metadata.create_all(engine)
     _rebuild_chat_sessions_unique()
     _run_migrations()
+    swept = sweep_fk_orphans()
+    if swept["deleted"] or swept["nulled"]:
+        print(f"fk orphan sweep: {swept}", flush=True)
