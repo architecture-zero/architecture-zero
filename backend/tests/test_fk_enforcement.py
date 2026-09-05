@@ -60,3 +60,13 @@ def test_sweep_clears_planted_orphans(client):
         cur.execute("DROP TABLE IF EXISTS _fk_probe_parent")
         raw.commit()
         raw.close()
+
+
+def test_the_orphan_sweep_is_actually_wired_into_init_db():
+    """Activation pin (2026-09-05 review): on this surface the init_db call is
+    the ONLY orphan cleanup (no migration system), and it could be deleted
+    with every other test still green. Source-read pin on the call site."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "app" / "db.py").read_text(encoding="utf-8")
+    body = src.split("def init_db():", 1)[1]
+    assert "sweep_fk_orphans()" in body, "init_db lost its orphan-sweep call"

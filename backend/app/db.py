@@ -168,7 +168,7 @@ def sweep_fk_orphans() -> dict:
     the boot log can say what moved.
     """
     if not _sqlite:
-        return {"deleted": {}, "nulled": {}}
+        return {"deleted": {}, "nulled": {}, "residual": 0}
     deleted: dict = {}
     nulled: dict = {}
     import sqlite3
@@ -200,10 +200,15 @@ def sweep_fk_orphans() -> dict:
                         f'DELETE FROM "{table}" WHERE rowid = ?',  # nosec B608 - same as above: schema-derived identifier, bound value
                         (rowid,))
                     deleted[table] = deleted.get(table, 0) + 1
+        # Re-check AFTER the loop (2026-09-05 review): exhausting the pass
+        # bound - or a chain of rowid-less violations the guard above skips -
+        # must not be reported as a completed sweep. The claim comes from the
+        # pragma, never from the loop having ended.
+        residual = len(cur.execute("PRAGMA foreign_key_check").fetchall())
         raw.commit()
     finally:
         raw.close()
-    return {"deleted": deleted, "nulled": nulled}
+    return {"deleted": deleted, "nulled": nulled, "residual": residual}
 
 
 def init_db():
@@ -212,5 +217,9 @@ def init_db():
     _rebuild_chat_sessions_unique()
     _run_migrations()
     swept = sweep_fk_orphans()
-    if swept["deleted"] or swept["nulled"]:
+    if swept["residual"]:
+        print(f"fk orphan sweep: WARNING - {swept['residual']} violation(s) "
+              "REMAIN after the pass bound; enforcement will surface them as "
+              "write failures", flush=True)
+    elif swept["deleted"] or swept["nulled"]:
         print(f"fk orphan sweep: {swept}", flush=True)
