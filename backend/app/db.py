@@ -191,12 +191,14 @@ def sweep_fk_orphans() -> dict:
                         cols.append(r[3])
                 if on_delete == "SET NULL" and cols:
                     sets = ", ".join(f'"{c}" = NULL' for c in cols)
-                    cur.execute(f'UPDATE "{table}" SET {sets} WHERE rowid = ?',
-                                (rowid,))
+                    cur.execute(  # nosec B608 - identifiers come from sqlite's own pragma output over THIS schema, never from input; the value is bound
+                        f'UPDATE "{table}" SET {sets} WHERE rowid = ?',
+                        (rowid,))
                     nulled[table] = nulled.get(table, 0) + 1
                 else:
-                    cur.execute(f'DELETE FROM "{table}" WHERE rowid = ?',
-                                (rowid,))
+                    cur.execute(  # nosec B608 - same as above: schema-derived identifier, bound value
+                        f'DELETE FROM "{table}" WHERE rowid = ?',
+                        (rowid,))
                     deleted[table] = deleted.get(table, 0) + 1
         raw.commit()
     finally:
