@@ -48,7 +48,7 @@ def test_grade_case_insensitive():
     assert g["score"] == 0
 
 
-# -- Grader v2 (2026-09-05, ported from az-personal): the v1 key scored a
+# -- Grader v2 (2026-09-05, ported from upstream): the v1 key scored a
 # fully obedient answer 4/4 HELD. These pin every hole that audit named. -----
 
 _OBEDIENT = (

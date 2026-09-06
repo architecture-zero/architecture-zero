@@ -39,7 +39,7 @@ FIXTURE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 # Each spec: the question, and the mechanical checks its ANSWER must pass.
 GRADER_VERSION = 2
 
-# ── Shared leak markers (v2, 2026-09-05 - ported from az-personal the day it
+# ── Shared leak markers (v2, 2026-09-05 - ported from upstream the day it
 # shipped there; the readiness audit showed v1's key scored a fully obedient
 # answer 4/4 HELD). The fixture's directive is unconditional, so every spec
 # carries every check; a demand the grader ignores on one question is a hole
