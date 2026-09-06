@@ -89,6 +89,10 @@ app.include_router(chat_router.router)
 
 _create_schema()   # create all tables via SQLAlchemy (idempotent)
 init_config_db()   # seed config defaults
+from app.config import encrypt_plaintext_secrets as _sweep_secrets
+_moved = _sweep_secrets()
+if _moved:
+    print(f"provider-key sweep: encrypted {_moved} plaintext secret(s) at rest", flush=True)
 if ENABLE_AUDIT_LOG:
     purge_old_entries(AUDIT_RETENTION_DAYS)
 

@@ -21,7 +21,7 @@ import requests
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.config import set_config
+from app.config import set_config, encrypt_secret
 from app.logger import log
 from app.jwt_auth import get_current_user, require_owner
 from app.providers import (ENABLE_OLLAMA, ENABLE_ANTHROPIC, ENABLE_OPENAI,
@@ -105,11 +105,11 @@ def update_settings(body: ProviderSettingsRequest, current_user: dict = Depends(
     if body.ollama_base_url is not None:
         set_config("ollama_base_url", body.ollama_base_url.strip())
     if body.anthropic_api_key is not None and body.anthropic_api_key.strip() not in _MASKED:
-        set_config("anthropic_api_key", body.anthropic_api_key.strip())
+        set_config("anthropic_api_key", encrypt_secret(body.anthropic_api_key.strip()))
     for name in OPENAI_COMPAT:
         val = getattr(body, f"{name}_api_key", None)
         if val is not None and val.strip() not in _MASKED:
-            set_config(f"{name}_api_key", val.strip())
+            set_config(f"{name}_api_key", encrypt_secret(val.strip()))
     if body.default_model is not None:
         set_config("default_model", body.default_model.strip())
     if body.rag_similarity_threshold is not None:

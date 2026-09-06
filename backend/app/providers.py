@@ -32,10 +32,11 @@ def _get_runtime(db_key: str, env_key: str, default: str = "") -> str:
     """Read from config DB; fall back to env var; then to default. Called
     per-request so values update without restart."""
     try:
-        from app.config import get_config
+        from app.config import get_config, is_secret_config_key, decrypt_secret
         val = get_config(db_key, "")
         if val:
-            return val
+            # Secret rows are Fernet at rest; legacy plaintext passes through.
+            return decrypt_secret(val) if is_secret_config_key(db_key) else val
     except Exception:
         pass
     return os.getenv(env_key, default)

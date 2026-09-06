@@ -68,6 +68,50 @@ def is_secret_config_key(key: str) -> bool:
     return key.endswith("_api_key")
 
 
+# ── Provider keys at rest (2026-09-06 hygiene batch, ported from upstream) ────
+# Stored values were plaintext behind masked reads: the GET/PATCH responses
+# masked them, but the config table itself carried the raw credential, so a
+# copied DB file or backup held every provider key. Same treatment as the MFA
+# seed: Fernet via crypto_at_rest, legacy passthrough, boot sweep converges.
+
+def encrypt_secret(value: str) -> str:
+    from app.crypto_at_rest import encrypt_at_rest
+    return encrypt_at_rest(value)
+
+
+def decrypt_secret(value: str) -> str:
+    """Inverse of encrypt_secret; legacy plaintext rows pass through unchanged.
+
+    A value that looks like a Fernet token but fails DECRYPTION (rotated
+    JWT_SECRET_KEY without the re-encrypt sweep) is returned as-is - the
+    provider call then fails with the provider's own auth error, which is
+    loud, rather than this layer guessing. That is a deliberately SOFTER
+    failure than the MFA seed's strict raise: a wrong provider key errors
+    visibly on the next call; a wrongly-rejected MFA seed locks a human out
+    with no error anywhere.
+    """
+    from app.crypto_at_rest import is_encrypted, _get_fernet
+    if not is_encrypted(value):
+        return value
+    try:
+        return _get_fernet().decrypt(value.encode()).decode()
+    except Exception:
+        return value
+
+
+def encrypt_plaintext_secrets() -> int:
+    """Boot sweep: re-write any secret row still stored plaintext (pre-fix
+    writes). Returns how many rows moved, so the startup log line is a signal
+    the guard RAN, not just that it exists."""
+    from app.crypto_at_rest import is_encrypted
+    moved = 0
+    for key, value in get_all_config().items():
+        if is_secret_config_key(key) and value and not is_encrypted(value):
+            set_config(key, encrypt_secret(value))
+            moved += 1
+    return moved
+
+
 def get_all_config_masked() -> dict:
     """Config as a response may carry it: every secret replaced by a boolean.
 
