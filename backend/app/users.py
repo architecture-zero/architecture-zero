@@ -8,6 +8,7 @@ session valid until its TTL expired.
 import json
 from datetime import datetime, timezone
 
+from app.crypto_at_rest import decrypt_at_rest, encrypt_at_rest
 from app.db import get_session
 from app.models import RefreshToken, User
 
@@ -22,7 +23,10 @@ def _user_to_dict(user: User) -> dict:
         "department": user.department,
         "is_active": user.is_active,
         "created_at": user.created_at,
-        "mfa_secret": user.mfa_secret,
+        # Stored encrypted at rest; every consumer (pyotp) needs the seed
+        # itself, so the one read seam decrypts. Legacy plaintext rows pass
+        # through until the migration sweep converges them.
+        "mfa_secret": decrypt_at_rest(user.mfa_secret),
         "mfa_enabled": user.mfa_enabled,
         "failed_attempts": user.failed_attempts,
         "locked_until": user.locked_until,
@@ -122,10 +126,11 @@ def update_user_username(user_id: int, username: str) -> bool:
 
 def set_mfa_secret(user_id: int, secret: str):
     # Enabling is a separate step: the secret is provisional until the user
-    # proves possession with a first valid code.
+    # proves possession with a first valid code. Encrypted at rest - the
+    # column must never hold a mintable seed in the clear.
     with get_session() as db:
         db.query(User).filter(User.id == user_id).update(
-            {"mfa_secret": secret, "mfa_enabled": False})
+            {"mfa_secret": encrypt_at_rest(secret), "mfa_enabled": False})
 
 
 def enable_mfa(user_id: int):

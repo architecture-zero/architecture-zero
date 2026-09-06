@@ -211,11 +211,40 @@ def sweep_fk_orphans() -> dict:
     return {"deleted": deleted, "nulled": nulled, "residual": residual}
 
 
+def _encrypt_mfa_seeds_sweep() -> int:
+    """One-time convergence: encrypt any plaintext MFA seeds at rest.
+
+    Rows written before crypto_at_rest existed hold the raw TOTP seed; the
+    read path tolerates them (prefix discriminator), so nothing breaks
+    while they exist - this sweep just converges them so the tolerance
+    window closes. Idempotent: ciphertext rows are skipped by the same
+    prefix check the read path uses. Runs at every boot, costs one indexed
+    scan of a small table. This sweep is also the template for a
+    JWT_SECRET_KEY rotation (decrypt-with-old / encrypt-with-new) - see
+    crypto_at_rest's docstring for why rotation needs one.
+    """
+    from app.crypto_at_rest import encrypt_at_rest, is_encrypted
+    from app.models import User
+    converged = 0
+    with get_session() as db:
+        for user in db.query(User).filter(User.mfa_secret.isnot(None)).all():
+            if not is_encrypted(user.mfa_secret):
+                user.mfa_secret = encrypt_at_rest(user.mfa_secret)
+                converged += 1
+        if converged:
+            db.commit()
+    return converged
+
+
 def init_db():
     from app import models  # noqa: F401 - register all ORM models
     Base.metadata.create_all(engine)
     _rebuild_chat_sessions_unique()
     _run_migrations()
+    encrypted = _encrypt_mfa_seeds_sweep()
+    if encrypted:
+        print(f"mfa seed sweep: encrypted {encrypted} plaintext seed(s) at rest",
+              flush=True)
     swept = sweep_fk_orphans()
     if swept["residual"]:
         print(f"fk orphan sweep: WARNING - {swept['residual']} violation(s) "
