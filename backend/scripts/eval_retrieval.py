@@ -426,10 +426,15 @@ def run_cohort(questions, top_k, misses_only, label="", stamp=False):
     slice_ms: dict[str, int] = {}
     pool_sizes: list[int] = []
 
-    def timed_rerank(query, candidates, top_k=None):
+    def timed_rerank(query, candidates, top_k=None, **kw):
+        # **kw: the wrapper must accept whatever retrieve() passes the real
+        # rerank (upstream's retrieve() calls it with stats=; a wrapper pinned
+        # to the old arity crashes every --ab run - found live upstream
+        # 2026-09-05, the first A/B after the stats param landed. Forwarding
+        # kwargs makes the class unrepeatable).
         pool_sizes.append(len(candidates))
         t0 = time.time()
-        out = real_rerank(query, candidates, top_k)
+        out = real_rerank(query, candidates, top_k, **kw)
         slice_ms["last"] = int((time.time() - t0) * 1000)
         return out
 
