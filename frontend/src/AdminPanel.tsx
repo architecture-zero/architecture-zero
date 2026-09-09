@@ -3,6 +3,60 @@ import { actionError, emitError, guardedJson, guardedPoll } from './errorSurface
 
 const PRIMARY_COLOR = import.meta.env.VITE_PRIMARY_COLOR || '#2563eb'
 
+// ── The step-up prompt (2026-09-09) ────────────────────────────────────────
+// Creating an account, changing a role, adding manage_users/manage_system,
+// or registering a peer costs the operator's OWN password server-side
+// (jwt_auth.require_step_up: a bearer token proves possession of a browser,
+// the password proves the person). Create takes it in its form; every other
+// gated write asks through this prompt, which resolves to the password or to
+// null on cancel. The server answers a string 400 on a wrong one, and the
+// callers show it - a silent snap-back was the failure the attack pass named.
+
+type StepUpRequest = { what: string; resolve: (password: string | null) => void }
+
+function useStepUp() {
+  const [req, setReq] = useState<StepUpRequest | null>(null)
+  const ask = (what: string) =>
+    new Promise<string | null>(resolve => setReq({ what, resolve }))
+  const prompt = req
+    ? <StepUpPrompt what={req.what} onDone={pw => { req.resolve(pw); setReq(null) }} />
+    : null
+  return { ask, prompt }
+}
+
+function StepUpPrompt({ what, onDone }: { what: string; onDone: (pw: string | null) => void }) {
+  const [pw, setPw] = useState('')
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => onDone(null)}>
+      <div className="bg-gray-900 border border-gray-700 rounded-xl p-5 w-full max-w-sm space-y-3" onClick={e => e.stopPropagation()}>
+        <p className="text-sm text-white font-medium">Confirm with your password</p>
+        <p className="text-xs text-gray-400">To {what}, enter the password of the account you are signed in as.</p>
+        <input
+          type="password"
+          autoFocus
+          autoComplete="current-password"
+          placeholder="Your password"
+          value={pw}
+          onChange={e => setPw(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && pw) onDone(pw); if (e.key === 'Escape') onDone(null) }}
+          className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-blue-500/60"
+        />
+        <div className="flex justify-end gap-2">
+          <button onClick={() => onDone(null)} className="px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200">Cancel</button>
+          <button
+            onClick={() => onDone(pw)}
+            disabled={!pw}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium text-white disabled:opacity-50"
+            style={{ backgroundColor: PRIMARY_COLOR }}
+          >
+            Confirm
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 interface User {
@@ -66,6 +120,10 @@ function UsersTab({ api, headers }: { api: string; headers: () => Record<string,
   const [newDept, setNewDept] = useState('general')
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
+  // The step-up: the operator's own password. Create carries it in the form;
+  // role and authority-raising permission writes ask through the prompt.
+  const [actorPassword, setActorPassword] = useState('')
+  const stepUp = useStepUp()
 
   const load = () => {
     guardedJson<{ users?: User[] }>(
@@ -96,13 +154,15 @@ function UsersTab({ api, headers }: { api: string; headers: () => Record<string,
 
   const createUser = async () => {
     if (!newUsername.trim() || !newPassword.trim()) return
+    if (!actorPassword) { setError('Your own password is required to create an account'); return }
     setCreating(true)
     setError('')
     try {
       const res = await fetch(`${api}/api/users`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers() },
-        body: JSON.stringify({ username: newUsername, password: newPassword, role: newRole, department: newDept }),
+        body: JSON.stringify({ username: newUsername, password: newPassword, role: newRole, department: newDept,
+                               current_password: actorPassword }),
       })
       if (!res.ok) {
         const d = await res.json()
@@ -113,6 +173,7 @@ function UsersTab({ api, headers }: { api: string; headers: () => Record<string,
       setNewPassword('')
       setNewRole('member')
       setNewDept('general')
+      setActorPassword('')
       load()
     } catch {
       setError('Request failed')
@@ -129,6 +190,10 @@ function UsersTab({ api, headers }: { api: string; headers: () => Record<string,
   // outcome they must not have.
   const mutate = async (p: Promise<Response>, what: string) => {
     const err = await actionError(p, what)
+    // The refusal text was computed and then dropped, so the "said out loud"
+    // promise above was not kept - a step-up 400 would have been exactly the
+    // silent snap-back it describes. Toast it (2026-09-09).
+    if (err) emitError(err)
     load()
     return !err
   }
@@ -154,15 +219,36 @@ function UsersTab({ api, headers }: { api: string; headers: () => Record<string,
                  'Resetting MFA')
   }
 
-  const changeRole = (id: number, role: string) =>
-    mutate(jsonPatch(`/api/users/${id}/role`, { role }), 'Changing role')
+  const changeRole = async (id: number, role: string) => {
+    const u = users.find(x => x.id === id)
+    const pw = await stepUp.ask(`change ${u?.username ?? 'this user'}'s role to ${role}`)
+    if (pw === null) { load(); return false }
+    return mutate(jsonPatch(`/api/users/${id}/role`, { role, current_password: pw }), 'Changing role')
+  }
 
   const changeDept = (id: number, department: string) =>
     mutate(jsonPatch(`/api/users/${id}/department`, { department }), 'Changing department')
 
-  const setPermissions = (id: number, perms: string[] | null) =>
-    mutate(jsonPatch(`/api/users/${id}/permissions`, { permissions: perms }),
-           'Updating permissions')
+  // The step-up is owed only when the write ADDS manage_users or
+  // manage_system that the user does not hold today (the server's
+  // permissions.raises_authority). A reset to the role preset can add them
+  // too, so it is checked the same way, against effectivePerms below.
+  const STEP_UP_SCOPES = ['manage_users', 'manage_system']
+  const raisesAuthority = (u: User, perms: string[] | null) => {
+    const before = effectivePerms(u)
+    const after = perms && perms.length ? perms : (permMeta?.presets?.[u.role] || [])
+    return after.some(s => STEP_UP_SCOPES.includes(s) && !before.includes(s))
+  }
+
+  const setPermissions = async (u: User, perms: string[] | null) => {
+    let body: Record<string, unknown> = { permissions: perms }
+    if (raisesAuthority(u, perms)) {
+      const pw = await stepUp.ask(`grant ${u.username} manage_users or manage_system`)
+      if (pw === null) { load(); return false }
+      body = { ...body, current_password: pw }
+    }
+    return mutate(jsonPatch(`/api/users/${u.id}/permissions`, body), 'Updating permissions')
+  }
 
   // What the user ACTUALLY has right now - the client-side mirror of the
   // server's effective_permissions (permissions.py): a non-empty stored list is
@@ -194,7 +280,7 @@ function UsersTab({ api, headers }: { api: string; headers: () => Record<string,
   const togglePerm = (u: User, scope: string) => {
     const current = effectivePerms(u)
     const next = current.includes(scope) ? current.filter(p => p !== scope) : [...current, scope]
-    setPermissions(u.id, next)
+    setPermissions(u, next)
   }
 
   return (
@@ -219,6 +305,17 @@ function UsersTab({ api, headers }: { api: string; headers: () => Record<string,
             autoComplete="new-password"
             value={newPassword}
             onChange={e => setNewPassword(e.target.value)}
+            className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-blue-500/60"
+          />
+        </div>
+        <div className="flex gap-2">
+          {/* The step-up: creating an account costs the operator's OWN password. */}
+          <input
+            placeholder="Your password (required to create an account)"
+            type="password"
+            autoComplete="current-password"
+            value={actorPassword}
+            onChange={e => setActorPassword(e.target.value)}
             className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-blue-500/60"
           />
         </div>
@@ -253,6 +350,7 @@ function UsersTab({ api, headers }: { api: string; headers: () => Record<string,
         {error && <p className="text-xs text-red-400">{error}</p>}
       </div>
 
+      {stepUp.prompt}
       {/* User list */}
       <div className="space-y-2">
         <p className="text-xs text-gray-500 uppercase tracking-widest">Users ({users.length})</p>
@@ -328,7 +426,7 @@ function UsersTab({ api, headers }: { api: string; headers: () => Record<string,
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-xs text-gray-400 uppercase tracking-widest">Permissions</p>
                   <button
-                    onClick={() => setPermissions(u.id, null)}
+                    onClick={() => setPermissions(u, null)}
                     className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
                     title="Reset to role defaults"
                   >

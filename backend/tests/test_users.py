@@ -13,7 +13,7 @@ def test_create_user(client, admin_headers):
     r = client.post(
         "/api/users",
         headers=admin_headers,
-        json={"username": "newuser1", "password": "NewUser1pass", "role": "member"},
+        json={"current_password": "AdminPass1", "username": "newuser1", "password": "NewUser1pass", "role": "member"},
     )
     assert r.status_code == 200
     assert r.json()["status"] == "created"
@@ -23,6 +23,6 @@ def test_create_user_invalid_role(client, admin_headers):
     r = client.post(
         "/api/users",
         headers=admin_headers,
-        json={"username": "baduser", "password": "BadUser1pass", "role": "superuser"},
+        json={"current_password": "AdminPass1", "username": "baduser", "password": "BadUser1pass", "role": "superuser"},
     )
     assert r.status_code == 400

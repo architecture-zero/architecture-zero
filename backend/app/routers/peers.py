@@ -16,7 +16,7 @@ these six, so it went with the chat router, whose retrieval path it reuses.
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.jwt_auth import require_owner
+from app.jwt_auth import require_owner, require_step_up
 from app.peers import (get_peers, save_peers, check_peer_health,
                        get_peers_with_health, reset_peer_circuit_breaker,
                        validate_peer_url, PeerURLRefused)
@@ -32,6 +32,7 @@ class PeerCreateRequest(BaseModel):
     url:     str
     model:   str = ""
     enabled: bool = True
+    current_password: str = ""   # the step-up; a 400 from the route, never a 422
 
 
 class PeerUpdateRequest(BaseModel):
@@ -39,6 +40,7 @@ class PeerUpdateRequest(BaseModel):
     url:     str | None = None
     model:   str | None = None
     enabled: bool | None = None
+    current_password: str = ""
 
 
 @router.get("/api/peers")
@@ -69,6 +71,10 @@ def reset_peer_breaker(peer_id: str, current_user: dict = Depends(require_owner)
 
 @router.post("/api/peers")
 def add_peer(body: PeerCreateRequest, current_user: dict = Depends(require_owner)):
+    # Step-up door (ruled 2026-09-09): a registered peer URL receives
+    # PEER_API_KEY on the next peer-enabled chat, so writing one is handing a
+    # secret to an address. The caller's password, first.
+    require_step_up(current_user, body.current_password, "register a peer")
     # Refuse the SSRF shapes at write time so the operator gets a 400 at the
     # panel instead of a silent per-chat failure later. The fetch path
     # re-checks: this gate cannot see a name that re-resolves inward after it
@@ -91,6 +97,7 @@ def add_peer(body: PeerCreateRequest, current_user: dict = Depends(require_owner
 
 @router.patch("/api/peers/{peer_id}")
 def update_peer(peer_id: str, body: PeerUpdateRequest, current_user: dict = Depends(require_owner)):
+    require_step_up(current_user, body.current_password, "change a peer")
     if body.url is not None:
         try:
             body.url = validate_peer_url(body.url)

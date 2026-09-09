@@ -153,9 +153,11 @@ def test_duplicate_username_is_a_409_not_a_500(client, admin_headers):
     SQL traceback, which reads as "the server is broken" rather than "pick
     another name"."""
     payload = {"username": "dupe_probe", "password": "DupeProbe1", "role": "member"}
-    first = client.post("/api/users", json=payload, headers=admin_headers)
+    first = client.post("/api/users", json={**payload, "current_password": "AdminPass1"},
+                        headers=admin_headers)
     assert first.status_code in (200, 201), first.text
-    second = client.post("/api/users", json=payload, headers=admin_headers)
+    second = client.post("/api/users", json={**payload, "current_password": "AdminPass1"},
+                         headers=admin_headers)
     assert second.status_code == 409, second.text
 
 
@@ -189,7 +191,8 @@ def test_admin_cannot_reset_an_owners_mfa(client, admin_headers):
     owner = next(u["id"] for u in rows if u.get("role") == "owner")
 
     payload = {"username": "mfa_probe_admin", "password": "MfaProbe1", "role": "admin"}
-    client.post("/api/users", json=payload, headers=admin_headers)
+    client.post("/api/users", json={**payload, "current_password": "AdminPass1"},
+                headers=admin_headers)
     tok = client.post("/api/auth/login", json={"username": payload["username"],
                                                "password": payload["password"]}).json()
     admin_h = {"Authorization": f"Bearer {tok['access_token']}"}

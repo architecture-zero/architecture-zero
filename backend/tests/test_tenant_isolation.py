@@ -63,7 +63,7 @@ def test_history_endpoint_is_owner_scoped(client, admin_headers):
 
     # A second, distinct user...
     client.post("/api/users",
-                json={"username": "bob_iso", "password": "BobPass1", "role": "member"},
+                json={"current_password": "AdminPass1", "username": "bob_iso", "password": "BobPass1", "role": "member"},
                 headers=admin_headers)
     bob = client.post("/api/auth/login",
                       json={"username": "bob_iso", "password": "BobPass1"})
@@ -103,7 +103,7 @@ def test_two_owners_can_hold_the_same_session_id(client, admin_headers):
     assert r.status_code == 200, r.text
 
     client.post("/api/users",
-                json={"username": "carol_sid", "password": "CarolPass1", "role": "member"},
+                json={"current_password": "AdminPass1", "username": "carol_sid", "password": "CarolPass1", "role": "member"},
                 headers=admin_headers)
     carol = client.post("/api/auth/login",
                         json={"username": "carol_sid", "password": "CarolPass1"})
@@ -132,7 +132,7 @@ def test_session_listing_never_shows_another_owners_session_name(client, admin_h
                         json={"username": "carol_sid", "password": "CarolPass1"})
     if carol.status_code != 200:
         client.post("/api/users",
-                    json={"username": "carol_sid", "password": "CarolPass1", "role": "member"},
+                    json={"current_password": "AdminPass1", "username": "carol_sid", "password": "CarolPass1", "role": "member"},
                     headers=admin_headers)
         carol = client.post("/api/auth/login",
                             json={"username": "carol_sid", "password": "CarolPass1"})
@@ -300,7 +300,7 @@ def test_chat_endpoint_passes_caller_level_to_retrieve(client, admin_headers, mo
 
     # A Member-level account.
     client.post("/api/users",
-                json={"username": "member_iso", "password": "MemberP1", "role": "member"},
+                json={"current_password": "AdminPass1", "username": "member_iso", "password": "MemberP1", "role": "member"},
                 headers=admin_headers)
     tok = client.post("/api/auth/login",
                       json={"username": "member_iso", "password": "MemberP1"}).json()["access_token"]
@@ -562,7 +562,7 @@ def test_my_sessions_requires_only_view_history(client, admin_headers):
     sidebar answered 403 for every non-operator.
     """
     client.post("/api/users",
-                json={"username": "member-hist", "password": "MemberPass1!",
+                json={"current_password": "AdminPass1", "username": "member-hist", "password": "MemberPass1!",
                       "role": "member", "department": "general"},
                 headers=admin_headers)
     tok = client.post("/api/auth/login",

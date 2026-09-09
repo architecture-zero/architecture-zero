@@ -15,7 +15,8 @@ and hoisting it would separate the import from the guard it exists for.
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.jwt_auth import require_permission, hash_password, validate_password
+from app.jwt_auth import (require_permission, hash_password, validate_password,
+                          require_step_up, password_required_for_authority)
 from app.logger import log
 from app.permissions import PERMISSION_SCOPES, ROLE_PERMISSIONS
 from app.users import (create_user, list_users, deactivate_user, update_user_role,
@@ -31,6 +32,10 @@ class CreateUserRequest(BaseModel):
     password: str
     role: str = "member"
     department: str = "general"
+    # The CALLER's own password - the step-up. Optional at the schema so a
+    # missing value is the route's 400 (a string detail), never pydantic's
+    # 422 (a list detail the admin panel cannot render).
+    current_password: str = ""
 
 
 @router.get("/api/users")
@@ -45,6 +50,11 @@ def get_users(current_user: dict = Depends(require_permission("manage_users"))):
 @router.post("/api/users")
 def add_user(request: CreateUserRequest, current_user: dict = Depends(require_permission("manage_users"))):
     from app.permissions import is_owner
+    # STEP-UP FIRST (ruled 2026-09-06, applied fleet-wide 2026-09-09): a
+    # stolen session must not mint an account that outlives it.
+    # Re-authentication precedes the authority checks below, so a wrong
+    # password learns nothing about the ceilings either.
+    require_step_up(current_user, request.current_password, "create an account")
     if request.role not in ("owner", "admin", "member"):
         raise HTTPException(status_code=400, detail="role must be 'owner', 'admin', or 'member'")
     # Only an Owner can mint another Owner - an Admin holds manage_users but
@@ -91,6 +101,8 @@ def remove_user(user_id: int, current_user: dict = Depends(require_permission("m
 @router.patch("/api/users/{user_id}/role")
 def change_role(user_id: int, body: dict, current_user: dict = Depends(require_permission("manage_users"))):
     from app.permissions import is_owner
+    # Step-up first - see add_user.
+    require_step_up(current_user, body.get("current_password") or "", "change a role")
     role = body.get("role")
     if role not in ("owner", "admin", "member"):
         raise HTTPException(status_code=400, detail="role must be 'owner', 'admin', or 'member'")
@@ -100,6 +112,13 @@ def change_role(user_id: int, body: dict, current_user: dict = Depends(require_p
     target = get_user_by_id(user_id)
     if (role == "owner" or (target and target.get("role") == "owner")) and not is_owner(current_user):
         raise HTTPException(status_code=403, detail="Only an Owner can grant or change an Owner role")
+    # An account with no usable password may not hold a role whose preset
+    # carries manage_users or manage_system (upstream's SSO-account rule, ported
+    # 2026-09-09; no such accounts exist on a fresh clone, and the rule is
+    # here so an SSO port inherits it rather than rediscovers it).
+    refusal = password_required_for_authority(target, ROLE_PERMISSIONS.get(role, []))
+    if refusal:
+        raise HTTPException(status_code=400, detail=refusal)
     # Never demote the last Owner - it would orphan the system and re-open
     # public setup.
     if target and target.get("role") == "owner" and role != "owner":
@@ -121,9 +140,17 @@ def change_department(user_id: int, body: dict, current_user: dict = Depends(req
 
 @router.patch("/api/users/{user_id}/permissions")
 def change_permissions(user_id: int, body: dict, current_user: dict = Depends(require_permission("manage_users"))):
-    from app.permissions import can_grant
+    from app.permissions import can_grant, raises_authority, resulting_permissions
     target = get_user_by_id(user_id)
     perms = body.get("permissions")
+    # Step-up (2026-09-09) on the writes that RAISE authority: adding
+    # manage_users or manage_system the target does not hold today. A
+    # seven-scope override is a durable near-apex account whose role column
+    # never changed, so the role gate never fires. Narrowing or
+    # preserving writes cost nothing extra.
+    if raises_authority(target, perms):
+        require_step_up(current_user, body.get("current_password") or "",
+                        "grant manage_users or manage_system")
     # Authority ceiling BEFORE any write - manage_users alone must not be a
     # route to manage_system (and from there to the provider keys in config).
     # Reset-to-defaults is checked too: it is still a write to the target's
@@ -131,6 +158,10 @@ def change_permissions(user_id: int, body: dict, current_user: dict = Depends(re
     refusal = can_grant(current_user, target, perms or [])
     if refusal:
         raise HTTPException(status_code=403, detail=refusal)
+    # The no-usable-password rule - see change_role.
+    refusal = password_required_for_authority(target, resulting_permissions(target, perms))
+    if refusal:
+        raise HTTPException(status_code=400, detail=refusal)
     if perms is None:
         # Reset to role defaults
         update_user_permissions(user_id, [])

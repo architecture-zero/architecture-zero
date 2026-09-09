@@ -35,6 +35,33 @@ def effective_permissions(user: dict) -> list[str]:
     return ROLE_PERMISSIONS.get(user.get("role", "member"), ROLE_PERMISSIONS["member"])
 
 
+# The two scopes that ARE durable authority over people and the system. A
+# write that hands either one out is a step-up door (jwt_auth.require_step_up),
+# and an account with no usable password may not hold either one
+# (jwt_auth.password_required_for_authority). Ported from upstream 2026-09-09.
+STEP_UP_SCOPES = ("manage_users", "manage_system")
+
+
+def resulting_permissions(target: dict | None, permissions) -> list[str]:
+    """What the target would hold after a permissions write: the list itself
+    when one is given, else the role preset (an empty list stores as "reset
+    to defaults" and effective_permissions falls through to the preset)."""
+    if permissions:
+        return list(permissions)
+    role = (target or {}).get("role", "member")
+    return list(ROLE_PERMISSIONS.get(role, ROLE_PERMISSIONS["member"]))
+
+
+def raises_authority(target: dict | None, permissions) -> bool:
+    """True when a permissions write ADDS manage_users or manage_system that
+    the target does not effectively hold today - the case that costs the
+    caller's password. A write that narrows, preserves, or touches other
+    scopes does not."""
+    before = set(effective_permissions(target or {}))
+    after = set(resulting_permissions(target, permissions))
+    return bool((after - before) & set(STEP_UP_SCOPES))
+
+
 # Access levels are a clearance ladder: a higher rung reads everything the
 # rungs below read, plus its own tier. Retrieval enforces this at the
 # department level (see rag_config.DEPARTMENT_MIN_LEVEL and rerank.retrieve),

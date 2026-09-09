@@ -349,7 +349,7 @@ def test_jobs_endpoint_requires_manage_kb(client, admin_headers):
     owners, so the scope has to be exercised by a role that lacks it. Member
     has chat and view_history and no manage_kb."""
     created = client.post("/api/users",
-                          json={"username": "jobsmember", "password": "MemberPass1",
+                          json={"current_password": "AdminPass1", "username": "jobsmember", "password": "MemberPass1",
                                 "role": "member"}, headers=admin_headers)
     assert created.status_code in (200, 201, 409), created.text
     login = client.post("/api/auth/login",

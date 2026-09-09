@@ -28,7 +28,7 @@ def probe(client, admin_headers):
         # Role names differ between builds (see test_mfa_challenge_guard.py's
         # fixture, which this mirrors) - ask for whichever the instance takes.
         for role in ("user", "member"):
-            r = client.post("/api/users", json={**_USER, "role": role},
+            r = client.post("/api/users", json={"current_password": "AdminPass1", **_USER, "role": role},
                             headers=admin_headers)
             if r.status_code in (200, 201):
                 break

@@ -124,7 +124,7 @@ def test_check_peer_health_refuses_without_fetching():
 def test_add_peer_endpoint_rejects_ssrf_url(client, admin_headers):
     with _resolves_to("169.254.169.254"):
         r = client.post("/api/peers",
-                        json={"id": "evil", "name": "evil",
+                        json={"current_password": "AdminPass1", "id": "evil", "name": "evil",
                               "url": "http://metadata.example.com", "model": "m",
                               "enabled": True},
                         headers=admin_headers)

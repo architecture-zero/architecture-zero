@@ -8,6 +8,7 @@ same secret.
 """
 import hashlib
 import os
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -16,7 +17,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer
 from jose import JWTError, jwt
 
-from app.permissions import effective_permissions, is_owner
+from app.permissions import effective_permissions, is_owner, STEP_UP_SCOPES
 from app.users import get_user_by_id, get_user_by_username
 
 # Password policy. Applies to NEW passwords only (validated at setup, user
@@ -36,13 +37,137 @@ REFRESH_EXPIRE_DAYS = int(os.getenv("JWT_REFRESH_EXPIRE_DAYS", "7"))
 # get_current_user below, which raises on missing credentials itself.
 oauth2_scheme = HTTPBearer(auto_error=False)
 
+# The per-account lockout knob. ONE env read for the three readers - login,
+# mfa/complete (both in routers/auth.py, which re-exports these names) and the
+# step-up below - because two lockout rules on one account is how one of them
+# ends up being the weaker one nobody remembers. Tests monkeypatch
+# routers/auth.py's binding for the login path.
+MAX_LOGIN_ATTEMPTS       = int(os.getenv("MAX_LOGIN_ATTEMPTS", "5"))
+LOCKOUT_DURATION_MINUTES = int(os.getenv("LOCKOUT_DURATION_MINUTES", "15"))
+
+# -- Unusable passwords (the sentinel, ported from upstream 2026-09-09) -------
+# Upstream's SSO-provisioned accounts have no password anyone knows; they used
+# to carry bcrypt(random), unguessable but indistinguishable from a real hash,
+# so no rule could be ENFORCED on them. The sentinel is not a bcrypt string
+# at all (Django's "!" pattern): verify_password refuses it without calling
+# bcrypt, has_usable_password can see it, and the role/permission writers
+# refuse to hand such an account manage_users or manage_system. This surface
+# has no SSO today; the rule rides here so a port inherits it.
+UNUSABLE_PASSWORD_PREFIX = "!"
+
 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
+def unusable_password_hash(reason: str = "no-password") -> str:
+    """A password_hash value NO password can satisfy, marked as such."""
+    return f"{UNUSABLE_PASSWORD_PREFIX}{reason}:{secrets.token_urlsafe(24)}"
+
+
+def has_usable_password(user_or_hash) -> bool:
+    """False for the sentinel above (and for an empty column)."""
+    hashed = (user_or_hash.get("password_hash") if isinstance(user_or_hash, dict)
+              else user_or_hash)
+    return bool(hashed) and not str(hashed).startswith(UNUSABLE_PASSWORD_PREFIX)
+
+
 def verify_password(plain: str, hashed: str) -> bool:
+    # The sentinel is not a bcrypt string; checkpw would raise "Invalid salt"
+    # and turn that account's login into a 500. Refuse it plainly.
+    if not has_usable_password(hashed):
+        return False
     return bcrypt.checkpw(plain.encode(), hashed.encode())
+
+
+def password_required_for_authority(target: dict | None, scopes) -> str | None:
+    """An account with no usable password may not hold manage_users or
+    manage_system. Returns the refusal (naming the remedy) or None. `scopes`
+    is what the write would leave the target holding."""
+    if not target or has_usable_password(target):
+        return None
+    wanted = [s for s in STEP_UP_SCOPES if s in set(scopes or [])]
+    if not wanted:
+        return None
+    return (f"This account has no usable password, so it cannot hold {wanted}: it "
+            f"could never pass the password step-up those scopes require. "
+            f"An Owner must set one first.")
+
+
+# -- The step-up (ruled upstream 2026-09-06, applied fleet-wide 2026-09-09) --
+# "Ask for the password again when creating accounts or changing roles" - and
+# at every other door to durable authority: permission writes that add
+# manage_users/manage_system, and the peer registry. The threat is a stolen
+# session on an unlocked device: a bearer token proves possession of a
+# browser, the password proves the person. The design was attacked under
+# three lenses (completeness of the gate, accounts that cannot satisfy it,
+# blast radius) before it shipped; the contract below is what survived.
+#
+# Contract, fixed by the attack pass: 400 with a STRING detail on a missing or
+# wrong password - never 401 (a client that evicts on 401 would log the
+# operator out for a typo) and never 422 (a required field's list-shaped
+# detail unmounts the admin panel, which renders `detail` raw). Callers keep
+# the field optional (`current_password: str = ""`) and let this raise.
+#
+# Failures drive the SAME failed_attempts / locked_until the login path uses,
+# so the step-up is not a second, unthrottled oracle for the password held
+# behind the first one. A lock blocks further step-ups (and login) for the
+# lockout window; the session itself stays usable, the way it always has.
+
+def _lockout_check(user: dict) -> None:
+    from app.users import unlock_user
+    locked_until = user.get("locked_until")
+    if not locked_until:
+        return
+    until = datetime.fromisoformat(locked_until)
+    now = datetime.now(timezone.utc)
+    if until > now:
+        remaining = int((until - now).total_seconds() // 60) + 1
+        raise HTTPException(status_code=429,
+                            detail=f"Account locked. Try again in {remaining} minute(s).")
+    unlock_user(user["id"])
+
+
+def _count_step_up_failure(user: dict, action: str, how: str) -> None:
+    """A wrong password: count it against the account, lock at the login
+    threshold. Raises the 429 itself when the lock lands."""
+    from app.logger import log
+    from app.users import increment_failed_attempts, lock_user
+    attempts = increment_failed_attempts(user["id"])
+    log("auth_step_up_failed", user_id=user["id"], action=action, how=how,
+        attempts=attempts)
+    if attempts >= MAX_LOGIN_ATTEMPTS:
+        until = (datetime.now(timezone.utc)
+                 + timedelta(minutes=LOCKOUT_DURATION_MINUTES)).isoformat()
+        lock_user(user["id"], until)
+        log("auth_lockout", user_id=user["id"], username=user.get("username"),
+            stage="step_up")
+        raise HTTPException(status_code=429,
+                            detail=f"Too many failed attempts. Account locked for "
+                                   f"{LOCKOUT_DURATION_MINUTES} minutes.")
+
+
+def require_step_up(current_user: dict, current_password: str, action: str) -> None:
+    """The caller's OWN password, verified against their stored hash, or 400.
+
+    `action` is a verb phrase ("create an account") - it lands in the refusal
+    the operator reads and in the log line."""
+    from app.logger import log
+    from app.users import reset_failed_attempts
+    if not has_usable_password(current_user):
+        raise HTTPException(
+            status_code=400,
+            detail=f"This account has no usable password, so it cannot {action}. "
+                   f"An Owner must set one first.")
+    _lockout_check(current_user)
+    if not (current_password or "").strip():
+        raise HTTPException(status_code=400,
+                            detail=f"Your current password is required to {action}")
+    if not verify_password(current_password, current_user["password_hash"]):
+        _count_step_up_failure(current_user, action, "password")
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    reset_failed_attempts(current_user["id"])
+    log("auth_step_up", user_id=current_user["id"], action=action, how="password")
 
 
 def hash_token(token: str) -> str:

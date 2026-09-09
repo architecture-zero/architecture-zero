@@ -136,13 +136,14 @@ def manage_system_headers(client, admin_headers):
     This is the principal the finding is about: manage_system is a permission an
     Owner can delegate, and it was enough to repoint corpus-text egress.
     """
-    r = client.post("/api/users", json=_MS_USER, headers=admin_headers)
+    r = client.post("/api/users", json={**_MS_USER, "current_password": "AdminPass1"},
+                    headers=admin_headers)
     assert r.status_code in (200, 201, 409), r.text
     users = client.get("/api/users", headers=admin_headers).json()
     rows = users if isinstance(users, list) else users.get("users", [])
     uid = next(u["id"] for u in rows if u["username"] == _MS_USER["username"])
     g = client.patch(f"/api/users/{uid}/permissions",
-                     json={"permissions": ["chat", "manage_system"]},
+                     json={"current_password": "AdminPass1", "permissions": ["chat", "manage_system"]},
                      headers=admin_headers)
     assert g.status_code == 200, g.text
     login = client.post("/api/auth/login",

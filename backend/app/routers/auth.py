@@ -17,8 +17,11 @@ string - a prefix would silently un-exclude them, and production would start
 A router-level dependency would be worse: it would protect the six bootstrap
 routes, so nobody could log in on a fresh deployment at all.
 
-The three constants below have exactly one reader - this router - so they live
-here rather than in runtime_config, which is for names main AND routers share.
+REQUIRE_MFA below has exactly one reader - this router - so it lives here
+rather than in runtime_config, which is for names main AND routers share. The
+two lockout constants moved to jwt_auth (2026-09-09): the password step-up
+counts its failures against the same account lock, so the knob is read once
+and re-bound here for the login and MFA paths (and the tests that patch it).
 """
 import os
 
@@ -28,7 +31,8 @@ from pydantic import BaseModel
 from app.jwt_auth import (authenticate_user, create_access_token,
                           create_refresh_token, hash_token, hash_password,
                           verify_password, get_current_user, validate_password,
-                          create_mfa_challenge_token, decode_mfa_challenge_token)
+                          create_mfa_challenge_token, decode_mfa_challenge_token,
+                          MAX_LOGIN_ATTEMPTS, LOCKOUT_DURATION_MINUTES)
 from app.logger import log
 from app.metrics import increment
 from app.permissions import effective_permissions
@@ -47,8 +51,6 @@ from app.users import (create_user, owner_exists, store_refresh_token,
 router = APIRouter()
 
 REQUIRE_MFA              = os.getenv("REQUIRE_MFA", "false").lower() == "true"
-MAX_LOGIN_ATTEMPTS       = int(os.getenv("MAX_LOGIN_ATTEMPTS", "5"))
-LOCKOUT_DURATION_MINUTES = int(os.getenv("LOCKOUT_DURATION_MINUTES", "15"))
 
 
 class LoginRequest(BaseModel):

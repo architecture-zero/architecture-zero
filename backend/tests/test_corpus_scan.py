@@ -297,7 +297,7 @@ def _member_headers(client, admin_headers, username="kbmember"):
     about provenance, not permissions - a fully-authorized non-owner still
     cannot author policy-tier content."""
     created = client.post("/api/users",
-                          json={"username": username, "password": "MemberPass1",
+                          json={"current_password": "AdminPass1", "username": username, "password": "MemberPass1",
                                 "role": "admin"}, headers=admin_headers)
     assert created.status_code in (200, 201, 409), created.text
     r = client.post("/api/auth/login",

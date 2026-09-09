@@ -41,7 +41,7 @@ def mfa_user(client, admin_headers):
         # owner/admin/member, others admin/manager/user. Ask for whichever the
         # instance accepts rather than hardcoding one and erroring on the rest.
         for role in ("user", "member"):
-            r = client.post("/api/users", json={**_MFA_USER, "role": role},
+            r = client.post("/api/users", json={"current_password": "AdminPass1", **_MFA_USER, "role": role},
                             headers=admin_headers)
             if r.status_code in (200, 201):
                 break

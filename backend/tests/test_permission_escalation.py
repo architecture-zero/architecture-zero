@@ -23,7 +23,7 @@ def _ensure_user(client, admin_headers, username, password, role):
     tests in this file - a blind create would hit the UNIQUE constraint on the
     second test that asks for the same account.
     """
-    r = client.post("/api/users", json={"username": username, "password": password,
+    r = client.post("/api/users", json={"current_password": "AdminPass1", "username": username, "password": password,
                                         "role": role}, headers=admin_headers)
     assert r.status_code in (200, 201, 409), r.text
     users = client.get("/api/users", headers=admin_headers).json()
@@ -54,7 +54,7 @@ def owner_id(client, admin_headers):
 def test_admin_cannot_grant_itself_manage_system(client, admin_role):
     """The exact reported chain, step one."""
     r = client.patch(f"/api/users/{admin_role['id']}/permissions",
-                     json={"permissions": ["chat", "view_history", "manage_users",
+                     json={"current_password": "PermEsc1", "permissions": ["chat", "view_history", "manage_users",
                                            "manage_system"]},
                      headers=admin_role["headers"])
     assert r.status_code == 403, r.text
@@ -67,7 +67,7 @@ def test_admin_cannot_reach_config_after_attempting_escalation(client, admin_rol
     behind /api/admin/config. This asserts the door, not just the handle.
     """
     client.patch(f"/api/users/{admin_role['id']}/permissions",
-                 json={"permissions": ["manage_system"]},
+                 json={"current_password": "PermEsc1", "permissions": ["manage_system"]},
                  headers=admin_role["headers"])
     assert client.get("/api/admin/config", headers=admin_role["headers"]).status_code == 403
 
@@ -76,7 +76,7 @@ def test_admin_cannot_grant_manage_system_to_a_third_party(client, admin_role, a
     """Granting it to a confederate is the same escalation with one more step."""
     patsy = _ensure_user(client, admin_headers, "permesc_patsy", "PermPatsy1", "member")
     r = client.patch(f"/api/users/{patsy}/permissions",
-                     json={"permissions": ["chat", "manage_system"]},
+                     json={"current_password": "PermEsc1", "permissions": ["chat", "manage_system"]},
                      headers=admin_role["headers"])
     assert r.status_code == 403, r.text
 
@@ -127,7 +127,7 @@ def test_owner_can_grant_manage_system(client, admin_headers):
     """The Owner is the principal the whole ceiling defers to."""
     target = _ensure_user(client, admin_headers, "permesc_promoted", "PermProm1", "admin")
     r = client.patch(f"/api/users/{target}/permissions",
-                     json={"permissions": ["chat", "manage_system"]},
+                     json={"current_password": "AdminPass1", "permissions": ["chat", "manage_system"]},
                      headers=admin_headers)
     assert r.status_code == 200, r.text
 

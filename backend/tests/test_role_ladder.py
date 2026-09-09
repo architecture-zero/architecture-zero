@@ -36,10 +36,12 @@ def test_presets_owner_vs_admin_split():
     assert guest == ["chat"]
 
 
-def _make(client, headers, username, role):
-    """Create a user of `role` via `headers` and return their auth header."""
+def _make(client, headers, username, role, actor_password="AdminPass1"):
+    """Create a user of `role` via `headers` and return their auth header.
+    `actor_password` is the step-up: the password of whoever `headers` is."""
     r = client.post("/api/users",
-                    json={"username": username, "password": "LadderP1", "role": role},
+                    json={"username": username, "password": "LadderP1", "role": role,
+                          "current_password": actor_password},
                     headers=headers)
     assert r.status_code == 200, r.text
     tok = client.post("/api/auth/login",
@@ -67,22 +69,26 @@ def test_admin_cannot_escalate_to_owner(client, admin_headers):
 
     # Admin holds manage_users, but minting an Owner is Owner-only.
     sneaky = client.post("/api/users",
-                         json={"username": "sneaky_owner", "password": "LadderP1", "role": "owner"},
+                         json={"username": "sneaky_owner", "password": "LadderP1", "role": "owner",
+                               "current_password": "LadderP1"},
                          headers=admin_h)
     assert sneaky.status_code == 403, sneaky.text
 
     # Admin CAN create a Member; the Owner CAN create an Owner.
     assert client.post("/api/users",
-                       json={"username": "ok_member", "password": "LadderP1", "role": "member"},
+                       json={"username": "ok_member", "password": "LadderP1", "role": "member",
+                             "current_password": "LadderP1"},
                        headers=admin_h).status_code == 200
     assert client.post("/api/users",
-                       json={"username": "second_owner", "password": "LadderP1", "role": "owner"},
+                       json={"username": "second_owner", "password": "LadderP1", "role": "owner",
+                             "current_password": "AdminPass1"},
                        headers=owner_headers).status_code == 200
 
 
 def test_invalid_role_rejected(client, admin_headers):
     r = client.post("/api/users",
-                    json={"username": "bad_role", "password": "LadderP1", "role": "superuser"},
+                    json={"username": "bad_role", "password": "LadderP1", "role": "superuser",
+                          "current_password": "AdminPass1"},
                     headers=admin_headers)
     assert r.status_code == 400
 
