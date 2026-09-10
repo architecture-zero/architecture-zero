@@ -22,7 +22,8 @@ SEED = b"JBSWY3DPEHPK3PXP"
 
 
 def _f(secret):
-    # The app's derivation (crypto_at_rest): SHA-256 of the secret, urlsafe-b64.
+    # The app derives its Fernet key the same way (crypto_at_rest module) - a
+    # SHA-256 digest of the configured value, base64 urlsafe.
     return Fernet(base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest()))
 
 
