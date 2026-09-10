@@ -12,7 +12,11 @@ _KEY = "guest_mode_enabled"
 
 
 def test_string_booleans_parse_by_value_and_unknown_strings_close(client, admin_headers):
-    before = get_config(_KEY, "")
+    # Restore afterwards to what the app EFFECTIVELY had: the stored row if
+    # one existed, else the default ("false" - runtime_config reads it with
+    # that fallback). "Restore only if a row was set" would leave the toggle
+    # at whatever the last shape stored, for every test that runs later.
+    before = get_config(_KEY, None)
     try:
         for sent, expected in (("false", "false"), ("true", "true"),
                                ("no", "false"), ("0", "false"), ("on", "true"),
@@ -25,5 +29,5 @@ def test_string_booleans_parse_by_value_and_unknown_strings_close(client, admin_
                 f"PATCH {_KEY}={sent!r} stored {get_config(_KEY, '')!r}, "
                 f"expected {expected!r} - a toggle that mis-parses can only fail open")
     finally:
-        if before:
-            client.patch("/api/admin/config", headers=admin_headers, json={_KEY: before})
+        client.patch("/api/admin/config", headers=admin_headers,
+                     json={_KEY: (before == "true")})
