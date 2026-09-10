@@ -126,6 +126,67 @@ SETUP_WINDOW       = int(os.getenv("SETUP_WINDOW",       "900"))  # seconds
 _setup_store: dict[str, list[float]] = defaultdict(list)
 
 
+# -- Per-IP auth throttle (fleet port 2026-09-10, from the reference surface) ----------------
+# check_rate_limit() above guards /api/chat only, so /api/auth/login,
+# /mfa/complete and /refresh had no per-IP bound at all - the only brakes
+# were per-ACCOUNT (failed_attempts/locked_until), which a sprayer sidesteps
+# by walking usernames, and the per-challenge MFA counter, which re-arms
+# with every fresh challenge. Always on, like check_setup_rate_limit and for
+# the same reason: an auth boundary guarded by a flag that defaults off is
+# guarded in source and absent in the deployment.
+#
+# Ported in the SAME commit as the login timing equalizer (jwt_auth.py), on
+# purpose: the equalizer makes an unknown username cost a full bcrypt round,
+# so an unthrottled login route would turn a timing oracle into a CPU
+# amplifier - roughly forty concurrent garbage-username POSTs stall every
+# sync endpoint behind the single worker. Neither ships without the other.
+#
+# Scopes are separate buckets per IP so one exhausted lane cannot starve
+# another (a lockout-probing attacker on a shared IP must not eat the
+# refresh budget of the legit devices behind the same NAT). Bounds are
+# generous for humans and hostile to iteration:
+#   login/mfa - AUTH_MAX_ATTEMPTS per AUTH_WINDOW (default 10 per 5 min;
+#     the per-account lock still fires first for a real username).
+#   refresh   - REFRESH_MAX_ATTEMPTS per AUTH_WINDOW (default 60 per 5 min;
+#     refresh is ROUTINE client traffic, so its budget is wide; the token
+#     space is 256-bit - this bound is about noise and DB pressure, not
+#     guessability).
+#
+# The setup/claim lane keeps its own dedicated throttle (check_setup_rate_limit
+# below). Same in-process/single-worker caveat as the rest of this module's
+# stores; swept in full per call (auth traffic is low-volume by construction).
+AUTH_MAX_ATTEMPTS    = int(os.getenv("AUTH_MAX_ATTEMPTS",    "10"))
+REFRESH_MAX_ATTEMPTS = int(os.getenv("REFRESH_MAX_ATTEMPTS", "60"))
+AUTH_WINDOW          = int(os.getenv("AUTH_WINDOW",          "300"))  # seconds
+
+_auth_store: dict[str, list[float]] = defaultdict(list)
+
+
+def check_auth_rate_limit(client_ip: str, scope: str = "login") -> None:
+    """Bound anonymous auth attempts per IP. Always on. Raises 429 at the cap.
+
+    Counts ATTEMPTS, not failures - success does not refund the bucket, which
+    keeps the check before any credential work (no oracle about whether the
+    attempt would have succeeded) and the accounting one-line simple.
+    """
+    limit = REFRESH_MAX_ATTEMPTS if scope == "refresh" else AUTH_MAX_ATTEMPTS
+    now = time.time()
+    cutoff = now - AUTH_WINDOW
+    for key in [k for k, ts in _auth_store.items() if not ts or max(ts) <= cutoff]:
+        _auth_store.pop(key, None)
+    key = f"{scope}:{client_ip}"
+    timestamps = [t for t in _auth_store[key] if t > cutoff]
+    if len(timestamps) >= limit:
+        from app.logger import log
+        log("auth_rate_limited", scope=scope, ip=client_ip)
+        raise HTTPException(
+            status_code=429,
+            detail=(f"Too many attempts: max {limit} per {AUTH_WINDOW}s. "
+                    "Try again later."))
+    timestamps.append(now)
+    _auth_store[key] = timestamps
+
+
 def check_setup_rate_limit(client_ip: str) -> None:
     """Bound attempts against the first-owner claim endpoint. Always on.
 

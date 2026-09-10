@@ -113,6 +113,8 @@ def _reset_setup_throttle():
     from app import security
     security._setup_store.clear()
     security._mfa_challenges.clear()
+    security._auth_store.clear()
     yield
     security._setup_store.clear()
     security._mfa_challenges.clear()
+    security._auth_store.clear()

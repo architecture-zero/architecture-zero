@@ -259,9 +259,62 @@ def decode_mfa_challenge_token(token: str) -> tuple[int, str]:
     return int(payload["sub"]), str(jti)
 
 
+# The cost equalizer for authenticate_user's missing-user branch (see there).
+#
+# Computed at import THROUGH hash_password rather than pasted in as a literal,
+# and that IS the point: bcrypt encodes its work factor in the hash, and a
+# dummy only equalizes if its factor matches the stored ones. hash_password
+# owns that factor (bcrypt.gensalt()), so routing through it keeps the two
+# aligned by construction on the day that default moves or someone passes
+# explicit rounds.
+#
+# A committed literal would be SAFE - it is the hash of a throwaway string, no
+# account carries it as a password_hash, and a bcrypt hash of an unknown input
+# gives an attacker nothing - so safety is not why it was rejected. DRIFT is: a
+# literal freezes the work factor at whatever the library defaulted to on the
+# day it was pasted. Real hashes then get more expensive, the dummy stays
+# cheap, and the timing gap reopens in the exact direction this fix closes,
+# with nothing failing to say so.
+#
+# The input is random bytes, so no plaintext exists anywhere that verifies
+# against it - this can never quietly become a usable credential.
+#
+# Eager, not lazy. Import costs one bcrypt (about 0.4 s, once per process,
+# alongside DB schema init and Chroma boot). A lazily-built dummy would save
+# that, at the price of a first-miss that pays hash PLUS verify and a window
+# in which the equalizer does not exist yet - a control that installs itself
+# on first use is a control that is absent exactly once, and "absent exactly
+# once" is how a probe gets its baseline.
+_DUMMY_PASSWORD_HASH = hash_password(os.urandom(32).hex())
+
+
 def authenticate_user(username: str, password: str) -> dict | None:
+    """Verify a username/password pair. None on any failure.
+
+    The missing-user branch runs a bcrypt verify it KNOWS will fail, against a
+    fixed dummy hash. Without it this function returned in about 1 ms for an
+    unknown username and about 383 ms for a known one (measured in-container on
+    the reference surface 2026-09-06, n=20, medians) - a 382 ms signal readable from ONE
+    request, so the login throttle's budget of 10 attempts per 5 minutes per IP
+    bought an attacker roughly 2,880 usernames a day. A crawl, not an
+    impossibility. Fleet-ported 2026-09-10 together with that throttle.
+
+    get_user_by_username also filters is_active, so the fast path additionally
+    named every DEACTIVATED account.
+
+    A constant-time comparison would not have helped: the branch that leaks is
+    the one that never reaches a comparison at all. Paying the hash is the only
+    way to make the two branches cost the same thing.
+
+    Honest scope: this makes the two branches cost the SAME WORK, not the same
+    number of nanoseconds. bcrypt varies with load and the caller does one
+    extra DB write on a known-user failure, so the residual delta is small and
+    noisy rather than zero. The claim is that existence is no longer readable
+    from a single request.
+    """
     user = get_user_by_username(username)
     if not user:
+        verify_password(password, _DUMMY_PASSWORD_HASH)
         return None
     if not verify_password(password, user["password_hash"]):
         return None

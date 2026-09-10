@@ -52,6 +52,14 @@ Particularly interesting, because these are where the interesting failures live:
   endpoint first is no longer enough to take the deployment - you also have to
   have read its logs. Attempts are throttled independently of
   `ENABLE_RATE_LIMIT`. Reports that get past both are very much in scope.
+- **The anonymous auth routes as an oracle or an amplifier.** Since
+  2026-09-10 `/api/auth/login`, `/api/auth/mfa/complete` and
+  `/api/auth/refresh` are throttled per source address independently of
+  `ENABLE_RATE_LIMIT` (`AUTH_MAX_ATTEMPTS`, `REFRESH_MAX_ATTEMPTS`,
+  `AUTH_WINDOW`), and a login against a username that does not exist pays the
+  same bcrypt round a real one does, so account existence is not readable
+  from response timing. A way to read existence anyway, or to make those
+  routes cost the server more than the bound allows, is in scope.
 
 Out of scope: findings against a deployment's own configuration choices
 (an operator opting into `CORS_ORIGIN=*`, disabling auth for local development,

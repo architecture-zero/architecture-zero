@@ -36,7 +36,8 @@ from app.jwt_auth import (authenticate_user, create_access_token,
 from app.logger import log
 from app.metrics import increment
 from app.permissions import effective_permissions
-from app.security import (check_setup_rate_limit, check_mfa_challenge,
+from app.security import (check_setup_rate_limit, check_auth_rate_limit,
+                          check_mfa_challenge,
                           record_mfa_failure, burn_mfa_challenge,
                           client_ip_from_request, verify_setup_claim_code,
                           burn_setup_claim_code)
@@ -70,8 +71,9 @@ class ClaimDeploymentRequest(BaseModel):
     password: str
     claim_code: str = ""
 @router.post("/api/auth/login")
-def login(request: LoginRequest):
+def login(request: LoginRequest, req: Request):
     from datetime import datetime, timezone, timedelta
+    check_auth_rate_limit(client_ip_from_request(req), "login")
     from app.users import get_user_by_username as _get_user
 
     user = _get_user(request.username)
@@ -92,7 +94,24 @@ def login(request: LoginRequest):
             unlock_user(user["id"])
             user = _get_user(request.username)
 
-    if not user or not authenticate_user(request.username, request.password):
+    # authenticate_user is called UNCONDITIONALLY and its result held, because
+    # `not user or not authenticate_user(...)` SHORT-CIRCUITED: with an unknown
+    # username Python never evaluated the right operand, so the route returned
+    # its 401 without ever reaching bcrypt. The dummy-hash equalizer inside
+    # authenticate_user is worthless if the caller never calls it - and T11 was
+    # measured at the FUNCTION, so a fix only there would have turned the probe
+    # green while this route kept leaking.
+    #
+    # Two statements rather than swapping the operands to
+    # `not authenticate_user(...) or not user`: the swapped form happens to work
+    # only because authenticate_user re-reads the same row itself, so it would
+    # silently reopen the moment anyone made it take `user` as an argument. The
+    # `not user` test is kept beside it even though it is now redundant (the
+    # function returns None for a missing user anyway) - dropping it would be a
+    # behavior change smuggled into a timing fix, and this line also runs after
+    # the lockout branch above may have re-read `user`.
+    authenticated = authenticate_user(request.username, request.password)
+    if not user or not authenticated:
         increment("auth_failures_total")
         if user:
             attempts = increment_failed_attempts(user["id"])
@@ -141,7 +160,7 @@ class MFACompleteRequest(BaseModel):
 
 
 @router.post("/api/auth/mfa/complete")
-def mfa_complete(request: MFACompleteRequest):
+def mfa_complete(request: MFACompleteRequest, req: Request):
     """Exchange MFA challenge token + TOTP code for full access/refresh tokens.
 
     HARDENED 2026-08-27. This endpoint had no attempt counter, no lockout, and
@@ -162,6 +181,7 @@ def mfa_complete(request: MFACompleteRequest):
     """
     from datetime import datetime, timezone, timedelta
     import pyotp
+    check_auth_rate_limit(client_ip_from_request(req), "mfa")
     user_id, jti = decode_mfa_challenge_token(request.mfa_token)
     check_mfa_challenge(jti)
     user = get_user_by_id(user_id)
@@ -279,6 +299,7 @@ def revoke_session(token_id: int, current_user: dict = Depends(get_current_user)
 
 @router.post("/api/auth/refresh")
 def refresh(req: Request):
+    check_auth_rate_limit(client_ip_from_request(req), "refresh")
     # refresh token passed in Authorization header as "Bearer <token>"
     auth_header = req.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
