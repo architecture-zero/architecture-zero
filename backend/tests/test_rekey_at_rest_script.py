@@ -99,7 +99,7 @@ def test_dry_run_writes_nothing(tmp_path):
 def test_secrets_never_ride_argv(tmp_path):
     db = _db(tmp_path, [], [])
     r = _run(db, "--old", OLD, "--new", NEW)
-    assert r.returncode != 0 and "unrecognized" in r.stderr
+    assert r.returncode == 3 and "unrecognized" in r.stderr   # usage is 3; 2 means stuck rows
     r = _run(db, old="", new="")                      # no terminal, no env: refuse
     assert r.returncode == 3 and "never on the command line" in r.stderr
 
@@ -108,3 +108,13 @@ def test_only_this_surfaces_secrets_are_accepted(tmp_path):
     db = _db(tmp_path, [], [])
     r = _run(db, "--secret", "SECRET_KEY")
     assert r.returncode != 0, r.stdout + r.stderr
+
+
+def test_a_file_that_is_not_sqlite_exits_3_not_2(tmp_path):
+    """Exit 2 is reserved for rows stuck under both keys; a file that is not a
+    database is a usage error and must not read as stuck rows to a restore
+    procedure that gates on 2 (2026-09-10 review)."""
+    p = tmp_path / "history.db"
+    p.write_bytes(b"not a database at all, just bytes to make sqlite refuse")
+    r = _run(p)
+    assert r.returncode == 3, r.stdout + r.stderr

@@ -177,6 +177,13 @@ def test_unfinished_enrollment_with_unreadable_seed_is_not_stranded(client, prob
     _strand(probe["id"], enabled=False)
     r = client.post("/api/auth/login", json=_USER)
     assert r.status_code == 200 and "access_token" in r.json(), r.text
+    # The refresh and rename doors call the helper unconditionally, so they
+    # are where a predicate that lost its mfa_enabled half would over-refuse.
+    r2 = client.post("/api/auth/refresh",
+                     headers={"Authorization": f"Bearer {r.json()['refresh_token']}"})
+    assert r2.status_code == 200, r2.text
+    from app.jwt_auth import mfa_seed_stranded
+    assert mfa_seed_stranded({"mfa_enabled": False, "mfa_secret_unreadable": True}) is False
     r = client.post("/api/auth/mfa/setup", headers=probe["headers"])
     assert r.status_code == 200, r.text            # self-heals
 

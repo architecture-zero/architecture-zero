@@ -231,8 +231,12 @@ Rotating the secret, or restoring a backup into an instance that boots with a
 different secret, makes every one of those rows unreadable at once. The app
 fails CLOSED: an account with two-factor enrolled is refused at sign-in with a
 403 that names the fix, rather than crashing or being let in on the password
-alone. Sessions are invalidated by the rotation itself (access tokens are
-signed with the secret).
+alone. Access tokens die with the rotation (they are signed with the secret);
+refresh tokens are random values hashed in the database and SURVIVE it - an
+MFA account's refresh is refused by the stranding check, a password-only
+account keeps refreshing. To end every session at a rotation, revoke per user
+(sign out everywhere) or set `revoked=1` on the `refresh_tokens` table and
+clear the `az:rt:*` keys if Redis is on.
 
 Re-key the rows OFFLINE, with the backend stopped, before booting under the
 new secret:
@@ -248,7 +252,10 @@ REKEY_OLD_SECRET / REKEY_NEW_SECRET from the environment when there is no
 terminal) - never pass them as arguments. Exit code 2 means at least one row
 could not be read under either secret; it is listed and left untouched. For
 an account whose seed is truly lost, an Owner can reset its MFA
-(POST /api/admin/users/{id}/mfa-reset) and the person enrolls again.
+(POST /api/admin/users/{id}/mfa-reset) and the person enrolls again. On a
+deployment with `REQUIRE_MFA=true` that reset account cannot sign in to
+re-enroll (login refuses accounts with no TOTP), so use the re-key, or set
+`REQUIRE_MFA=false` for the re-enrollment.
 GET /api/auth/me reports `mfa_secret_unreadable` for the signed-in account,
 and the admin roster carries the same field per user.
 

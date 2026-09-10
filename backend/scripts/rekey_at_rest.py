@@ -31,7 +31,10 @@ shell. Stdlib plus the `cryptography` package the image already carries.
 
 Exit codes: 0 every ciphertext row is readable under NEW afterwards;
 2 at least one row is undecryptable under BOTH keys (listed, never
-rewritten - a restore procedure can gate on this); 3 usage.
+rewritten - a restore procedure can gate on this); 3 usage - a mistyped
+flag, a missing or non-SQLite file, or a schema that does not match
+TENANTS (argparse's own usage exit of 2 is overridden so that 2 always
+means stuck rows).
 """
 import argparse
 import base64
@@ -61,6 +64,17 @@ def _fernet(secret: str):
     return Fernet(base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest()))
 
 
+class _Parser(argparse.ArgumentParser):
+    """Usage errors exit 3, not argparse's default 2: on this script 2 means
+    "rows stuck under both keys", and a restore procedure gating on 2 must
+    never read a mistyped flag as stuck rows (2026-09-10 review)."""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        print(f"{self.prog}: error: {message}", file=sys.stderr)
+        sys.exit(3)
+
+
 def _read_secrets() -> tuple[str, str]:
     # An environment variable that is SET wins, even if empty (an empty one is
     # a usage error reported below, never a prompt). Only when neither is set
@@ -75,11 +89,14 @@ def _read_secrets() -> tuple[str, str]:
         new = getpass.getpass("New secret (the one the instance will boot with): ")
     else:
         old = new = ""
-    return old.strip(), new.strip()
+    # NOT normalized: the app derives its key from the raw environment value
+    # (crypto_at_rest reads it as-is), and a stripped copy here would re-key
+    # every row into ciphertext the app still cannot open (2026-09-10 review).
+    return old, new
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(
+    ap = _Parser(
         description="Re-encrypt at-rest secrets from an old secret to a new one. "
                     "Secrets are prompted for, or read from REKEY_OLD_SECRET / "
                     "REKEY_NEW_SECRET - never passed as arguments.")
@@ -134,9 +151,10 @@ def main() -> int:
                 if suffix and not str(key).endswith(suffix):
                     continue
                 process(table, key_col, key, val_col, val)
-    except sqlite3.OperationalError as e:
+    except sqlite3.DatabaseError as e:
         conn.close()
-        print(f"database does not match this surface's TENANTS table: {e}", file=sys.stderr)
+        print(f"not a usable SQLite database for this surface's TENANTS table: {e}",
+              file=sys.stderr)
         return 3
     if not a.dry_run:
         conn.commit()

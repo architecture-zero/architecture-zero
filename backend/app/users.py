@@ -285,9 +285,11 @@ def revoke_all_user_tokens(user_id: int):
     if r:
         try:
             with get_session() as db:
+                # EVERY row of the user, revoked or not (2026-09-10 T9 review): a
+                # row flagged earlier by a DB-only revoke can still be cached, and
+                # a filter on the flag would skip exactly that key.
                 hashes = [rt.token_hash for rt in db.query(RefreshToken).filter(
-                    RefreshToken.user_id == user_id,
-                    RefreshToken.revoked == False  # noqa: E712
+                    RefreshToken.user_id == user_id
                 ).all()]
             if hashes:
                 r.delete(*[_rt_redis_key(h) for h in hashes])

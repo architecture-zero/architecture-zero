@@ -1,6 +1,7 @@
 """Fernet encryption for secrets that must live in the database.
 
-First (and so far only) tenant: the MFA TOTP seed. A TOTP seed is a shared
+First tenant: the MFA TOTP seed (the stored provider keys in config.py are
+the second). A TOTP seed is a shared
 symmetric secret - anyone who reads it mints valid codes forever, so a DB
 file copied out of a backup, a stray sqlite3 shell, or a log line that
 dumps a user row must see ciphertext, not the seed.
