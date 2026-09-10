@@ -1,0 +1,8 @@
+# gitleaks ignore list - TRIAGED accepted findings, never silent suppressions.
+# The CI job scans the FULL history, so a false positive stays flagged in the
+# commit that introduced it even after the line is reworded. Each entry says why.
+#
+# 2026-09-10: a comment in the re-key script test read "SHA-256 of the secret, urlsafe-b64",
+# which the generic-api-key rule parsed as a credential named 'secret'. Reworded in the
+# next commit; the original commit remains in history.
+5168f05f4a2483819937aadb7485a2deb3e1e493:backend/tests/test_rekey_at_rest_script.py:generic-api-key:25
