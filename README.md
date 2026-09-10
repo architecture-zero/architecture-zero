@@ -59,7 +59,7 @@ aspirational.
   key's scope bounds what LEAVES, a local clearance floor bounds who may
   RECEIVE, and both answer to the same ladder.
 - **Operations** - route-level authorization on every endpoint pinned by a
-  two-sided test sweep, TOTP MFA with optional enforcement, audit receipts
+  two-sided test sweep, TOTP MFA with optional enforcement, password re-authentication on every write that raises authority, audit receipts
   per answer (latency, time-to-first-token, which rerank provider actually
   served), consistent live backups, and fail-open controls that report
   their live state so "off" is visible.

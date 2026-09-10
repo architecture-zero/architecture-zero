@@ -66,6 +66,17 @@ never touch.
 
 ## Authentication hardening
 
+A session alone cannot create durable authority. Every write that creates or
+raises it - creating an account, changing a role, a permissions write that
+adds manage_users or manage_system, registering or changing a federation
+peer - re-asks the caller's own password (`jwt_auth.require_step_up`), so a
+stolen or unattended session cannot mint an account that outlives it. A
+wrong password answers 400 with a plain reason, never a 401 that would log
+the operator out, and it counts against the same lockout as a failed login,
+so the step-up is not a second guessing surface. An account with no usable
+password (the `!` sentinel hash) cannot be handed those scopes until an
+Owner sets one.
+
 Password logins carry per-account lockout after repeated failures. TOTP
 two-factor is built in, and REQUIRE_MFA=true refuses password logins for
 un-enrolled accounts - checked AFTER password verification, deliberately,

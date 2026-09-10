@@ -124,7 +124,13 @@ assistant's file tools, the answer layer, and both sides of the federation
 seam all enforce the same tiers, so a lower tier cannot pull higher-tier
 content into an answer by any path.
 Add users via POST /api/users, and set role, department, and permissions
-through the same users API.
+through the same users API. Creating an account, changing a role, and a
+permissions write that adds manage_users or manage_system each carry the
+caller's own password as `current_password` in the request body (the admin
+panel asks for it); a missing or wrong one answers 400 with a plain reason,
+and repeated wrong ones count against the same lockout as failed logins.
+Registering or changing a federation peer works the same way, because a
+registered peer receives this instance's peer key.
 
 ## Running your first evaluation
 
