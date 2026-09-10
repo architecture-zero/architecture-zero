@@ -170,6 +170,77 @@ def require_step_up(current_user: dict, current_password: str, action: str) -> N
     log("auth_step_up", user_id=current_user["id"], action=action, how="password")
 
 
+# -- T9: the stranded second factor (upstream 2026-09-06, fleet port ----------
+# 2026-09-10). The MFA seed is Fernet-encrypted under a key derived from
+# JWT_SECRET_KEY (crypto_at_rest). A database restored under a DIFFERENT
+# secret, a rotation without the re-key sweep, or one tampered row leaves the
+# seed unreadable, and users._user_to_dict reports that as the PAIR
+# mfa_secret=None + mfa_secret_unreadable=True instead of raising (which was
+# HTTP 500 on every read of that account). The pair must FAIL CLOSED at every
+# door that mints or admits a session: reading "unreadable" as "never
+# enrolled" would mean anyone able to write garbage into one column has
+# stripped the second factor. Reads that do not mint stay tolerant, and
+# /api/auth/me REPORTS the state so a client can render the truth.
+#
+# One helper, not an inline block per door, so the fleet drift checker can pin
+# the CALLS by substring - a wrong body inside an existing function is what a
+# name diff cannot see. Three functions because a surface with machine doors
+# (an OAuth-backed MCP endpoint) answers RFC 6749 bodies or None there, never
+# an HTTPException.
+
+MFA_SEED_UNREADABLE_DETAIL = (
+    "Two-factor is enabled on this account but its stored seed cannot be "
+    "decrypted with this instance's JWT_SECRET_KEY. The database was "
+    "restored under a different secret, or the secret was rotated without "
+    "re-keying. Sign-in is refused rather than downgraded to password-only. "
+    "Fix: re-key at rest offline (backend/scripts/rekey_at_rest.py - stop the "
+    "backend, run it inside the backend container against /app/data/history.db, "
+    "it prompts for the previous and current secrets), or have an operator "
+    "reset MFA for this account (POST /api/admin/users/<id>/mfa-reset) and "
+    "enroll again."
+)
+
+
+def mfa_seed_stranded(user: dict | None) -> bool:
+    """True when a second factor IS enrolled and its seed cannot be read.
+    Both halves on purpose: an unreadable seed on an account that never
+    finished enrolling was never a factor, and mfa/setup overwrites it under
+    the current key, so that case self-heals and must not be blocked."""
+    return bool(user and user.get("mfa_enabled") and user.get("mfa_secret_unreadable"))
+
+
+def mfa_seed_unreadable_detail() -> str:
+    """The refusal text. A function so a surface with an offboarding freeze
+    can name the one remedy the freeze still allows."""
+    return MFA_SEED_UNREADABLE_DETAIL
+
+
+def record_mfa_seed_stranded(user: dict, stage: str, *, revoke_sessions: bool = False) -> None:
+    """The durable side of a refusal: the log line, and - when the presented
+    credential is one that OUTLIVES the rotation (a refresh token) - the whole
+    session family revoked, so the stale credential cannot simply be retried.
+    This surface has no security_events table; the log line is the record."""
+    from app.logger import log
+    fields = {"user_id": user["id"], "username": user.get("username"), "stage": stage}
+    if revoke_sessions:
+        from app.users import revoke_all_user_tokens
+        revoke_all_user_tokens(user["id"])
+        fields["action"] = "family_revoked"
+    log("auth_mfa_seed_unreadable", **fields)
+
+
+def refuse_if_mfa_seed_stranded(user: dict | None, stage: str, *, revoke_sessions: bool = False) -> None:
+    """403 with the remedy at every door that mints a session for a stranded
+    account; a no-op for everyone else. 403 and not 401: the password was
+    correct, and a 401 would send the human back to retype it forever. No
+    enumeration value either - every caller reaches this after the presented
+    credential already verified."""
+    if not mfa_seed_stranded(user):
+        return
+    record_mfa_seed_stranded(user, stage, revoke_sessions=revoke_sessions)
+    raise HTTPException(status_code=403, detail=mfa_seed_unreadable_detail())
+
+
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 

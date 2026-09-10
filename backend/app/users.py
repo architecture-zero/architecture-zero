@@ -8,12 +8,15 @@ session valid until its TTL expired.
 import json
 from datetime import datetime, timezone
 
-from app.crypto_at_rest import decrypt_at_rest, encrypt_at_rest
+from app.crypto_at_rest import encrypt_at_rest, try_decrypt_at_rest
 from app.db import get_session
 from app.models import RefreshToken, User
 
 
 def _user_to_dict(user: User) -> dict:
+    # Decrypted BEFORE the literal because the answer is a pair - the seed,
+    # and whether it could be read at all. See the mfa_secret entry below.
+    mfa_seed, mfa_seed_readable = try_decrypt_at_rest(user.mfa_secret)
     return {
         "id": user.id,
         "username": user.username,
@@ -26,7 +29,23 @@ def _user_to_dict(user: User) -> dict:
         # Stored encrypted at rest; every consumer (pyotp) needs the seed
         # itself, so the one read seam decrypts. Legacy plaintext rows pass
         # through until the migration sweep converges them.
-        "mfa_secret": decrypt_at_rest(user.mfa_secret),
+        #
+        # TOLERANT, and it degrades CLOSED (T9 - upstream 2026-09-06, fleet
+        # port 2026-09-10). This function is on the path of login, of
+        # get_user_by_id on EVERY authenticated request, and of list_users for
+        # the admin roster, so a raise here is not one broken field - it is
+        # HTTP 500 on the whole instance for that account with no reason
+        # anywhere on screen, and ONE stranded row takes the roster down for
+        # every operator. That is what a restore under a different
+        # JWT_SECRET_KEY produced. The seed reads as None because there is no
+        # partially usable seed, and mfa_secret_unreadable carries the REASON
+        # so a caller can tell "never enrolled" (None, False) from "second
+        # factor exists and cannot be read" (None, True). Every path that
+        # mints a session MUST refuse on the second -
+        # jwt_auth.refuse_if_mfa_seed_stranded - or anyone able to write
+        # garbage into this one column has stripped the second factor.
+        "mfa_secret": mfa_seed,
+        "mfa_secret_unreadable": not mfa_seed_readable,
         "mfa_enabled": user.mfa_enabled,
         "failed_attempts": user.failed_attempts,
         "locked_until": user.locked_until,

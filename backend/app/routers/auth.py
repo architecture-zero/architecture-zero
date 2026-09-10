@@ -32,6 +32,7 @@ from app.jwt_auth import (authenticate_user, create_access_token,
                           create_refresh_token, hash_token, hash_password,
                           verify_password, get_current_user, validate_password,
                           create_mfa_challenge_token, decode_mfa_challenge_token,
+                          refuse_if_mfa_seed_stranded,
                           MAX_LOGIN_ATTEMPTS, LOCKOUT_DURATION_MINUTES)
 from app.logger import log
 from app.metrics import increment
@@ -137,6 +138,11 @@ def login(request: LoginRequest, req: Request):
     # 2026-08-27; the re-login test in test_mfa_challenge_guard.py pins it).
     # The counter clears in mfa_complete, on full success.
     if user.get("mfa_enabled"):
+        # T9: a seed this instance cannot read refuses HERE, inside the
+        # enabled branch (an unfinished enrollment is not a factor yet) and
+        # before any challenge is minted. Password already verified above, so
+        # the 403 names the remedy without becoming an enumeration oracle.
+        refuse_if_mfa_seed_stranded(user, "login")
         mfa_token = create_mfa_challenge_token(user["id"])
         log("auth_mfa_challenge", user_id=user["id"], username=user["username"])
         return {"mfa_required": True, "mfa_token": mfa_token}
@@ -185,6 +191,13 @@ def mfa_complete(request: MFACompleteRequest, req: Request):
     user_id, jti = decode_mfa_challenge_token(request.mfa_token)
     check_mfa_challenge(jti)
     user = get_user_by_id(user_id)
+    # T9: checked BEFORE the "not configured" branch below, which would
+    # otherwise swallow this case - with the tolerant read seam an unreadable
+    # seed arrives as mfa_secret=None, indistinguishable from "never enrolled"
+    # unless the flag is consulted first. Still reachable even though login
+    # now refuses: a challenge minted before the row went bad stays valid for
+    # its full life and lands here.
+    refuse_if_mfa_seed_stranded(user, "mfa_complete")
     if not user or not user.get("mfa_enabled") or not user.get("mfa_secret"):
         raise HTTPException(status_code=400, detail="MFA not configured for this account")
 
@@ -341,6 +354,14 @@ def refresh(req: Request):
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
+    # T9, the hole the tolerant seam itself would open (found by the
+    # adversarial review of the upstream fix, 2026-09-06): a refresh needs
+    # neither password nor second factor, so a token minted BEFORE the restore
+    # or the rotation would keep an MFA account alive indefinitely on an
+    # instance that can no longer verify its second factor. The strict seam
+    # denied this BY ACCIDENT (it raised); the tolerant one must deny it on
+    # purpose, and the family dies so the stale token cannot be retried.
+    refuse_if_mfa_seed_stranded(user, "refresh", revoke_sessions=True)
     revoke_refresh_token(hash_token(raw_token))
     access_token = create_access_token(user["id"], user["username"], user["role"])
     new_raw, expires_at = create_refresh_token(user["id"])
@@ -378,6 +399,12 @@ def me(current_user: dict = Depends(get_current_user)):
         # that cannot see the truth renders "Set up authenticator" to enrolled
         # accounts, and one tap of that used to silently de-enroll them.
         "mfa_enabled": bool(current_user.get("mfa_enabled")),
+        # ... and whether that enrollment is still READABLE (T9). False on
+        # every healthy instance. The PAIR is the signal: enabled true plus
+        # unreadable true means this account cannot sign in until the seed is
+        # re-keyed or MFA is reset. Named identically on every surface that
+        # carries it, so one grep finds them all.
+        "mfa_secret_unreadable": bool(current_user.get("mfa_secret_unreadable")),
     }
 
 
@@ -408,6 +435,11 @@ def change_username(request: ChangeUsernameRequest, current_user: dict = Depends
     new_username = request.new_username.strip()
     if not new_username or len(new_username) < 2:
         raise HTTPException(status_code=400, detail="Username must be at least 2 characters")
+    # T9: this route re-issues a token pair for any bearer - a mint like any
+    # other (2026-09-09 review rider A2-2), so a stranded account is refused
+    # here and not in get_current_user, where /me must keep REPORTING the
+    # state rather than hiding it behind a 403.
+    refuse_if_mfa_seed_stranded(current_user, "username_change")
     if not update_user_username(current_user["id"], new_username):
         raise HTTPException(status_code=409, detail="Username already taken")
     # Re-issue tokens with updated username

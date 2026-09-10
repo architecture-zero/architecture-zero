@@ -67,3 +67,44 @@ def decrypt_at_rest(value: str | None) -> str | None:
     if value is None or not is_encrypted(value):
         return value
     return _get_fernet().decrypt(value.encode()).decode()
+
+
+def try_decrypt_at_rest(value: str | None) -> tuple[str | None, bool]:
+    """decrypt_at_rest, but it REPORTS the failure instead of raising.
+
+    Returns (plaintext, True) when the value is readable - ciphertext that
+    opens, legacy plaintext, or None - and (None, False) when the value looks
+    like ciphertext and will not open under this instance's key: a rotated or
+    replaced JWT_SECRET_KEY without the re-key sweep
+    (backend/scripts/rekey_at_rest.py), or a tampered row.
+
+    Why a SECOND function rather than softening decrypt_at_rest: a read seam
+    many callers share must not take the process down over one column, but a
+    caller that genuinely needs the seed must still be TOLD the seed is gone
+    rather than handed something to guess with. Splitting the two keeps the
+    strict version available for future tenants of this module and makes every
+    tolerant caller declare itself by name (today exactly one:
+    users._user_to_dict - torture test T9 upstream, 2026-09-06, where a
+    restore under a different secret turned every read of an MFA user into
+    HTTP 500; ported fleet-wide 2026-09-10).
+
+    The value half is None on failure ON PURPOSE - there is no partially
+    usable TOTP seed. The False half is the caller's obligation: it means "a
+    second factor IS enrolled and cannot be read", which must FAIL CLOSED
+    (jwt_auth.refuse_if_mfa_seed_stranded). Reading False as "no MFA" would
+    mean anyone able to corrupt or replace this one column has STRIPPED the
+    second factor, which is the attack, not the recovery.
+
+    Catching Exception and not only InvalidToken: is_encrypted() is a
+    six-character prefix test, so a value that merely starts with the prefix
+    can fail inside base64 decoding before Fernet ever rules on it. Every one
+    of those failures means the same thing to the caller - unreadable - and
+    letting a different exception type escape would reintroduce exactly the
+    crash this function exists to prevent.
+    """
+    if value is None or not is_encrypted(value):
+        return value, True
+    try:
+        return _get_fernet().decrypt(value.encode()).decode(), True
+    except Exception:
+        return None, False

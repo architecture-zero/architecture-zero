@@ -223,6 +223,35 @@ missing, stale (BACKUP_MAX_AGE_HOURS), or ok=false trips the probe. If you
 do not run restore drills yet, write both files from the backup job - and
 start running drills.
 
+## Rotating JWT_SECRET_KEY, and restoring under a different one
+
+The MFA TOTP seeds and the provider keys stored through the admin settings
+page are Fernet-encrypted at rest under a key derived from JWT_SECRET_KEY.
+Rotating the secret, or restoring a backup into an instance that boots with a
+different secret, makes every one of those rows unreadable at once. The app
+fails CLOSED: an account with two-factor enrolled is refused at sign-in with a
+403 that names the fix, rather than crashing or being let in on the password
+alone. Sessions are invalidated by the rotation itself (access tokens are
+signed with the secret).
+
+Re-key the rows OFFLINE, with the backend stopped, before booting under the
+new secret:
+
+    docker compose stop backend
+    docker compose run --rm --no-deps backend python scripts/rekey_at_rest.py --db /app/data/history.db --dry-run
+    docker compose run --rm --no-deps backend python scripts/rekey_at_rest.py --db /app/data/history.db
+    # set the new JWT_SECRET_KEY in .env, then
+    docker compose up -d backend
+
+The script prompts for the previous and the new secret (or reads
+REKEY_OLD_SECRET / REKEY_NEW_SECRET from the environment when there is no
+terminal) - never pass them as arguments. Exit code 2 means at least one row
+could not be read under either secret; it is listed and left untouched. For
+an account whose seed is truly lost, an Owner can reset its MFA
+(POST /api/admin/users/{id}/mfa-reset) and the person enrolls again.
+GET /api/auth/me reports `mfa_secret_unreadable` for the signed-in account,
+and the admin roster carries the same field per user.
+
 ## Monitoring
 
 - GET /api/health - liveness (also checks Ollama reachability).
