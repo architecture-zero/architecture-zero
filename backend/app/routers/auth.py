@@ -309,6 +309,27 @@ def refresh(req: Request):
 
     record = get_refresh_token(hash_token(raw_token))
     if not record:
+        # REUSE DETECTION (fleet port 2026-09-10; upstream's auth-gaps batch).
+        # Rotation marks the old row revoked rather than deleting it, so a
+        # presented token whose row exists but is revoked is a ROTATED TOKEN
+        # COMING BACK - either the legit client replaying (harmless to
+        # re-login) or a thief using a stolen copy after the victim rotated.
+        # Both get the same answer: every session in the family dies, loudly.
+        # Checked before expiry - a replayed token proves compromise
+        # regardless of whether it would still have worked. The 401 detail is
+        # IDENTICAL to the plain-invalid path so the response cannot be used
+        # as an oracle for "this hash was once real". Known availability
+        # cost, accepted upstream on record: after a single-session revoke,
+        # that device's next background refresh lands here and signs out
+        # EVERY session - the code cannot tell a benign stale client from a
+        # stolen copy, and fail-closed is the point.
+        from app.users import get_refresh_token_any
+        ghost = get_refresh_token_any(hash_token(raw_token))
+        if ghost and ghost.get("revoked"):
+            revoke_all_user_tokens(ghost["user_id"])
+            increment("auth_refresh_reuse_total")
+            log("refresh_token_reused", user_id=ghost["user_id"],
+                token_id=ghost["id"])
         raise HTTPException(status_code=401, detail="Invalid or revoked refresh token")
 
     from datetime import datetime, timezone

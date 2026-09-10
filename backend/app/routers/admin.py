@@ -244,9 +244,16 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
             # checkboxes; default_rag_enabled now decides whether retrieval runs
             # for every caller that omits use_rag, so a writer that flips an
             # operator's "off" into "on" changes what the instance serves.
+            #
+            # An ALLOW-list of true-words, not a deny-list of false-words
+            # (2026-09-10): under the deny-list an unrecognized string such as
+            # "yes please" or a typo opened the toggle; a gate that mis-parses
+            # must close, so anything not recognizably true stores "false".
             if isinstance(value, str):
-                value = value.strip().lower() not in ("false", "0", "no", "off", "")
-            value = "true" if value else "false"
+                value = "true" if value.strip().lower() in (
+                    "true", "1", "yes", "on") else "false"
+            else:
+                value = "true" if value else "false"
         set_config(key, str(value))
         written.append(key)
     # Accumulated in the loop rather than taken from body.keys(), so it stays

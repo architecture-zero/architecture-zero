@@ -60,6 +60,11 @@ Particularly interesting, because these are where the interesting failures live:
   same bcrypt round a real one does, so account existence is not readable
   from response timing. A way to read existence anyway, or to make those
   routes cost the server more than the bound allows, is in scope.
+- **A replayed refresh token.** Rotation revokes the token it spends; a
+  revoked refresh token presented again is treated as a stolen copy and every
+  session in that family is revoked, with the same 401 a garbage token gets.
+  A replay that keeps a session alive, or a response that distinguishes a
+  once-real token from a never-real one, is in scope.
 
 Out of scope: findings against a deployment's own configuration choices
 (an operator opting into `CORS_ORIGIN=*`, disabling auth for local development,

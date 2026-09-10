@@ -219,17 +219,45 @@ def get_refresh_token(token_hash: str) -> dict | None:
                 "expires_at": rt.expires_at, "revoked": rt.revoked}
 
 
+def _redis_delete_failed(where: str, err: Exception) -> None:
+    """A swallowed Redis delete on a REVOCATION path is the one condition under
+    which a revoked refresh token keeps working (get_refresh_token serves the
+    cached record without re-checking the DB flag, up to the token TTL) and
+    reuse detection never fires (the normal lookup hits, so the ghost check
+    is never reached). Still non-fatal - the DB stays authoritative and a
+    Redis blip must not fail a logout - but LOUD, so the inconsistency window
+    is visible instead of silent (fleet port 2026-09-10; upstream's
+    2026-09-05 security review, finding 1)."""
+    from app.logger import log
+    log("refresh_redis_delete_failed", where=where, error=str(err)[:200])
+
+
 def revoke_refresh_token(token_hash: str):
     from app.redis_client import get_redis
     r = get_redis()
     if r:
         try:
             r.delete(_rt_redis_key(token_hash))
-        except Exception:
-            pass
+        except Exception as e:
+            _redis_delete_failed("revoke_refresh_token", e)
     with get_session() as db:
         db.query(RefreshToken).filter(
             RefreshToken.token_hash == token_hash).update({"revoked": True})
+
+
+def get_refresh_token_any(token_hash: str) -> dict | None:
+    """The row for this hash INCLUDING revoked ones - the reuse-detection read
+    (fleet port 2026-09-10; upstream's auth-gaps batch, 2026-09-05).
+    Deliberately DB-only: revoke deletes the Redis key outright, so Redis
+    cannot distinguish 'rotated and replayed' from 'never existed', and this
+    lookup only runs after the normal (revoked-filtered) one missed."""
+    with get_session() as db:
+        rt = db.query(RefreshToken).filter(
+            RefreshToken.token_hash == token_hash).first()
+        if not rt:
+            return None
+        return {"id": rt.id, "user_id": rt.user_id,
+                "expires_at": rt.expires_at, "revoked": rt.revoked}
 
 
 def revoke_all_user_tokens(user_id: int):
@@ -244,8 +272,8 @@ def revoke_all_user_tokens(user_id: int):
                 ).all()]
             if hashes:
                 r.delete(*[_rt_redis_key(h) for h in hashes])
-        except Exception:
-            pass
+        except Exception as e:
+            _redis_delete_failed("revoke_all_user_tokens", e)
     with get_session() as db:
         db.query(RefreshToken).filter(
             RefreshToken.user_id == user_id).update({"revoked": True})
@@ -282,5 +310,5 @@ def revoke_refresh_token_by_id(token_id: int, user_id: int):
     if r:
         try:
             r.delete(_rt_redis_key(token_hash))
-        except Exception:
-            pass
+        except Exception as e:
+            _redis_delete_failed("revoke_refresh_token_by_id", e)
