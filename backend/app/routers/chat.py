@@ -570,16 +570,33 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
                 yield f"data: {json.dumps({'context_warning': True})}\n\n"
 
         tools = get_active_tools() if supports_tools(request.model) else []
+        # IDENTITY CARD BY CLEARANCE (2026-09-11): the owner's profile used to
+        # ship on EVERY turn regardless of tier, while content of that kind
+        # is Owner-only for retrieval - disclosure was mediated by a prompt
+        # instruction, which is not a gate. The card rides only for callers
+        # cleared for the restricted department, the SAME authority the
+        # retrieval gate uses. Two stable cache prefixes result (with/without
+        # card), one per caller class - each still caches. Proven at runtime
+        # by tests/test_identity_card_runtime.py, which drives THIS handler
+        # with real sessions at every rung and reads the prompt at the
+        # provider seam.
+        from app.rag_config import department_min_level as _dept_min
+        _card = (_identity_card()
+                 if caller_level >= _dept_min("restricted") else "")
         # Attach receipt for the turn log: attached-and-unused must be
-        # distinguishable from never-attached after the fact.
+        # distinguishable from never-attached after the fact. identity_card +
+        # caller_level: whether the card rode this turn and the clearance
+        # that decided it - the live-tier signal for the gate, readable in
+        # the turn log without dumping the prompt.
         log("chat_tools_attached", session_id=request.session_id,
-            tools=len(tools))
+            tools=len(tools), identity_card=bool(_card),
+            caller_level=caller_level)
         # system_core = the STABLE prefix; the Anthropic path puts the
         # prompt-cache breakpoint after it, so the conditional suffixes below
         # can toggle without busting the cached core. Ollama/OpenAI ignore
         # the system_prompt param - they read the full system message in
         # msgs.
-        system_core = (get_system_prompt() + _identity_card()
+        system_core = (get_system_prompt() + _card
                        + _GROUNDING_RULES + _SAFETY_RULES + _CONTEXT_DATA_RULES
                        + _NO_WEB_NOTICE)
         system_content = system_core
