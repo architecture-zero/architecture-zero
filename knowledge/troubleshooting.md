@@ -35,9 +35,10 @@ distributed or IP-rotating traffic. It counts requests, not tokens, so it
 bounds how many guest turns land in a day and not how large any one of them is.
 Signed-in users are never counted against it, so signing in is the immediate
 way through. The counter resets at UTC midnight; raise the limit or set it to 0
-to switch the cap off. It counts in Redis when Redis is reachable and
-in-process otherwise, so on the default single-container setup a restart also
-clears it.
+to switch the cap off. It counts in Redis when Redis is reachable and in the
+instance's own database otherwise (the `security_state` table, since
+2026-09-11), so on the default single-container setup a restart no longer
+clears it - the day's count survives a redeploy.
 
 ## "Session expired - sign in again"
 

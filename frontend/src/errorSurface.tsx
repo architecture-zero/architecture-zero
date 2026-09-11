@@ -9,7 +9,9 @@ import { useEffect, useState } from 'react'
 //   - Repeating POLLS stay quiet on transient failures (the next tick retries)
 //     but a 401 is not transient: use guardedPoll() - it raises the sticky
 //     session-expired banner, so an expired token reads as "session expired",
-//     never as an app with no data (the invisible-pill class).
+//     never as an app with no data (the invisible-pill class). The banner
+//     needs a token in storage to raise (emitAuthExpired): a 401 with no
+//     session behind it is "not signed in", never "expired" (2026-09-11).
 // The host component (<ErrorSurface/>) renders the toast stack + the expired
 // banner; App mounts it once per visible view (views return exclusively, so
 // the module-level subscriber is single at any moment).
