@@ -26,6 +26,16 @@ export function emitError(msg: string) {
 }
 
 export function emitAuthExpired() {
+  // "Expired" means a session was LOST. A 401 with no token in storage is
+  // "not signed in" - there was never a session to lose - so it must not raise
+  // the banner. This template's boot never reaches chat without a token or the
+  // guest flag, and its authenticated reads are gated on a stored token, so
+  // the rule is defense here; on the public demo fork (ENABLE_AUTH=false, an
+  // authless straight-to-chat path) its absence put a sticky "Session expired"
+  // banner over every first visit (2026-09-11). A signed-in user whose token
+  // really expired still has that token in storage when the 401 lands, so
+  // they still get the banner.
+  if (!localStorage.getItem('az_jwt_token')) return
   sub?.expired()
 }
 
