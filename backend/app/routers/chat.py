@@ -62,12 +62,15 @@ GUEST_MAX_TOKENS             = int(os.getenv("GUEST_MAX_TOKENS", "1024"))
 # the chat handler for why this is a local floor and not a level shipped to
 # the peer.
 PEER_CONSUME_MIN_LEVEL       = int(os.getenv("PEER_CONSUME_MIN_LEVEL", str(MEMBER_LEVEL)))
-# Identity card - the owner's profile, pinned into chat so the assistant
-# always knows who it's talking to, independent of RAG retrieval (retrieval
-# can miss it when the query doesn't semantically match the profile). Path is
-# per-instance config; empty = no card. Read once at first use; refreshes on
-# restart/deploy as the profile grows. Labeled as *user* context (not model
-# identity) so it doesn't trip model-self-identity confusion.
+# Identity card - the owner's profile, pinned into the OWNER's chat turns so
+# the assistant knows who it's talking to independent of RAG retrieval
+# (retrieval can miss it when the query doesn't semantically match the
+# profile). It rides only for callers cleared at the restricted floor - the
+# gate sits at the chat assembly below - so admin, member and guest turns
+# never carry it. Path is per-instance config; empty = no card. Read once at
+# first use; refreshes on restart/deploy as the profile grows. Labeled as
+# *user* context (not model identity) so it doesn't trip model-self-identity
+# confusion.
 IDENTITY_CARD_PATH = os.getenv("IDENTITY_CARD_PATH", "")
 _IDENTITY_CARD = None
 
