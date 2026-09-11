@@ -35,6 +35,7 @@ Contract:
   (`rate:`, `auth:`, `setup:`, `mfa:`, `guest_budget:`, `sso_jti:`).
 """
 import json
+import random
 import time
 
 from sqlalchemy.exc import IntegrityError
@@ -43,13 +44,25 @@ from app.db import engine, get_session
 from app.models import SecurityState
 
 _SWEEP_EVERY = 200          # bump_window calls between opportunistic sweeps
-_RETRIES = 6                # optimistic-concurrency attempts before giving up
+# Optimistic-concurrency attempts before giving up. Correctness never depends
+# on this number - the version stamp does that - only liveness under a burst:
+# eight threads hammering ONE key in the prod image exhausted a budget of six
+# (each round has one winner, and a loser can lose many rounds running), so
+# the budget is generous and each retry backs off with jitter. Auth traffic
+# never looks like that test; the test exists so the loop is known to settle.
+_RETRIES = 60
 _calls_since_sweep = 0
 _table_ready = False
 
 
 class _Conflict(Exception):
     """Another writer moved the row between our read and our write."""
+
+
+def _backoff(attempt: int) -> None:
+    """Jittered, growing pause between optimistic retries so contenders
+    de-synchronise instead of colliding round after round."""
+    time.sleep(random.uniform(0.0005, 0.003) * min(attempt + 1, 20))
 
 
 def _ensure_table() -> None:
@@ -141,10 +154,13 @@ def bump_window(key: str, window: float, limit: int) -> tuple[int, bool]:
     if _calls_since_sweep >= _SWEEP_EVERY:
         _calls_since_sweep = 0
         sweep(now)
-    for _ in range(_RETRIES):
+    for attempt in range(_RETRIES):
         try:
             with get_session() as db:
-                row = db.get(SecurityState, key)
+                # FOR UPDATE where the database honours it (Postgres serialises
+                # contenders on the row); SQLite renders nothing and relies on
+                # the version stamp below.
+                row = db.get(SecurityState, key, with_for_update=True)
                 if row is None or (row.expires_at is not None and row.expires_at <= now):
                     stamps: list[float] = []
                     version = None if row is None else row.version
@@ -169,6 +185,7 @@ def bump_window(key: str, window: float, limit: int) -> tuple[int, bool]:
                         raise _Conflict()
             return len(stamps), allowed
         except (IntegrityError, _Conflict):
+            _backoff(attempt)
             continue
     raise RuntimeError(f"state store: could not settle {key!r} after {_RETRIES} attempts")
 
@@ -179,10 +196,10 @@ def bump_counter(key: str, ttl: float) -> int:
     not `ttl` after its last hit)."""
     _ensure_table()
     now = _now()
-    for _ in range(_RETRIES):
+    for attempt in range(_RETRIES):
         try:
             with get_session() as db:
-                row = db.get(SecurityState, key)
+                row = db.get(SecurityState, key, with_for_update=True)
                 if row is None or (row.expires_at is not None and row.expires_at <= now):
                     if row is not None:
                         db.delete(row)
@@ -201,6 +218,7 @@ def bump_counter(key: str, ttl: float) -> int:
                     raise _Conflict()
             return count
         except (IntegrityError, _Conflict):
+            _backoff(attempt)
             continue
     raise RuntimeError(f"state store: could not settle {key!r} after {_RETRIES} attempts")
 
@@ -215,10 +233,10 @@ def update(key: str, mutate, ttl: float, *, default: dict,
     expiry; a new or expired row gets `ttl` from now. Returns the document."""
     _ensure_table()
     now = _now()
-    for _ in range(_RETRIES):
+    for attempt in range(_RETRIES):
         try:
             with get_session() as db:
-                row = db.get(SecurityState, key)
+                row = db.get(SecurityState, key, with_for_update=True)
                 live = row is not None and not (
                     row.expires_at is not None and row.expires_at <= now)
                 doc = json.loads(row.value) if live else dict(default)
@@ -239,6 +257,7 @@ def update(key: str, mutate, ttl: float, *, default: dict,
                         raise _Conflict()
             return doc
         except (IntegrityError, _Conflict):
+            _backoff(attempt)
             continue
     raise RuntimeError(f"state store: could not settle {key!r} after {_RETRIES} attempts")
 
