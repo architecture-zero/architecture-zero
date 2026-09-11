@@ -205,28 +205,27 @@ def test_admin_cannot_reset_an_owners_mfa(client, admin_headers):
 
 
 def test_rate_limit_store_evicts_idle_ips():
-    """The per-IP prune trimmed timestamps but never removed the key, so the
-    dict grew with every distinct source address seen since boot."""
-    from app import security as sec
-    sec._rate_store.clear()
-    old = sec.time.time() - sec.RATE_LIMIT_WINDOW - 60
+    """The per-IP prune once trimmed timestamps but never removed the key, so
+    the dict grew with every distinct source address seen since boot. The
+    window lives in app/state_store.py since 2026-09-11: every row carries
+    its expiry, and the sweep drops the idle ones outright."""
+    from app import state_store
+    state_store.clear("rate:")
     for i in range(50):
-        sec._rate_store[f"10.0.0.{i}"] = [old]
-    assert len(sec._rate_store) == 50
-    dropped = sec._sweep_rate_store(sec.time.time())
+        state_store.put(f"rate:10.0.0.{i}", {"ts": [0.0]}, ttl=-1)   # idle past the window
+    assert state_store.keys("rate:") == []            # already misses on read
+    dropped = state_store.sweep()
     assert dropped == 50
-    assert len(sec._rate_store) == 0
 
 
 def test_rate_limit_sweep_keeps_active_ips():
     """A sweep that also evicted live entries would reset everyone's budget."""
-    from app import security as sec
-    sec._rate_store.clear()
-    sec._rate_store["10.0.0.1"] = [sec.time.time()]                       # active
-    sec._rate_store["10.0.0.2"] = [sec.time.time() - sec.RATE_LIMIT_WINDOW - 60]
-    sec._sweep_rate_store(sec.time.time())
-    assert "10.0.0.1" in sec._rate_store
-    assert "10.0.0.2" not in sec._rate_store
+    from app import security as sec, state_store
+    state_store.clear("rate:")
+    state_store.put("rate:10.0.0.1", {"ts": [sec.time.time()]}, ttl=sec.RATE_LIMIT_WINDOW)  # active
+    state_store.put("rate:10.0.0.2", {"ts": [0.0]}, ttl=-1)                                # idle
+    state_store.sweep()
+    assert state_store.keys("rate:") == ["rate:10.0.0.1"]
 
 
 def test_startup_ingest_flag_clears_even_if_the_sync_escapes():

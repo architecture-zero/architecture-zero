@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, Text, ForeignKey, Index, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Boolean, Text, Float, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.orm import relationship
 from app.db import Base
 
@@ -105,6 +105,21 @@ class Config(Base):
 
     key   = Column(String(255), primary_key=True)
     value = Column(Text, nullable=False)
+
+
+class SecurityState(Base):
+    """Restart-proof home for the security controls' small state - the
+    throttles' sliding windows, the MFA challenge counters and burned jtis,
+    the daily guest budget (app/state_store.py owns it; 2026-09-11). Rows
+    carry their own expiry and are swept opportunistically; `version` is the
+    optimistic-concurrency stamp so two workers cannot lose each other's
+    update."""
+    __tablename__ = "security_state"
+
+    key        = Column(String(255), primary_key=True)
+    value      = Column(Text, nullable=False)
+    expires_at = Column(Float, nullable=True, index=True)
+    version    = Column(Integer, nullable=False, default=1)
 
 
 class AuditLog(Base):

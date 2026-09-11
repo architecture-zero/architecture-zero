@@ -196,12 +196,15 @@ def test_challenge_without_a_jti_is_refused(client, mfa_user):
 
 # ── 5. The guard's own store stays bounded ──────────────────────────────────
 
-def test_challenge_store_is_swept(monkeypatch):
-    """In-process state on an unauthenticated-adjacent path has to prune, or it
-    is a slow memory leak keyed by anyone who can trigger a login."""
-    monkeypatch.setattr(security, "MFA_CHALLENGE_TTL", 0)
-    security._mfa_challenges["stale"] = {"attempts": 1, "used": False, "ts": 0.0}
+def test_challenge_store_is_swept():
+    """State on an unauthenticated-adjacent path has to prune, or it is a slow
+    leak keyed by anyone who can trigger a login. The challenge store is the
+    database since 2026-09-11 (app/state_store.py): an expired challenge reads
+    as a miss and is dropped on the way out, and the sweep drops the rest."""
+    from app import state_store
+    state_store.put("mfa:stale", {"attempts": 1, "used": False, "ts": 0.0}, ttl=-1)
 
     security.check_mfa_challenge("fresh")
+    security.check_mfa_challenge("stale")            # expired: a miss, not a 401/429
 
-    assert "stale" not in security._mfa_challenges
+    assert "mfa:stale" not in state_store.keys()

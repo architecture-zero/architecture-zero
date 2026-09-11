@@ -105,16 +105,14 @@ def admin_headers(client):
 def _reset_setup_throttle():
     """Clear the always-on auth-abuse counters between tests (2026-08-27).
 
-    Two stores: the first-owner claim throttle, and the MFA challenge guard.
-    Both are process-global by design, and several test files post to
-    /api/auth/setup - without this reset the later ones start colliding with the
-    limit as the suite grows. Isolation, not a weakened control.
+    The throttles (claim, auth, chat), the MFA challenge guard and the guest
+    budget keep their state in one database-backed store since 2026-09-11
+    (app/state_store.py - restart-proof by design, which also means it is
+    shared by every test in this session), and several test files post to
+    /api/auth/setup - without this reset the later ones start colliding with
+    the limit as the suite grows. Isolation, not a weakened control.
     """
-    from app import security
-    security._setup_store.clear()
-    security._mfa_challenges.clear()
-    security._auth_store.clear()
+    from app import state_store
+    state_store.clear()
     yield
-    security._setup_store.clear()
-    security._mfa_challenges.clear()
-    security._auth_store.clear()
+    state_store.clear()

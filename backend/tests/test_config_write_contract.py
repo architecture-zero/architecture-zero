@@ -209,17 +209,18 @@ def test_closed_setup_is_throttled_too(client, monkeypatch):
 
 
 def test_the_setup_store_does_not_grow_without_bound():
-    """Swept in full on every call: the dict is tiny by construction except
-    under exactly the attack that makes pruning worth doing. This mirrors the
-    amortized sweep on _rate_store."""
-    security._setup_store["10.0.0.1"] = [0.0]          # long expired
-    security._setup_store["10.0.0.2"] = []             # never populated
+    """The window lives in app/state_store.py since 2026-09-11: an expired row
+    reads as a miss and the store's sweep drops it, so the table is tiny by
+    construction except under exactly the attack that makes pruning worth
+    doing - the same bound the in-process dict it replaced had to learn."""
+    from app import state_store
+    state_store.put("setup:10.0.0.1", {"ts": [0.0]}, ttl=-1)    # long expired
+    state_store.put("setup:10.0.0.2", {"ts": []}, ttl=-1)       # never populated, expired
 
     security.check_setup_rate_limit("10.0.0.3")
 
-    assert "10.0.0.1" not in security._setup_store
-    assert "10.0.0.2" not in security._setup_store
-    assert "10.0.0.3" in security._setup_store
+    assert state_store.keys("setup:") == ["setup:10.0.0.3"]    # the expired rows are misses
+    assert state_store.sweep() == 2                             # and the sweep drops them outright
 
 
 # -- 2b. The refusal arrives BEFORE the write loop, and the audit line is honest -

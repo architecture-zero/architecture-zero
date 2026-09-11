@@ -33,11 +33,13 @@ def _guest_enabled_cfg(key, default=None):
 
 @pytest.fixture(autouse=True)
 def _clean_guest_budget():
-    # Process-global by design, and the client fixture is session-scoped, so
-    # without this each case would start wherever the previous one stopped.
-    security._daily_guest_store.clear()
+    # The counter lives in the database-backed store since 2026-09-11 (shared
+    # by design), and the client fixture is session-scoped, so without this
+    # each case would start wherever the previous one stopped.
+    from app import state_store
+    state_store.clear("guest_budget:")
     yield
-    security._daily_guest_store.clear()
+    state_store.clear("guest_budget:")
 
 
 @pytest.fixture(autouse=True)
@@ -95,7 +97,8 @@ def test_authenticated_callers_are_never_budgeted(client, admin_headers, monkeyp
     assert codes == [200] * 5, codes
     # The counter must not have moved at all. A budget that charged signed-in
     # users would let the operator's own traffic close the door on visitors.
-    assert security._daily_guest_store == {}
+    from app import state_store
+    assert state_store.keys("guest_budget:") == []
 
 
 def test_limit_zero_leaves_the_guest_lane_open(client, monkeypatch):
@@ -109,16 +112,20 @@ def test_non_positive_limit_returns_before_counting_anything():
     # future call site forgets the `> 0` check.
     security.check_daily_guest_budget(0)
     security.check_daily_guest_budget(-1)
-    assert security._daily_guest_store == {}
+    from app import state_store
+    assert state_store.keys("guest_budget:") == []
 
 
 def test_day_rollover_evicts_the_stale_counter():
-    # The in-memory branch keeps only today's key. Without the eviction a
-    # long-running process accumulates one dead entry per day it survives.
-    security._daily_guest_store["19700101"] = 99
+    # Each day's counter is its own row with a ~25h expiry, so yesterday's
+    # reads as gone and is swept; today's starts at one. Without an expiry a
+    # long-running deployment would accumulate one dead row per day it survives.
+    from app import state_store
+    state_store.put("guest_budget:19700101", {"n": 99}, ttl=-1)   # expired long ago
     security.check_daily_guest_budget(5)
-    assert "19700101" not in security._daily_guest_store
-    assert list(security._daily_guest_store.values()) == [1]
+    assert "guest_budget:19700101" not in state_store.keys()
+    live = state_store.keys("guest_budget:")
+    assert len(live) == 1 and state_store.get(live[0]) == {"n": 1}
 
 
 def test_the_guard_is_wired_at_the_chat_handler():
@@ -158,5 +165,8 @@ def test_redis_failure_degrades_to_the_in_process_counter(client, monkeypatch):
 
     assert r.status_code == 200, "a Redis outage must not 500 the guest lane"
     broken.incr.assert_called_once()
-    # Degrading must not quietly stop enforcing - the request still counted.
-    assert sum(security._daily_guest_store.values()) == 1
+    # Degrading must not quietly stop enforcing - the request still counted,
+    # in the database counter the Redis one degrades to.
+    from app import state_store
+    live = state_store.keys("guest_budget:")
+    assert len(live) == 1 and state_store.get(live[0]) == {"n": 1}

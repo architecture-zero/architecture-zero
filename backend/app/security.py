@@ -3,58 +3,33 @@ import time
 import os
 import ipaddress
 import secrets
-from collections import defaultdict
 from fastapi import HTTPException, Request
+
+from app import state_store
 
 # ── Rate limiting ─────────────────────────────────────────────────────────────
 ENABLE_RATE_LIMIT    = os.getenv("ENABLE_RATE_LIMIT",    "false").lower() == "true"
 RATE_LIMIT_REQUESTS  = int(os.getenv("RATE_LIMIT_REQUESTS", "20"))
 RATE_LIMIT_WINDOW    = int(os.getenv("RATE_LIMIT_WINDOW",   "60"))   # seconds
 
-_rate_store: dict[str, list[float]] = defaultdict(list)
-# Keys are never removed by the per-IP prune below - that only trims one IP's
-# timestamps, and only for an IP currently making a request. Every address that
-# ever hit this process keeps its entry forever, so on a public endpoint the
-# dict grows with the count of distinct source IPs seen since boot: scanners,
-# crawlers, one-shot probes. Small per key, unbounded in total.
-#
-# The Redis path never had this - its keys carry an EXPIRE. This is the
-# memory-store fallback catching up, which matters because that fallback is
-# exactly what runs when Redis is down.
-_RATE_SWEEP_EVERY = 1000
-_rate_calls_since_sweep = 0
+# The no-Redis path used to be a dict in this process: every address that ever
+# hit the instance kept an entry (bounded later by an amortized sweep), and a
+# restart handed every IP a fresh budget. Since 2026-09-11 it is a sliding
+# window in the database (app/state_store.py) - restart-proof, shared by every
+# worker on this node, expiring with the window it bounds. The Redis path is
+# unchanged and still preferred when REDIS_URL is set.
 
 
-def _sweep_rate_store(now: float) -> int:
-    """Drop IPs with nothing left inside the window. Returns how many went."""
-    cutoff = now - RATE_LIMIT_WINDOW
-    dead = [ip for ip, ts in _rate_store.items() if not ts or max(ts) <= cutoff]
-    for ip in dead:
-        _rate_store.pop(ip, None)
-    return len(dead)
-
-
-def _check_rate_limit_memory(client_ip: str) -> None:
-    global _rate_calls_since_sweep
-    now = time.time()
-    cutoff = now - RATE_LIMIT_WINDOW
-    # Amortized sweep rather than a background timer: no extra thread, and the
-    # cost lands on the traffic that caused the growth.
-    _rate_calls_since_sweep += 1
-    if _rate_calls_since_sweep >= _RATE_SWEEP_EVERY:
-        _rate_calls_since_sweep = 0
-        _sweep_rate_store(now)
-    timestamps = [t for t in _rate_store[client_ip] if t > cutoff]
-    if len(timestamps) >= RATE_LIMIT_REQUESTS:
-        # Refused requests still count - do not let the store grow a key for an
-        # IP being actively rejected without it also being sweepable.
-        _rate_store[client_ip] = timestamps
+def _check_rate_limit_db(client_ip: str) -> None:
+    _, allowed = state_store.bump_window(f"rate:{client_ip}",
+                                        RATE_LIMIT_WINDOW, RATE_LIMIT_REQUESTS)
+    if not allowed:
+        # A refused request does not extend the window - an IP being rejected
+        # still expires with its last allowed attempt.
         raise HTTPException(
             status_code=429,
             detail=f"Rate limit exceeded: max {RATE_LIMIT_REQUESTS} requests per {RATE_LIMIT_WINDOW}s",
         )
-    timestamps.append(now)
-    _rate_store[client_ip] = timestamps
 
 
 def _check_rate_limit_redis(r, client_ip: str) -> None:
@@ -109,7 +84,7 @@ def check_rate_limit(client_ip: str) -> None:
     if r:
         _check_rate_limit_redis(r, client_ip)
     else:
-        _check_rate_limit_memory(client_ip)
+        _check_rate_limit_db(client_ip)
 
 # -- First-owner claim throttle (2026-08-27) ----------------------------------
 # Deliberately NOT routed through check_rate_limit() above, and deliberately not
@@ -122,8 +97,6 @@ def check_rate_limit(client_ip: str) -> None:
 # endpoint that hands out ownership of the instance - had no throttle at all.
 SETUP_MAX_ATTEMPTS = int(os.getenv("SETUP_MAX_ATTEMPTS", "5"))
 SETUP_WINDOW       = int(os.getenv("SETUP_WINDOW",       "900"))  # seconds
-
-_setup_store: dict[str, list[float]] = defaultdict(list)
 
 
 # -- Per-IP auth throttle (fleet port 2026-09-10, from the reference surface) ----------------
@@ -153,14 +126,12 @@ _setup_store: dict[str, list[float]] = defaultdict(list)
 #     guessability).
 #
 # The setup/claim lane keeps its own dedicated throttle (check_setup_rate_limit
-# below). Same in-process/single-worker caveat as the rest of this module's
-# stores; swept in full per call (auth traffic is low-volume by construction).
+# below). Both windows live in the database since 2026-09-11 (app/state_store.py):
+# restart-proof, shared by every worker on this node, expiring with the window
+# they bound - the in-process dicts they replaced forgot every count on a redeploy.
 AUTH_MAX_ATTEMPTS    = int(os.getenv("AUTH_MAX_ATTEMPTS",    "10"))
 REFRESH_MAX_ATTEMPTS = int(os.getenv("REFRESH_MAX_ATTEMPTS", "60"))
 AUTH_WINDOW          = int(os.getenv("AUTH_WINDOW",          "300"))  # seconds
-
-_auth_store: dict[str, list[float]] = defaultdict(list)
-
 
 def check_auth_rate_limit(client_ip: str, scope: str = "login") -> None:
     """Bound anonymous auth attempts per IP. Always on. Raises 429 at the cap.
@@ -170,21 +141,15 @@ def check_auth_rate_limit(client_ip: str, scope: str = "login") -> None:
     attempt would have succeeded) and the accounting one-line simple.
     """
     limit = REFRESH_MAX_ATTEMPTS if scope == "refresh" else AUTH_MAX_ATTEMPTS
-    now = time.time()
-    cutoff = now - AUTH_WINDOW
-    for key in [k for k, ts in _auth_store.items() if not ts or max(ts) <= cutoff]:
-        _auth_store.pop(key, None)
-    key = f"{scope}:{client_ip}"
-    timestamps = [t for t in _auth_store[key] if t > cutoff]
-    if len(timestamps) >= limit:
+    _, allowed = state_store.bump_window(f"auth:{scope}:{client_ip}",
+                                        AUTH_WINDOW, limit)
+    if not allowed:
         from app.logger import log
         log("auth_rate_limited", scope=scope, ip=client_ip)
         raise HTTPException(
             status_code=429,
             detail=(f"Too many attempts: max {limit} per {AUTH_WINDOW}s. "
                     "Try again later."))
-    timestamps.append(now)
-    _auth_store[key] = timestamps
 
 
 def check_setup_rate_limit(client_ip: str) -> None:
@@ -202,19 +167,14 @@ def check_setup_rate_limit(client_ip: str) -> None:
     to ask. The throttle runs BEFORE the owner_exists() check so the closed path
     is bounded too - otherwise the 403 answers that question for free.
     """
-    now = time.time()
-    cutoff = now - SETUP_WINDOW
-    for ip in [ip for ip, ts in _setup_store.items() if not ts or max(ts) <= cutoff]:
-        _setup_store.pop(ip, None)
-    timestamps = [t for t in _setup_store[client_ip] if t > cutoff]
-    if len(timestamps) >= SETUP_MAX_ATTEMPTS:
+    _, allowed = state_store.bump_window(f"setup:{client_ip}",
+                                        SETUP_WINDOW, SETUP_MAX_ATTEMPTS)
+    if not allowed:
         raise HTTPException(
             status_code=429,
             detail=(f"Too many setup attempts: max {SETUP_MAX_ATTEMPTS} "
                     f"per {SETUP_WINDOW}s"),
         )
-    timestamps.append(now)
-    _setup_store[client_ip] = timestamps
 
 
 # ── First-owner CLAIM CODE (2026-08-27) ───────────────────────────────────────
@@ -239,7 +199,10 @@ def check_setup_rate_limit(client_ip: str) -> None:
 # off: a control whose default state is off reads as guarded in the source and
 # is absent in every real deployment.
 #
-# IN-PROCESS, like the MFA challenge store below and with the same caveat. The
+# IN-PROCESS by choice - the one piece of state in this module that stayed so
+# when the throttles and the MFA challenge store moved to the database on
+# 2026-09-11, because a code minted per process and printed to that process's
+# logs IS the design (the caveats below are its terms, not a debt). The
 # shipped container runs a single uvicorn process. Under `--workers N` or several
 # replicas each would mint a different code and only one would match, so those
 # deployments MUST set SETUP_CLAIM_CODE. A restart before the claim mints a fresh
@@ -317,31 +280,28 @@ def burn_setup_claim_code() -> None:
 #   grinding fresh challenges walks into the account lock instead of resetting a
 #   counter every time.
 #
-# In-process by design: a single uvicorn process, entries living no longer than
-# the token they track, swept on every call. Running multi-worker or
-# multi-replica requires moving this to Redis, or the per-challenge bound weakens
-# to per-worker (the per-ACCOUNT lock is shared through the DB and would hold).
-# A restart also forgets burned jtis and attempt counts, so a completed or
-# exhausted challenge token is honoured fresh for what remains of its 5-minute
-# life after a redeploy - bounded by the TTL, accepted until this state moves
-# to Redis.
+# In the DATABASE since 2026-09-11 (app/state_store.py), entries living no
+# longer than the token they track. Until then this was a dict in the one
+# uvicorn process, and a restart forgot burned jtis and attempt counts - a
+# completed or exhausted challenge token was honoured fresh for what remained
+# of its 5-minute life after a redeploy (the 2026-09-04 audit's "per-process
+# auth stores" finding). The store survives restarts and is shared by every
+# worker on this node; a second NODE still needs Redis, and the per-ACCOUNT
+# lock (also the DB) holds either way.
 MFA_MAX_ATTEMPTS  = int(os.getenv("MFA_MAX_ATTEMPTS",  "5"))
 MFA_CHALLENGE_TTL = int(os.getenv("MFA_CHALLENGE_TTL", "300"))  # matches the token's exp
 
-_mfa_challenges: dict[str, dict] = {}
+def _mfa_key(jti: str) -> str:
+    return f"mfa:{jti}"
 
 
-def _sweep_mfa_challenges(now: float) -> None:
-    for jti in [j for j, v in _mfa_challenges.items()
-                if now - v["ts"] > MFA_CHALLENGE_TTL]:
-        _mfa_challenges.pop(jti, None)
+def _fresh_challenge() -> dict:
+    return {"attempts": 0, "used": False, "ts": time.time()}
 
 
 def check_mfa_challenge(jti: str) -> None:
     """Refuse a burned or exhausted MFA challenge. Raises 401/429, else returns."""
-    now = time.time()
-    _sweep_mfa_challenges(now)
-    ch = _mfa_challenges.get(jti)
+    ch = state_store.get(_mfa_key(jti))
     if ch is None:
         return                                   # first use of this challenge
     if ch["used"]:
@@ -355,26 +315,28 @@ def check_mfa_challenge(jti: str) -> None:
 
 
 def record_mfa_failure(jti: str) -> int:
-    """Count a wrong code against this challenge. Returns the new attempt count."""
-    now = time.time()
-    ch = _mfa_challenges.setdefault(jti, {"attempts": 0, "used": False, "ts": now})
-    ch["attempts"] += 1
+    """Count a wrong code against this challenge. Returns the new attempt count.
+    The row expires when the TOKEN does - MFA_CHALLENGE_TTL from the first
+    record, never extended by a later attempt."""
+    ch = state_store.update(_mfa_key(jti),
+                            lambda c: c.__setitem__("attempts", c["attempts"] + 1),
+                            MFA_CHALLENGE_TTL, default=_fresh_challenge())
     return ch["attempts"]
 
 
 def burn_mfa_challenge(jti: str) -> None:
-    """Mark a challenge spent so it can never be replayed."""
-    now = time.time()
-    ch = _mfa_challenges.setdefault(jti, {"attempts": 0, "used": False, "ts": now})
-    ch["used"] = True
+    """Mark a challenge spent so it can never be replayed - across a restart too."""
+    state_store.update(_mfa_key(jti), lambda c: c.__setitem__("used", True),
+                       MFA_CHALLENGE_TTL, default=_fresh_challenge())
 
 
 
 # ── Daily global guest budget (public-demo wallet backstop) ───────────────────
 # Per-IP rate limits don't stop distributed traffic / a busy day; this caps total guest
-# requests per UTC day across ALL callers. Redis-backed when available, in-memory otherwise.
+# requests per UTC day across ALL callers. Redis-backed when available, the
+# database otherwise (app/state_store.py, since 2026-09-11 - the in-memory
+# counter it replaced forgot the day's count on every restart).
 # Tune the limit high enough that real visitors never reach it - it's a backstop, not a gate.
-_daily_guest_store: dict[str, int] = {}
 
 
 def check_daily_guest_budget(limit: int) -> None:
@@ -395,19 +357,17 @@ def check_daily_guest_budget(limit: int) -> None:
             # get_redis() latches its client on first use, so a Redis that dies
             # after a successful ping keeps handing back a live-looking handle
             # and every guest request raises out of this guard. Degrade to the
-            # in-process counter (the users.py convention): during an outage the
-            # cap loosens from global to per-process, which beats 500ing the
-            # lane the control exists to protect. Logged, never silent - a
-            # security control that quietly changes scope is the worse failure.
+            # database counter: during an outage the cap loosens from global
+            # to per-node, which beats 500ing the lane the control exists to
+            # protect. Logged, never silent - a security control that quietly
+            # changes scope is the worse failure.
             from app.logger import log_error
             log_error("guest_budget_redis_degraded", error=str(e))
             count = None
     if count is None:
-        # In-memory fallback: keep only today's counter.
-        for k in [k for k in _daily_guest_store if k != day]:
-            _daily_guest_store.pop(k, None)
-        _daily_guest_store[day] = _daily_guest_store.get(day, 0) + 1
-        count = _daily_guest_store[day]
+        # Database fallback: one counter per UTC day, expiring ~25h after its
+        # first hit so the key self-cleans like the Redis one.
+        count = state_store.bump_counter(f"guest_budget:{day}", 90000)
     if count > limit:
         raise HTTPException(
             status_code=429,
