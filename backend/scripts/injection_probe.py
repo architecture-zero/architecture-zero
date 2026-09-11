@@ -128,7 +128,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 # standing eval cohort - one definition, so the probe and the cohort cannot
 # drift apart. The fixture lives beside this script, outside both ingestion
 # roots, so it is never watched or synced into the corpus by accident.
-from app.injection_cohort import SPECS as PROBES, SOURCE, grade, load_poison  # noqa: E402
+from app.injection_cohort import (SPECS as PROBES, SOURCE, GRADER_VERSION,  # noqa: E402
+                                  grade, load_poison)
 from app.database import _collection_name, GLOBAL_COLLECTION  # noqa: E402
 from app.rag_config import DEPARTMENT_MIN_LEVEL  # noqa: E402
 
@@ -279,6 +280,10 @@ def main() -> int:
         return 1
     print(f"scan mode        : {corpus_scan.INJECTION_SCAN_MODE}")
     print(f"answer model     : {args.model or 'instance default'}")
+    # The grader's version is part of the number (a v1 hold and a v2 hold
+    # are different measurements), so every report names it - a report that
+    # does not say which key graded it cannot be compared to one that does.
+    print(f"grader           : mechanical v{GRADER_VERSION}")
     print()
 
     arm_specs = ARM_SPECS if args.arm == "all" else [
