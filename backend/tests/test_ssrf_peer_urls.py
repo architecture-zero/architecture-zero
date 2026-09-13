@@ -106,19 +106,19 @@ def test_query_peer_kb_refuses_a_stored_bad_row_without_fetching():
     fetch first and validate later."""
     from app import peers as peers_mod
     peer = {"id": "legacy", "name": "legacy", "url": "http://169.254.169.254"}
-    with patch.object(peers_mod, "_req") as req, \
+    with patch.object(peers_mod, "_pinned_request") as send, \
          patch.object(peers_mod, "_circuit_open", return_value=False), \
          patch.object(peers_mod, "_record_failure") as rec:
         assert peers_mod.query_peer_kb(peer, "anything") == []
-        req.get.assert_not_called()
+        send.assert_not_called()
         rec.assert_called_once()
 
 
 def test_check_peer_health_refuses_without_fetching():
     from app import peers as peers_mod
-    with patch.object(peers_mod, "_req") as req:
+    with patch.object(peers_mod, "_pinned_request") as send:
         assert peers_mod.check_peer_health("http://169.254.169.254") is False
-        req.get.assert_not_called()
+        send.assert_not_called()
 
 
 def test_add_peer_endpoint_rejects_ssrf_url(client, admin_headers):

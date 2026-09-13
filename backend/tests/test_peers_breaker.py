@@ -6,8 +6,10 @@ stacked timeouts. Failures open the circuit after the threshold; an open
 circuit skips the network entirely; success (or the backoff window, or a
 manual reset) closes it.
 """
+import socket
 import time
 
+import pytest
 import requests as _requests
 
 import app.peers as peers
@@ -20,6 +22,18 @@ from app.peers import (
 )
 
 _PEER = {"id": "test-peer", "name": "Test Peer", "url": "http://peer.invalid:9"}
+
+
+@pytest.fixture(autouse=True)
+def _peer_resolves(monkeypatch):
+    """The breaker is about the CONNECTION failing, so the name must resolve
+    to a public address the pinned request may connect to: since 2026-09-13
+    (the pinned peer lane) an unresolvable peer never reaches the network at
+    all, and the seam these tests replace is _pinned_request, not
+    requests.get - the guard's verdict is the address the socket goes to."""
+    monkeypatch.setattr(peers.socket, "getaddrinfo",
+                        lambda host, port, *a, **k: [
+                            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))])
 
 
 def _fail_get(*a, **k):
@@ -38,7 +52,7 @@ def test_breaker_opens_after_threshold_and_skips_the_network(monkeypatch):
         calls["n"] += 1
         raise _requests.exceptions.ConnectionError("refused")
 
-    monkeypatch.setattr(peers._req, "get", counting_fail)
+    monkeypatch.setattr(peers, "_pinned_request", counting_fail)
     for _ in range(_CB_THRESHOLD):
         assert query_peer_kb(_PEER, "q") == []
     h = get_peer_health(_PEER["id"])
@@ -53,7 +67,7 @@ def test_breaker_opens_after_threshold_and_skips_the_network(monkeypatch):
 
 def test_backoff_expiry_retries_and_success_closes(monkeypatch):
     _reset()
-    monkeypatch.setattr(peers._req, "get", _fail_get)
+    monkeypatch.setattr(peers, "_pinned_request", _fail_get)
     for _ in range(_CB_THRESHOLD):
         query_peer_kb(_PEER, "q")
     assert get_peer_health(_PEER["id"])["circuit_open"] is True
@@ -68,7 +82,7 @@ def test_backoff_expiry_retries_and_success_closes(monkeypatch):
         def raise_for_status(self): pass
         def json(self): return {"results": [{"text": "t", "source": "s.md"}]}
 
-    monkeypatch.setattr(peers._req, "get", lambda *a, **k: _OK())
+    monkeypatch.setattr(peers, "_pinned_request", lambda *a, **k: _OK())
     out = query_peer_kb(_PEER, "q")
     assert len(out) == 1 and out[0]["peer"] == "Test Peer"
     h = get_peer_health(_PEER["id"])
@@ -78,7 +92,7 @@ def test_backoff_expiry_retries_and_success_closes(monkeypatch):
 
 def test_manual_reset_closes_an_open_circuit(monkeypatch):
     _reset()
-    monkeypatch.setattr(peers._req, "get", _fail_get)
+    monkeypatch.setattr(peers, "_pinned_request", _fail_get)
     for _ in range(_CB_THRESHOLD):
         query_peer_kb(_PEER, "q")
     assert get_peer_health(_PEER["id"])["circuit_open"] is True
@@ -89,7 +103,7 @@ def test_manual_reset_closes_an_open_circuit(monkeypatch):
 def test_health_rides_the_peer_listing(monkeypatch):
     _reset()
     monkeypatch.setattr(peers, "get_peers", lambda: [dict(_PEER, enabled=True)])
-    monkeypatch.setattr(peers._req, "get", _fail_get)
+    monkeypatch.setattr(peers, "_pinned_request", _fail_get)
     query_peer_kb(_PEER, "q")
     listed = get_peers_with_health()
     assert listed[0]["consecutive_failures"] == 1
