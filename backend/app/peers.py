@@ -132,8 +132,8 @@ class _PinnedHostAdapter(_req.adapters.HTTPAdapter):
     https URL with a bare IP would otherwise send no SNI and be handed a
     default certificate (or refused) - which is why "fetch the IP" is not by
     itself a safe pinning. urllib3 keys its pools on both settings, so a
-    fresh Session per request never mixes hostnames. Ported from Kin's
-    webfetch (`_PinnedHostAdapter`, 2026-09-11) to the peer lane 2026-09-13."""
+    fresh Session per request never mixes hostnames. The same adapter as
+    upstream's web-fetch pinning (2026-09-11), on the peer lane 2026-09-13."""
 
     def __init__(self, hostname: str, **kwargs):
         self._hostname = hostname
