@@ -85,12 +85,23 @@ def login(request: LoginRequest, req: Request):
     # verification (below) so this cannot become an account-enumeration
     # oracle.
     #
-    # Check lockout before verifying password
+    # A3-4 (ruled 2026-09-13): lock state is READ here and ANSWERED below,
+    # after the unconditional authenticate_user call. This branch used to raise
+    # 429 "Account locked. Try again in N minute(s)." on the spot, which made
+    # the door an existence oracle twice over: the status and the body told an
+    # anonymous caller the username was real, and the answer came back without
+    # a bcrypt round while every other refusal paid one - the same timing shape
+    # T11 closed, keyed on lock state instead of existence. Reading the latch
+    # here and answering after the hash keeps the lock ENFORCED, keeps the
+    # expiry re-read below, and costs the same bcrypt round as a wrong password
+    # on an unlocked account.
+    locked = False
+    lock_remaining = 0
     if user and user.get("locked_until"):
         locked_until = datetime.fromisoformat(user["locked_until"])
         if locked_until > datetime.now(timezone.utc):
-            remaining = int((locked_until - datetime.now(timezone.utc)).total_seconds() // 60) + 1
-            raise HTTPException(status_code=429, detail=f"Account locked. Try again in {remaining} minute(s).")
+            locked = True
+            lock_remaining = int((locked_until - datetime.now(timezone.utc)).total_seconds() // 60) + 1
         else:
             unlock_user(user["id"])
             user = _get_user(request.username)
@@ -112,6 +123,31 @@ def login(request: LoginRequest, req: Request):
     # behavior change smuggled into a timing fix, and this line also runs after
     # the lockout branch above may have re-read `user`.
     authenticated = authenticate_user(request.username, request.password)
+
+    # A3-4: the locked answer, after the hash. Same status and same body as a
+    # wrong password and as a missing username, so a locked account is no
+    # longer distinguishable from either. The lock is ENFORCED - a CORRECT
+    # password lands here too. failed_attempts is deliberately NOT incremented
+    # on this path (it never was): the lock already holds, and counting here
+    # would let anyone hold someone else's account locked indefinitely.
+    #
+    # Accepted cost, taken 2026-09-13: a locked-out legitimate user now reads
+    # "invalid credentials" rather than "try again in N minutes". The refusal
+    # is therefore recorded SERVER-SIDE - the operator can still see that the
+    # lock is what refused the attempt, because the caller no longer can.
+    if locked:
+        # This counter is part of the fix, not decoration. It fires on the
+        # wrong-password and unknown-username paths below; leaving the locked
+        # path out made az_auth_failures_total move on two of the three cases
+        # and not the third, so reading /metrics either side of one request
+        # separated them again. If you deploy this template with /metrics
+        # ungated, that read is anonymous. Found by attacking the change
+        # before it shipped, not after.
+        increment("auth_failures_total")
+        log("auth_login_refused_locked", user_id=user["id"],
+            username=user["username"], minutes=lock_remaining)
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
     if not user or not authenticated:
         increment("auth_failures_total")
         if user:
@@ -120,7 +156,11 @@ def login(request: LoginRequest, req: Request):
                 until = (datetime.now(timezone.utc) + timedelta(minutes=LOCKOUT_DURATION_MINUTES)).isoformat()
                 lock_user(user["id"], until)
                 log("auth_lockout", user_id=user["id"], username=request.username)
-                raise HTTPException(status_code=429, detail=f"Too many failed attempts. Account locked for {LOCKOUT_DURATION_MINUTES} minutes.")
+                # A3-4: no 429 here either. This was the LOUDER half of the
+                # oracle - it fired only for a username that exists, so five
+                # requests confirmed an account outright. The lock is written;
+                # the answer falls through to the same 401 as any other failed
+                # login, and the lockout is recorded on the line above.
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
     # The REQUIRE_MFA refusal (see the comment block above the lockout check).

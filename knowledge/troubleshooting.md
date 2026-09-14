@@ -67,12 +67,25 @@ authenticator. From another signed-in session (or after an admin resets
 the account's MFA), enroll via MFA setup and retry. Operators: always have
 every password account enroll BEFORE flipping REQUIRE_MFA.
 
-## "Account locked. Try again in N minutes"
+## "Invalid username or password" when the password is definitely right
 
-Too many failed password attempts. Wait out the lockout window, or an admin
-can unlock immediately (POST /api/admin/users/{id}/unlock). If this fires without
-failed attempts by the real user, treat it as someone guessing at the
-account's password and review the audit log.
+The likeliest cause is the account lockout, and it does not announce itself.
+After too many failed password attempts the account locks for the lockout
+window, and during that window every sign-in attempt answers "Invalid
+username or password" - the same answer a wrong password and an unregistered
+username get. That is deliberate: an answer that said "locked" would confirm
+to an anonymous caller that the username is real, which is how account lists
+get harvested. The cost is this confusing moment for a real user.
+
+How to tell it apart, as an operator: the server records the refusal even
+though the caller is not told. Look for `auth_login_refused_locked` in the
+application log (it carries the username and the minutes remaining), and for
+a `login_locked` row in the security events if your deployment stores them.
+
+The remedy is the same as before: wait out the window, or an admin can unlock
+immediately (POST /api/admin/users/{id}/unlock). If the real user was not
+failing sign-ins, treat the lock as someone guessing at that account's
+password and review the audit log.
 
 ## Answers are slow
 

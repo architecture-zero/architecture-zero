@@ -67,9 +67,12 @@ Sign in with username and password (POST /api/auth/login). You receive a
 short-lived access token and a refresh token; clients refresh silently via
 POST /api/auth/refresh. If your session expires you get "Session expired -
 sign in again" - just sign in again. After too many wrong passwords the
-account locks temporarily ("Too many failed attempts") and unlocks itself
-after the lockout window, or an admin can unlock it immediately (POST
-/api/admin/users/{id}/unlock).
+account locks temporarily and unlocks itself after the lockout window, or an
+admin can unlock it immediately (POST /api/admin/users/{id}/unlock). The lock
+is silent by design: while it holds, sign-in answers "Invalid username or
+password" rather than naming the lock, because an answer that named it would
+tell an anonymous caller which usernames are real. If a correct password is
+being refused, see the lockout entry in the troubleshooting guide.
 
 ## Setting up two-factor authentication (MFA)
 

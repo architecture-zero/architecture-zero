@@ -164,8 +164,14 @@ def test_wrong_step_ups_lock_the_account_like_wrong_logins(client, admin_headers
                 assert r.status_code == 429, (i, r.text)
         assert get_user_by_id(uid).get("locked_until"), "no lock was written"
         # The lock holds on both doors, and the right password does not lift it.
+        # A3-4 (2026-09-13): the LOGIN door answers the generic 401 while
+        # locked - a locked account must not be distinguishable from a wrong
+        # password or from a username that does not exist. The STEP-UP door
+        # below keeps its 429: it is reachable only with a valid bearer token,
+        # so it tells an attacker nothing they did not already know, and its
+        # contract is a spoken refusal an operator can act on.
         assert client.post("/api/auth/login", json={"username": "su_locker",
-                                                    "password": "LockerP1"}).status_code == 429
+                                                    "password": "LockerP1"}).status_code == 401
         assert client.post("/api/users", headers=me,
                            json={**body, "current_password": "LockerP1"}).status_code == 429
         assert get_user_by_username("su_never") is None
