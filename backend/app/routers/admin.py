@@ -228,6 +228,22 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
             status_code=403,
             detail=f"Owner access required to set: {', '.join(sorted(_owner_only))}")
 
+    # Boolean keys accept exactly bool and str, refused HERE in the same
+    # pre-write pass as suggestions (hardening cleanup item 6, rider A3-1,
+    # 2026-09-13). The loop's fallback below is Python truthiness, and the
+    # string parse only ever saw strings, so a truthy NON-string - ["false"],
+    # {"x": 0}, 2, 0.5 - stored "true" and OPENED the toggle: the one shape
+    # that still mis-parsed toward the permissive side. A mid-loop 400 would
+    # re-open the partial-write class this endpoint was cured of on
+    # 2026-08-27, which is why the refusal sits before the first write.
+    _bool_keys = ("allow_model_selection", "allow_rag_toggle", "default_rag_enabled",
+                  "guest_mode_enabled")
+    _not_bool = sorted(k for k in _bool_keys
+                       if k in body and not isinstance(body[k], (bool, str)))
+    if _not_bool:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{', '.join(_not_bool)} must be a boolean")
     written = []
     for key, value in body.items():
         if key == "suggestions":
@@ -236,7 +252,7 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
             # silently rewriting what an operator typed is the smaller cousin of
             # silently discarding it.
             value = json.dumps([s for s in value if s.strip()])
-        elif key in ("allow_model_selection", "allow_rag_toggle", "default_rag_enabled", "guest_mode_enabled"):
+        elif key in _bool_keys:
             # NOT `"true" if value else "false"`. That is Python truthiness on
             # the raw JSON value, so the STRING "false" - and "no", and "0" -
             # are all truthy and were written as "true", inverting exactly the
@@ -253,6 +269,8 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
                 value = "true" if value.strip().lower() in (
                     "true", "1", "yes", "on") else "false"
             else:
+                # Only a real bool reaches here: the pre-write pass above
+                # refused every other type (2026-09-13).
                 value = "true" if value else "false"
         set_config(key, str(value))
         written.append(key)

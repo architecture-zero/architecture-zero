@@ -242,6 +242,32 @@ def test_a_bad_suggestions_value_does_not_partially_write(client, admin_headers)
     assert after["instance_name"] == before["instance_name"]
 
 
+def test_a_non_scalar_boolean_is_refused_before_any_write(client, admin_headers):
+    """Hardening cleanup item 6, rider A3-1 (2026-09-13). The boolean branch
+    parsed STRINGS by value and fell back to truthiness for everything else,
+    so ["false"], {"x": 0}, 2 and 0.5 all stored "true" - the toggle could
+    still mis-parse OPEN through a non-scalar. Only bool and str are booleans
+    now, refused in the same pre-write pass as suggestions, so the good key in
+    a mixed body stays unwritten too."""
+    key = "guest_mode_enabled"
+    before = client.get("/api/admin/config", headers=admin_headers).json()
+
+    for bad in (["false"], {"x": 0}, 2, 0.5, None):
+        r = client.patch("/api/admin/config",
+                         json={"instance_name": "Half Landed", key: bad},
+                         headers=admin_headers)
+        assert r.status_code == 400, (bad, r.text)
+        assert key in r.json()["detail"]
+
+    after = client.get("/api/admin/config", headers=admin_headers).json()
+    assert after["instance_name"] == before["instance_name"]
+    assert after.get(key) == before.get(key)
+    # The accepted shapes (a real bool, the true-words, "false") are pinned
+    # by the bool-coercion test; this one writes NOTHING on purpose - the
+    # suite shares one session DB, and an explicit guest row left here read
+    # as "closed" to the guest tests that run after it (the 2026-09-13
+    # prod-image run on both twins).
+
 def test_the_audit_line_records_what_was_written(client, admin_headers,
                                                  monkeypatch):
     """The log is the record of what CHANGED. The old line logged
