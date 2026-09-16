@@ -23,7 +23,10 @@ most worth reporting.
 ## Running it
 
 Prerequisites: Docker with the compose plugin, and [Ollama](https://ollama.com)
-on the host with the embedding model pulled.
+on the host with the embedding model pulled. On a Linux host, Ollama must
+listen beyond loopback for the containers to reach it (`sudo systemctl edit
+ollama`, add `[Service]` / `Environment="OLLAMA_HOST=0.0.0.0"`, restart) -
+the README's Quickstart has the detail.
 
 ```bash
 ollama pull nomic-embed-text          # required whichever provider answers chat

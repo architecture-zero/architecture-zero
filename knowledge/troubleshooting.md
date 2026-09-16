@@ -148,7 +148,12 @@ or lower the threshold.
 /api/health pings the Ollama base URL. Degraded means that ping failed:
 the Ollama server is down, the OLLAMA_BASE address is wrong for your
 network layout (from inside a container, localhost is the container - use
-host.docker.internal or the host's address), or a firewall blocks it.
+host.docker.internal or the host's address), a firewall blocks it, or - the
+usual cause on a Linux host - Ollama is listening on 127.0.0.1 only, which
+the containers cannot reach even with the right address. Set
+OLLAMA_HOST=0.0.0.0 on the Ollama service (`sudo systemctl edit ollama`)
+and restart it; `ss -ltn | grep 11434` should then show `*:11434`, not
+`127.0.0.1:11434`.
 Cloud-only deployments can ignore Ollama health if no local models are
 used.
 

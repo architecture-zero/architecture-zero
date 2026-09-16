@@ -96,7 +96,12 @@ the database. Claim with the flag off, enroll, then turn it on and restart.
 
 Out of the box the backend expects a local Ollama server (OLLAMA_BASE,
 default http://host.docker.internal:11434) - install Ollama, pull a model,
-and it appears in the model list automatically. Cloud providers activate
+and it appears in the model list automatically. On a Linux host, one extra
+step: Ollama's service binds 127.0.0.1 by default and the containers reach
+the host through the docker bridge address, so it must listen on all
+interfaces - `sudo systemctl edit ollama`, add `[Service]` and
+`Environment="OLLAMA_HOST=0.0.0.0"`, then restart it. Docker Desktop on
+macOS and Windows does not need this. Cloud providers activate
 the moment their API key is configured: the Owner sets keys via PUT
 /api/settings (Anthropic, OpenAI, Gemini, Mistral, Groq, xAI, DeepSeek), or
 they come from the host environment (ANTHROPIC_API_KEY and friends). A
