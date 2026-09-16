@@ -25,10 +25,9 @@ from app.agent import get_active_tools, execute_tool
 from app.config import get_system_prompt
 from app.db import get_session
 from app.logger import log, log_error
-from app.pii import apply_blocklist
 from app.providers import stream_chat, non_stream_tool_call, supports_tools
 from app.runtime_config import (_config_or_default, RAG_ONLY_MODE,
-                                EVAL_JUDGE_MODEL_DEFAULT, _BLOCKLIST,
+                                EVAL_JUDGE_MODEL_DEFAULT, _output_filter,
                                 _SAFETY_RULES, _NON_OWNER_RULES,
                                 _GROUNDING_RULES, _CONTEXT_DATA_RULES,
                                 _NO_WEB_NOTICE)
@@ -327,9 +326,14 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                     # core, so Owner and tiered questions share one cached
                     # prefix; the tier suffix rides in the uncached tail
                     # block (providers splits it).
+                    # The same output filter the chat router streams through,
+                    # so the eval grades what a reader would see (blocklist +
+                    # output-side PII), never the unfiltered text.
+                    _eflt = _output_filter()
                     for token in stream_chat(msgs, model, system_prompt=base_system_prompt,
                                              max_tokens=1024):
-                        tokens.append(apply_blocklist(token, _BLOCKLIST))
+                        tokens.append(_eflt.push(token))
+                    tokens.append(_eflt.flush())
                     return "".join(tokens)
 
                 tool_outputs: list[str] = []

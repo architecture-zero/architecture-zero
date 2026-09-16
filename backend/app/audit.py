@@ -23,8 +23,16 @@ def log_audit_entry(
     rerank_ms: int | None = None,
     rerank_pool: int | None = None,
     rerank_provider: str | None = None,
+    pii_out_hits: int | None = None,
+    pii_out_redacted: int | None = None,
+    pii_out_types: str | None = None,
 ) -> None:
     """One audit row per answered turn.
+
+    pii_out_*: the output-side PII receipt from the lane's OutputFilter -
+    pattern hits over the finished answer, spans masked before the reader
+    saw them, and the types seen (comma list). NULL when PII_OUTPUT_MODE is
+    off: unknown, never 0.
 
     ttft_ms / answer_lane: both default to None so a caller that omits them
     records "unknown" rather than a fabricated value. The no-model lanes
@@ -52,6 +60,9 @@ def log_audit_entry(
             rerank_ms=rerank_ms,
             rerank_pool=rerank_pool,
             rerank_provider=rerank_provider,
+            pii_out_hits=pii_out_hits,
+            pii_out_redacted=pii_out_redacted,
+            pii_out_types=pii_out_types,
         ))
 
 
@@ -181,6 +192,10 @@ def _to_dict(e: AuditLog) -> dict:
         "duration_ms": e.duration_ms,
         "ttft_ms": e.ttft_ms,
         "answer_lane": e.answer_lane,
+        # Output-side PII receipt; None = mode off / pre-receipt row.
+        "pii_out_hits": e.pii_out_hits,
+        "pii_out_redacted": e.pii_out_redacted,
+        "pii_out_types": e.pii_out_types,
     }
 
 
@@ -204,15 +219,17 @@ def export_audit_csv(
     writer.writerow([
         "id", "timestamp", "username", "user_id", "session_id",
         "model", "answer_lane", "use_rag", "response_length",
-        "duration_ms", "ttft_ms", "prompt_preview",
-        "prompt_hash", "sources",
+        "duration_ms", "ttft_ms",
+        "pii_out_hits", "pii_out_redacted", "pii_out_types",
+        "prompt_preview", "prompt_hash", "sources",
     ])
     for r in rows:
         writer.writerow([
             r.id, r.timestamp, r.username, r.user_id, r.session_id,
             r.model, r.answer_lane, r.use_rag, r.response_length,
-            r.duration_ms, r.ttft_ms, r.prompt_preview,
-            r.prompt_hash, r.sources,
+            r.duration_ms, r.ttft_ms,
+            r.pii_out_hits, r.pii_out_redacted, r.pii_out_types,
+            r.prompt_preview, r.prompt_hash, r.sources,
         ])
     return output.getvalue()
 

@@ -265,7 +265,8 @@ and the admin roster carries the same field per user.
 - GET /api/health/ready - readiness: DB (critical), Redis and Ollama
   (reported, non-fatal).
 - GET /api/status (authed) - the posture surface: which fail-open controls
-  are actually on (rate limiting, injection scan mode, PII mode), provider
+  are actually on (rate limiting, injection scan mode, PII mode at ingest
+  and the output-side PII mode on answers with the types it masks), provider
   config, agent-tool gates.
 - GET /metrics - Prometheus counters. Authenticated: a signed-in request
 works, and for a scraper set METRICS_TOKEN in the backend environment

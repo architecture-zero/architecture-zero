@@ -166,6 +166,7 @@ def _snapshot() -> dict:
     from app.corpus_scan import INJECTION_SCAN_MODE
     from app.rerank import rerank_enabled, rerank_provider, rerank_model
     from app.runtime_config import (ALLOW_GUEST_MODE, RAG_ONLY_MODE, PII_SCAN_MODE,
+                                    PII_OUTPUT_MODE,
                                     DEFAULT_MODEL, DEMO_DAILY_GUEST_LIMIT,
                                     ENCRYPTION_AT_REST_VERIFIED)
     from app.routers.chat import GUEST_MAX_TURNS
@@ -185,6 +186,7 @@ def _snapshot() -> dict:
     snap["guest_max_turns"] = GUEST_MAX_TURNS
     snap["rag_only"] = RAG_ONLY_MODE
     snap["pii_scan_mode"] = PII_SCAN_MODE
+    snap["pii_output_mode"] = PII_OUTPUT_MODE
     snap["injection_scan_mode"] = INJECTION_SCAN_MODE
     snap["encryption_verified"] = ENCRYPTION_AT_REST_VERIFIED
     snap["security"] = get_security_config()
@@ -240,6 +242,7 @@ def build_posture(snap: dict) -> str:
     from app.permissions import ROLE_LEVELS
     scan_modes = {"off", "tag", "quarantine"}
     pii_modes = {"off", "flag", "redact"}
+    out_modes = {"off", "warn", "redact"}
     sec = snap["security"] if isinstance(snap.get("security"), dict) else {}
     guest_open = bool(snap["guest_env"]) and bool(snap["guest_config"])
 
@@ -277,6 +280,8 @@ def build_posture(snap: dict) -> str:
         "for review)",
         "- Prompt injection screening: " + _yesno(sec.get("injection_protection")),
         "- PII scanning: " + _safe(snap["pii_scan_mode"], pii_modes),
+        "- Output-side PII on answers: " + _safe(snap["pii_output_mode"], out_modes)
+        + " (off scans nothing, warn counts, redact masks the configured types)",
         "- Indexed sources currently flagged by the injection scan: "
         + _num(snap["flagged_count"]),
         "- Retrieval-only mode (never answer from model memory): "

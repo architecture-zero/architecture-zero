@@ -36,7 +36,8 @@ from app.alerting import (fire as fire_alert, get_config as get_alert_config,
                           DISK_ALERT_THRESHOLD_PCT)
 from app import corpus_scan as _corpus_scan
 from app.runtime_config import (_config_or_default, _ollama_get, DEFAULT_MODEL,
-                                RAG_ONLY_MODE, PII_SCAN_MODE, ALLOW_GUEST_MODE,
+                                RAG_ONLY_MODE, PII_SCAN_MODE, PII_OUTPUT_MODE,
+                                PII_OUTPUT_REDACT_TYPES, ALLOW_GUEST_MODE,
                                 guest_chat_available,
                                 DEMO_DAILY_GUEST_LIMIT,
                                 ENCRYPTION_AT_REST_VERIFIED, _DATA_DIR)
@@ -154,6 +155,11 @@ def status():
         "guest_daily_limit": DEMO_DAILY_GUEST_LIMIT,
         "provider": get_provider_config(),
         "pii_scan_mode": PII_SCAN_MODE,
+        # Output-side PII: the answer lanes' filter. Same fail-open class as
+        # the ingest scan - off is silent - so the normalised mode and the
+        # types redact masks are the positive signal that it is live.
+        "pii_output_mode": PII_OUTPUT_MODE,
+        "pii_output_redact_types": list(PII_OUTPUT_REDACT_TYPES),
         # Corpus injection gate (distinct from security.injection_protection,
         # which screens the USER's prompt). This one screens content ENTERING
         # the corpus and is the positive signal that the gate is live - a

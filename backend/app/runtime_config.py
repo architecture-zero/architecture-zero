@@ -14,7 +14,8 @@ import os
 import requests
 
 from app.config import get_config
-from app.pii import build_blocklist
+from app.pii import (build_blocklist, OutputFilter, normalize_output_mode,
+                     parse_redact_types)
 # _get_runtime and _ollama_headers are PRIVATE names in app.providers. This
 # module is a second consumer of both, so a rename over there orphans this file
 # rather than failing at its definition site.
@@ -142,6 +143,44 @@ _startup_ingest_active = False
 # come with them: the chat router is its only reader, so it lives there.
 
 _BLOCKLIST             = build_blocklist(os.getenv("CONTENT_SAFETY_BLOCKLIST", ""))
+
+# Output-side PII (2026-09-16). Ruled separately from PII_SCAN_MODE: that one
+# screens text ENTERING the corpus, this one the answer LEAVING. An
+# unrecognised mode falls back to off and says so at startup - /api/status
+# then shows OFF rather than a half-working control. See app/pii.py
+# OutputFilter. Lives here because two modules stream answers (the chat
+# router and the eval engine), the same reason _BLOCKLIST does.
+PII_OUTPUT_MODE        = normalize_output_mode(os.getenv("PII_OUTPUT_MODE"))
+if (os.getenv("PII_OUTPUT_MODE") or "off").strip().lower() != PII_OUTPUT_MODE:
+    from app.logger import log_error as _log_error
+    _log_error("pii_output_mode_invalid", value=os.getenv("PII_OUTPUT_MODE"),
+               using=PII_OUTPUT_MODE)
+PII_OUTPUT_REDACT_TYPES, _unknown_pii_types = parse_redact_types(
+    os.getenv("PII_OUTPUT_REDACT_TYPES"))
+if _unknown_pii_types:
+    from app.logger import log_error as _log_error
+    _log_error("pii_output_redact_types_unknown", ignored=_unknown_pii_types,
+               using=PII_OUTPUT_REDACT_TYPES)
+
+
+def _output_filter() -> OutputFilter:
+    """One per answer. Reads the module-level config at call time so a test
+    can monkeypatch runtime_config.PII_OUTPUT_MODE like the other knobs."""
+    return OutputFilter(PII_OUTPUT_MODE, PII_OUTPUT_REDACT_TYPES, _BLOCKLIST)
+
+
+def _pii_receipt(*filters: OutputFilter) -> dict:
+    """The audit row's output-PII columns from FLUSHED filters - one per
+    provider round of the answer, summed. NULL-shaped when the mode is off
+    (hits is None on every filter): unknown, never 0."""
+    counted = [f for f in filters if f.hits is not None]
+    if not counted:
+        return {"pii_out_hits": None, "pii_out_redacted": None,
+                "pii_out_types": None}
+    types = sorted({t for f in counted for t in f.hits})
+    return {"pii_out_hits": sum(sum(f.hits.values()) for f in counted),
+            "pii_out_redacted": sum(f.redacted for f in counted),
+            "pii_out_types": ",".join(types) or None}
 
 # Hard guardrails, kept in CODE (not the admin-editable system prompt) so an
 # edit to the configured prompt can never drop them. A white-label instance

@@ -163,6 +163,16 @@ class AuditLog(Base):
     rerank_ms       = Column(Integer, nullable=True)
     rerank_pool     = Column(Integer, nullable=True)
     rerank_provider = Column(String(20), nullable=True)
+    # Output-side PII receipt (2026-09-16): what the answer lane's
+    # OutputFilter (app/pii.py) found in the finished answer - pattern hits
+    # over the original text, spans masked before the reader saw them, and
+    # the comma list of types seen. NULL when PII_OUTPUT_MODE is off, on rows
+    # written before this, and on the RAG refusal lane (canned text, never
+    # filtered) - unknown/not-applicable, never 0. Added at boot by
+    # db._run_migrations.
+    pii_out_hits     = Column(Integer, nullable=True)
+    pii_out_redacted = Column(Integer, nullable=True)
+    pii_out_types    = Column(String(120), nullable=True)
 
 
 Index("idx_audit_ts",   AuditLog.timestamp)

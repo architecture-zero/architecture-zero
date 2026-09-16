@@ -64,6 +64,13 @@ def _run_migrations():
         # quarantined_docs.release_error - a release that fails now stays held
         # and records why, instead of reporting success it did not achieve.
         "ALTER TABLE quarantined_docs ADD COLUMN release_error TEXT",
+        # audit_log.pii_out_* - the output-side PII receipt (2026-09-16): what
+        # the answer lane's OutputFilter found in the finished answer. Rows
+        # written before this, and every row while PII_OUTPUT_MODE is off,
+        # read NULL - unknown, never 0.
+        "ALTER TABLE audit_log ADD COLUMN pii_out_hits INTEGER",
+        "ALTER TABLE audit_log ADD COLUMN pii_out_redacted INTEGER",
+        "ALTER TABLE audit_log ADD COLUMN pii_out_types VARCHAR(120)",
     ]
     with engine.connect() as conn:
         for sql in stmts:

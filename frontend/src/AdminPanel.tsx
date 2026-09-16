@@ -1194,6 +1194,11 @@ interface AuditEntry {
   model: string | null
   use_rag: boolean
   sources: string[]
+  // Output-side PII receipt (2026-09-16). null = the output filter was off
+  // (or the row predates it); 0 hits = scanned, nothing found.
+  pii_out_hits: number | null
+  pii_out_redacted: number | null
+  pii_out_types: string | null
 }
 
 function AuditTab({ api, headers }: { api: string; headers: () => Record<string, string> }) {
@@ -1311,6 +1316,7 @@ function AuditTab({ api, headers }: { api: string; headers: () => Record<string,
                 <th className="text-left px-4 py-2 font-medium">Model</th>
                 <th className="text-left px-4 py-2 font-medium">RAG</th>
                 <th className="text-right px-4 py-2 font-medium">Chars</th>
+                <th className="text-right px-4 py-2 font-medium" title="Output-side PII: hits / redacted">PII</th>
                 <th className="text-left px-4 py-2 font-medium">Prompt</th>
               </tr>
             </thead>
@@ -1327,6 +1333,13 @@ function AuditTab({ api, headers }: { api: string; headers: () => Record<string,
                       : <span className="text-gray-600">No</span>}
                   </td>
                   <td className="px-4 py-2 text-right text-gray-500">{e.response_length.toLocaleString()}</td>
+                  <td className="px-4 py-2 text-right whitespace-nowrap" title={e.pii_out_types || (e.pii_out_hits === null ? 'output filter off' : 'nothing detected')}>
+                    {e.pii_out_hits === null
+                      ? <span className="text-gray-600">-</span>
+                      : e.pii_out_hits === 0
+                        ? <span className="text-gray-500">0</span>
+                        : <span className={e.pii_out_redacted ? 'text-amber-400' : 'text-gray-300'}>{e.pii_out_hits} / {e.pii_out_redacted}</span>}
+                  </td>
                   <td className="px-4 py-2 text-gray-300 max-w-xs truncate" title={e.prompt_preview}>
                     {e.prompt_preview.length > 80 ? e.prompt_preview.slice(0, 80) + '…' : e.prompt_preview}
                   </td>
