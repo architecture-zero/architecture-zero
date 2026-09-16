@@ -69,7 +69,18 @@ aspirational.
 Prerequisites: Docker with the compose plugin, and an
 [Ollama](https://ollama.com) install on the host with the embedding model
 pulled (`ollama pull nomic-embed-text`) plus a chat model if you want local
-inference (`ollama pull qwen3:8b`).
+inference (`ollama pull qwen3:8b`). **On a Linux host, make Ollama listen
+beyond loopback** - its service binds `127.0.0.1` by default, and the
+containers reach the host through the docker bridge address, so a stock
+install is unreachable from them until it listens on all interfaces:
+
+```
+sudo systemctl edit ollama    # add:  [Service]  Environment="OLLAMA_HOST=0.0.0.0"
+sudo systemctl restart ollama
+```
+
+(Docker Desktop on macOS and Windows does not need this. Port 11434 stays
+closed at your firewall; this only changes which local interfaces answer.)
 
 The embedder is **required whichever provider answers chat.** Only the chat
 model is swappable for a cloud API; embeddings speak the Ollama dialect to

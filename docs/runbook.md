@@ -9,7 +9,12 @@ Prerequisites: Docker with the compose plugin, and an Ollama install on the
 host with the embedding model pulled (`ollama pull nomic-embed-text`), plus a
 chat model if you want local inference (`ollama pull qwen3:8b`). The embedder
 is required whichever provider answers chat - only the chat model is swappable
-for a cloud API.
+for a cloud API. On a Linux host Ollama binds `127.0.0.1` by default and the
+containers cannot reach it there: `sudo systemctl edit ollama`, add
+`[Service]` / `Environment="OLLAMA_HOST=0.0.0.0"`, restart it (the
+2026-09-16 clean-box rehearsal on Ubuntu 24.04 found the installer's unit
+sets no bind address, so the service answered only on loopback until this
+override was added; the README carries the same note).
 
 1. Clone the repository.
 2. `cp .env.example .env` and set JWT_SECRET_KEY to a real secret
