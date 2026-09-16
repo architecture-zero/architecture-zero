@@ -13,8 +13,11 @@ against their stored hash, refused with a 400 whose detail is a STRING (never
 401 - the client evicts on it - and never 422 - a list detail unmounts the
 admin panel). Failures count against the same lockout login uses.
 
-This template's doors: create, role change, raising permission writes, and
-the peer registry (a registered URL receives PEER_API_KEY).
+This template's doors: create, role change, raising permission writes, the
+peer registry (a registered URL receives PEER_API_KEY), and - since the
+2026-09-16 outside review - the two SELF-SERVICE credential doors: the
+username change (it mints a fresh refresh token) and the authenticator
+setup (it replaces the second factor).
 """
 import pytest
 from fastapi import HTTPException
@@ -216,3 +219,89 @@ def test_an_actor_without_a_usable_password_is_told_the_remedy():
     with pytest.raises(HTTPException) as exc:
         require_step_up(actor, "whatever", "create an account")
     assert exc.value.status_code == 400 and "Owner" in exc.value.detail
+
+
+# -- The two self-service credential doors (2026-09-16 outside review) --------
+# The invariant, stated once: a bearer session may USE the account; it may
+# not create a longer-lived credential or replace an authentication factor
+# without step-up. Both routes below did exactly that on a bearer alone.
+
+def _refresh_rows(uid):
+    from app.db import get_session
+    from app.models import RefreshToken
+    with get_session() as db:
+        return [(rt.token_hash, rt.revoked) for rt in
+                db.query(RefreshToken).filter(RefreshToken.user_id == uid).all()]
+
+
+def test_username_change_needs_the_callers_password_and_mints_nothing_without_it(client, admin_headers):
+    """PATCH /api/auth/me/username hands back a NEW refresh token (7 days by
+    default) and revokes the real owner's sessions - a stolen 30-minute
+    access token could mint itself persistence and lock the owner out of
+    their own name. Without the password: string 400, no token in the body,
+    no new refresh row, the name untouched, the owner's session intact."""
+    uid = _mk(client, admin_headers, "su_rename", password="RenameP1")
+    me = _login(client, "su_rename", "RenameP1")
+    before = _refresh_rows(uid)
+    assert before and not any(revoked for _, revoked in before)
+
+    r = client.patch("/api/auth/me/username", headers=me, json={"new_username": "su_renamed"})
+    assert r.status_code == 400, r.text
+    assert isinstance(r.json()["detail"], str) and "password" in r.json()["detail"].lower()
+    assert "access_token" not in r.json() and "refresh_token" not in r.json()
+    assert get_user_by_id(uid)["username"] == "su_rename", "the refused rename happened anyway"
+    assert _refresh_rows(uid) == before, "a refused rename touched the refresh family"
+
+    r = client.patch("/api/auth/me/username", headers=me,
+                     json={"new_username": "su_renamed", "current_password": "not-it"})
+    assert r.status_code == 400 and "incorrect" in r.json()["detail"].lower()
+    assert get_user_by_id(uid)["username"] == "su_rename"
+    assert _refresh_rows(uid) == before
+
+    r = client.patch("/api/auth/me/username", headers=me,
+                     json={"new_username": "su_renamed", "current_password": "RenameP1"})
+    assert r.status_code == 200, r.text
+    assert r.json()["refresh_token"] and get_user_by_id(uid)["username"] == "su_renamed"
+
+
+def test_mfa_setup_needs_the_callers_password_on_enrollment_and_rekey(client, admin_headers):
+    """POST /api/auth/mfa/setup replaces the TOTP seed; on an enrolled
+    account that disables MFA until the new code verifies, so `rekey: true`
+    on a bearer alone was a one-call second-factor strip. Intent is not
+    proof: the password comes first, and a refused call leaves the stored
+    seed exactly as it was - enrolled or not."""
+    from app.db import get_session
+    from app.models import User
+    uid = _mk(client, admin_headers, "su_mfa", password="MfaDoorP1")
+    me = _login(client, "su_mfa", "MfaDoorP1")
+
+    # Un-enrolled: enrolling a factor changes what the owner needs to sign in.
+    r = client.post("/api/auth/mfa/setup", headers=me, json={})
+    assert r.status_code == 400 and isinstance(r.json()["detail"], str), r.text
+    assert "password" in r.json()["detail"].lower()
+    assert get_user_by_id(uid)["mfa_secret"] is None, "a refused setup stored a seed"
+
+    # Enrolled: the deliberate re-key flag, without the password.
+    import pyotp
+    seed = pyotp.random_base32()
+    with get_session() as db:
+        db.query(User).filter(User.id == uid).update({"mfa_enabled": True, "mfa_secret": seed})
+    try:
+        r = client.post("/api/auth/mfa/setup", headers=me, json={"rekey": True})
+        assert r.status_code == 400, r.text
+        row = get_user_by_id(uid)
+        assert row["mfa_secret"] == seed and row["mfa_enabled"], "a refused re-key touched the seed"
+
+        r = client.post("/api/auth/mfa/setup", headers=me,
+                        json={"rekey": True, "current_password": "not-it"})
+        assert r.status_code == 400 and "incorrect" in r.json()["detail"].lower()
+        row = get_user_by_id(uid)
+        assert row["mfa_secret"] == seed and row["mfa_enabled"]
+
+        r = client.post("/api/auth/mfa/setup", headers=me,
+                        json={"rekey": True, "current_password": "MfaDoorP1"})
+        assert r.status_code == 200, r.text
+        assert get_user_by_id(uid)["mfa_secret"] != seed
+    finally:
+        with get_session() as db:
+            db.query(User).filter(User.id == uid).update({"mfa_enabled": False, "mfa_secret": None})

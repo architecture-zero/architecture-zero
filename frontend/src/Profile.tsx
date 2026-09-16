@@ -18,6 +18,10 @@ export default function Profile({ api, headers, user, onClose, onUsernameChange,
   const [usernameError, setUsernameError] = useState('')
   const [usernameSuccess, setUsernameSuccess] = useState('')
   const [savingUsername, setSavingUsername] = useState(false)
+  // Step-up: a username change re-issues the token pair, so the server asks
+  // for the caller's own password (a bearer alone proves the browser, not
+  // the person). Kept separate from the password tab's field on purpose.
+  const [usernamePassword, setUsernamePassword] = useState('')
 
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -28,7 +32,7 @@ export default function Profile({ api, headers, user, onClose, onUsernameChange,
 
   const saveUsername = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!newUsername.trim() || newUsername === user.username) return
+    if (!newUsername.trim() || newUsername === user.username || !usernamePassword) return
     setSavingUsername(true)
     setUsernameError('')
     setUsernameSuccess('')
@@ -36,10 +40,11 @@ export default function Profile({ api, headers, user, onClose, onUsernameChange,
       const res = await fetch(`${api}/api/auth/me/username`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', ...headers() },
-        body: JSON.stringify({ new_username: newUsername.trim() }),
+        body: JSON.stringify({ new_username: newUsername.trim(), current_password: usernamePassword }),
       })
       const data = await res.json()
       if (!res.ok) { setUsernameError(data.detail || 'Failed to update username'); return }
+      setUsernamePassword('')
       setUsernameSuccess('Username updated')
       onUsernameChange(newUsername.trim(), data.access_token, data.refresh_token)
     } catch {
@@ -127,11 +132,21 @@ export default function Profile({ api, headers, user, onClose, onUsernameChange,
                   className="w-full bg-gray-800 border border-gray-700 focus:border-blue-500/60 rounded-xl px-4 py-2.5 text-sm text-white outline-none transition-colors"
                 />
               </div>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1.5">Current password</label>
+                <input
+                  type="password"
+                  value={usernamePassword}
+                  onChange={e => setUsernamePassword(e.target.value)}
+                  autoComplete="current-password"
+                  className="w-full bg-gray-800 border border-gray-700 focus:border-blue-500/60 rounded-xl px-4 py-2.5 text-sm text-white outline-none transition-colors"
+                />
+              </div>
               {usernameError && <p className="text-xs text-red-400">{usernameError}</p>}
               {usernameSuccess && <p className="text-xs text-green-400">{usernameSuccess}</p>}
               <button
                 type="submit"
-                disabled={savingUsername || !newUsername.trim() || newUsername.trim() === user.username}
+                disabled={savingUsername || !newUsername.trim() || newUsername.trim() === user.username || !usernamePassword}
                 className="w-full py-2.5 rounded-xl text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 style={{ backgroundColor: PRIMARY_COLOR }}
               >

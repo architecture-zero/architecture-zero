@@ -77,9 +77,11 @@ being refused, see the lockout entry in the troubleshooting guide.
 ## Setting up two-factor authentication (MFA)
 
 Order matters: enroll first, enforce second. From a signed-in session, call
-MFA setup (POST /api/auth/mfa/setup) to get a QR code, scan it with any
-TOTP authenticator app, then confirm one code (POST /api/auth/mfa/enable)
-to activate. Only AFTER every account that needs password login has
+MFA setup (POST /api/auth/mfa/setup, with your current password in the body
+as `current_password` - a session alone may not replace an authentication
+factor) to get a QR code, scan it with any TOTP authenticator app, then
+confirm one code (POST /api/auth/mfa/enable) to activate. Re-enrolling an
+account that already has MFA takes the same password plus `rekey: true`. Only AFTER every account that needs password login has
 enrolled should the operator set REQUIRE_MFA=true in the host environment
 and restart. With enforcement on, a password login for an account with no
 enrolled authenticator is refused outright - so flipping the flag before

@@ -53,7 +53,8 @@ def _raw_column(user_id):
 
 
 def test_enrollment_stores_ciphertext_and_still_verifies(client, probe):
-    r = client.post("/api/auth/mfa/setup", headers=probe["headers"], json={})
+    r = client.post("/api/auth/mfa/setup", headers=probe["headers"],
+                    json={"current_password": _USER["password"]})
     assert r.status_code == 200, r.text
     secret = r.json()["secret"]
 

@@ -70,12 +70,23 @@ A session alone cannot create durable authority. Every write that creates or
 raises it - creating an account, changing a role, a permissions write that
 adds manage_users or manage_system, registering or changing a federation
 peer - re-asks the caller's own password (`jwt_auth.require_step_up`), so a
-stolen or unattended session cannot mint an account that outlives it. A
-wrong password answers 400 with a plain reason, never a 401 that would log
-the operator out, and it counts against the same lockout as a failed login,
-so the step-up is not a second guessing surface. An account with no usable
-password (the `!` sentinel hash) cannot be handed those scopes until an
-Owner sets one.
+stolen or unattended session cannot mint an account that outlives it. The
+same rule covers the two self-service credential doors: changing your
+username (the route re-issues the token pair, a fresh refresh token
+included) and setting up or re-keying your authenticator (it replaces the
+second factor). A bearer session may use the account; it may not create a
+longer-lived credential or replace an authentication factor without the
+password. A wrong password answers 400 with a plain reason, never a 401
+that would log the operator out, and it counts against the same lockout as
+a failed login, so the step-up is not a second guessing surface. An account
+with no usable password (the `!` sentinel hash) cannot be handed those
+scopes until an Owner sets one.
+
+Known limitation, recorded rather than hidden: the administrative MFA reset
+(`POST /api/admin/users/{id}/mfa-reset`) requires the manage_users scope
+and refuses Admin-on-Owner, but takes no password step-up; whether an
+operator's session alone may strip another account's second factor is a
+trust-model call for the deploying organization.
 
 Password logins carry per-account lockout after repeated failures. TOTP
 two-factor is built in, and REQUIRE_MFA=true refuses password logins for

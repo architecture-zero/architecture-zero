@@ -32,7 +32,7 @@ from app.jwt_auth import (authenticate_user, create_access_token,
                           create_refresh_token, hash_token, hash_password,
                           verify_password, get_current_user, validate_password,
                           create_mfa_challenge_token, decode_mfa_challenge_token,
-                          refuse_if_mfa_seed_stranded,
+                          refuse_if_mfa_seed_stranded, require_step_up,
                           MAX_LOGIN_ATTEMPTS, LOCKOUT_DURATION_MINUTES)
 from app.logger import log
 from app.metrics import increment
@@ -278,6 +278,7 @@ def mfa_complete(request: MFACompleteRequest, req: Request):
 
 class MFASetupRequest(BaseModel):
     rekey: bool = False
+    current_password: str = ""
 
 
 @router.post("/api/auth/mfa/setup")
@@ -285,6 +286,16 @@ def mfa_setup(request: MFASetupRequest | None = None,
               current_user: dict = Depends(get_current_user)):
     """Generate a new TOTP secret and return the provisioning URI + QR code
     PNG (base64).
+
+    Step-up (2026-09-16, outside review of this template): a bearer session
+    may USE the account; it may not replace an authentication factor. The
+    rekey flag below is intent, not proof - any holder of a live access
+    token could still pass it and swap the seed, which disables MFA until
+    the new code verifies. So the caller's own password comes first, on
+    enrollment and re-key alike (enrolling a factor on an un-enrolled
+    account changes what the real owner needs to sign in). Same contract as
+    every other step-up door: 400 with a string detail, failures share
+    login's lockout.
 
     Re-key guard (2026-09-05, readiness-audit port): calling this while MFA
     is ENABLED replaces the secret and flips mfa_enabled off - so any holder
@@ -294,6 +305,8 @@ def mfa_setup(request: MFASetupRequest | None = None,
     """
     import pyotp, qrcode, base64
     from io import BytesIO
+    require_step_up(current_user, request.current_password if request else "",
+                    "set up or re-key your authenticator")
     if current_user.get("mfa_enabled"):
         if not (request and request.rekey):
             raise HTTPException(
@@ -468,10 +481,20 @@ def change_password(request: ChangePasswordRequest, current_user: dict = Depends
 
 class ChangeUsernameRequest(BaseModel):
     new_username: str
+    current_password: str = ""
 
 
 @router.patch("/api/auth/me/username")
 def change_username(request: ChangeUsernameRequest, current_user: dict = Depends(get_current_user)):
+    # STEP-UP FIRST (2026-09-16, outside review of this template): this route
+    # mints a NEW refresh token (REFRESH_EXPIRE_DAYS, 7 by default) for a
+    # bearer whose access token dies in ACCESS_EXPIRE_MINUTES, and revokes
+    # the real owner's sessions on the way - so a stolen session could mint
+    # itself a credential that outlives it, the exact invariant the create
+    # door pins. The caller's own password proves the person; the same
+    # contract as every other step-up door, and it runs before any other
+    # check so a wrong password learns nothing.
+    require_step_up(current_user, request.current_password, "change your username")
     new_username = request.new_username.strip()
     if not new_username or len(new_username) < 2:
         raise HTTPException(status_code=400, detail="Username must be at least 2 characters")

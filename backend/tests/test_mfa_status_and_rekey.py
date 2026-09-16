@@ -80,14 +80,24 @@ def test_setup_refused_while_enabled_and_secret_survives(client, probe):
     secret = pyotp.random_base32()
     _force_mfa(probe["id"], True, secret)
 
-    # No body at all - the pre-fix client's exact call shape.
+    # No body at all - the pre-fix client's exact call shape. Since the
+    # 2026-09-16 step-up the FIRST refusal is the password ask (a string
+    # 400, like every step-up door); the secret is untouched either way.
     r = client.post("/api/auth/mfa/setup", headers=probe["headers"])
-    assert r.status_code == 409, r.text
-    assert "rekey" in r.json()["detail"]
+    assert r.status_code == 400, r.text
+    assert "password" in r.json()["detail"].lower()
     assert _stored_secret(probe["id"]) == secret  # refusal touched nothing
 
+    # With the password but no explicit rekey: the intent guard, 409.
+    r = client.post("/api/auth/mfa/setup", json={"current_password": _USER["password"]},
+                    headers=probe["headers"])
+    assert r.status_code == 409, r.text
+    assert "rekey" in r.json()["detail"]
+    assert _stored_secret(probe["id"]) == secret
+
     # rekey explicitly false is refused the same way.
-    r = client.post("/api/auth/mfa/setup", json={"rekey": False},
+    r = client.post("/api/auth/mfa/setup",
+                    json={"rekey": False, "current_password": _USER["password"]},
                     headers=probe["headers"])
     assert r.status_code == 409, r.text
     assert _stored_secret(probe["id"]) == secret
@@ -98,7 +108,8 @@ def test_setup_rekeys_only_with_explicit_flag(client, probe):
     secret = pyotp.random_base32()
     _force_mfa(probe["id"], True, secret)
 
-    r = client.post("/api/auth/mfa/setup", json={"rekey": True},
+    r = client.post("/api/auth/mfa/setup",
+                    json={"rekey": True, "current_password": _USER["password"]},
                     headers=probe["headers"])
     assert r.status_code == 200, r.text
     row = get_user_by_id(probe["id"])
@@ -108,7 +119,8 @@ def test_setup_rekeys_only_with_explicit_flag(client, probe):
 
 def test_setup_plain_for_unenrolled_account(client, probe):
     _force_mfa(probe["id"], False, None)
-    r = client.post("/api/auth/mfa/setup", headers=probe["headers"])
+    r = client.post("/api/auth/mfa/setup", json={"current_password": _USER["password"]},
+                    headers=probe["headers"])
     assert r.status_code == 200, r.text
     assert r.json()["qr"].startswith("data:image/png;base64,")
 
@@ -184,7 +196,8 @@ def test_unfinished_enrollment_with_unreadable_seed_is_not_stranded(client, prob
     assert r2.status_code == 200, r2.text
     from app.jwt_auth import mfa_seed_stranded
     assert mfa_seed_stranded({"mfa_enabled": False, "mfa_secret_unreadable": True}) is False
-    r = client.post("/api/auth/mfa/setup", headers=probe["headers"])
+    r = client.post("/api/auth/mfa/setup", headers=probe["headers"],
+                    json={"current_password": _USER["password"]})
     assert r.status_code == 200, r.text            # self-heals
 
 
@@ -230,7 +243,8 @@ def test_stranded_seed_refuses_a_live_mfa_challenge(client, probe, stranded_even
     lands on /mfa/complete; that path must refuse too, before it ever verifies
     a code - and before its own "not configured" check, which the tolerant
     seam would otherwise trip."""
-    r = client.post("/api/auth/mfa/setup", headers=probe["headers"], json={})
+    r = client.post("/api/auth/mfa/setup", headers=probe["headers"],
+                    json={"current_password": _USER["password"]})
     assert r.status_code == 200, r.text
     secret = r.json()["secret"]
     r = client.post("/api/auth/mfa/enable", headers=probe["headers"],
@@ -254,7 +268,8 @@ def test_stranded_seed_refuses_the_username_change_mint(client, probe, stranded_
     from app.users import get_user_by_id
     _strand(probe["id"])
     r = client.patch("/api/auth/me/username", headers=probe["headers"],
-                     json={"new_username": _USER["username"] + "_renamed"})
+                     json={"new_username": _USER["username"] + "_renamed",
+                           "current_password": _USER["password"]})
     assert r.status_code == 403, r.text
     assert "access_token" not in r.json()
     assert get_user_by_id(probe["id"])["username"] == _USER["username"]
