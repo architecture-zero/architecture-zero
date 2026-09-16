@@ -139,6 +139,29 @@ def test_the_lock_still_lifts_when_its_window_passes(client):
         reset_failed_attempts(uid)
 
 
+def test_the_locked_path_writes_no_bookkeeping(client, locked_account):
+    """The claim the route's comment makes and no test pinned: on the locked
+    path failed_attempts does not grow and locked_until does not move - for a
+    WRONG password and for a CORRECT one. If either wrote, anyone could hold
+    someone else's account locked indefinitely by feeding it one wrong
+    password per window, and the transition test above would not notice (it
+    only asserts >= MAX_LOGIN_ATTEMPTS). Added 2026-09-16 after a review of
+    the A3-4 port found the property true in code and unpinned on all five
+    surfaces.
+    """
+    name, uid = locked_account
+    before = get_user_by_id(uid)
+    snapshot = (before.get("failed_attempts"), before.get("locked_until"))
+
+    assert _login(client, name, WRONG).status_code == 401
+    assert _login(client, name, PW).status_code == 401
+
+    after = get_user_by_id(uid)
+    assert (after.get("failed_attempts"), after.get("locked_until")) == snapshot, (
+        f"the locked path wrote bookkeeping: before={snapshot} "
+        f"after={(after.get('failed_attempts'), after.get('locked_until'))}")
+
+
 def test_the_locked_path_still_pays_its_bcrypt_round(client, locked_account,
                                                      monkeypatch):
     """The T11 leg. The lockout branch used to raise BEFORE the password was
