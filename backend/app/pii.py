@@ -74,9 +74,10 @@ def apply_blocklist(text: str, blocklist: list[str]) -> str:
 #
 # Modes mirror PII_SCAN_MODE's vocabulary and are configured separately
 # (PII_OUTPUT_MODE), because the two surfaces are ruled per instance on
-# different grounds - Kin scans nothing at ingest because the corpus IS the
-# owner's data, and redacts nothing on output because the owner is the only
-# reader. 'warn' counts, 'redact' masks the types in redact_types and counts
+# different grounds - a private owner-only instance scans nothing at ingest
+# because the corpus IS the owner's data, and redacts nothing on output because
+# the owner is the only reader; a public-facing instance redacts. 'warn'
+# counts, 'redact' masks the types in redact_types and counts
 # the rest; both leave a receipt (hits / redacted / types) for the audit row.
 # Off with an empty blocklist is the identity: no buffering, no delay.
 #
