@@ -36,7 +36,9 @@ export function emitAuthExpired() {
   // authless straight-to-chat path) its absence put a sticky "Session expired"
   // banner over every first visit (2026-09-11). A signed-in user whose token
   // really expired still has that token in storage when the 401 lands, so
-  // they still get the banner.
+  // they still get the banner - since 2026-09-21 only after the fetch-layer
+  // silent refresh (sessionRefresh.ts) was itself refused, because a plain
+  // expiry is refreshed and replayed before any helper sees a 401.
   if (!localStorage.getItem('az_jwt_token')) return
   sub?.expired()
 }

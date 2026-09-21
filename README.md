@@ -251,12 +251,13 @@ reasoning, what the ignore rests on, and what would retire it.
 Stated here rather than discovered later. Each is tracked in
 [ROADMAP.md](ROADMAP.md).
 
-- **Sessions end after 30 minutes and you sign in again.** The API issues a
-  refresh token and rotates it correctly, but the reference client does not
-  yet spend it, so an access token simply expires. It fails honestly - you
-  are told to sign in, nothing is lost but an unsent draft - and wiring
-  silent refresh changes how the client behaves on every 401, which wants
-  its own tests rather than a release-eve patch.
+- ~~**Sessions end after 30 minutes and you sign in again.**~~ Closed
+  2026-09-21: the reference client now refreshes silently at the fetch layer
+  (`frontend/src/sessionRefresh.ts`, installed before the first render) - one
+  refresh and one replay on a 401, one refresh at a time across tabs under a
+  Web Lock, the refresh token sent only to the page's own origin or the
+  configured API base. It has its own tests. The banner still appears when a
+  refresh is refused, which is the only case where a session is really lost.
 - **One box.** Queued ingest runs on a worker thread inside the backend, not
   a separate process, because the vector store is an embedded database on a
   local directory - a second writing process would corrupt the index. This
