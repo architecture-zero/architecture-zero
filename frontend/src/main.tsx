@@ -4,6 +4,12 @@ import './index.css'
 import App from './App'
 import TrustPanel from './TrustPanel'
 import Claim from './Claim'
+import { installSessionRefresh } from './sessionRefresh'
+
+// Before the first render, so no request can go out unwrapped: a 401 on an
+// expired access token becomes one silent refresh and a replay instead of
+// the "Session expired" banner after 30 minutes. See sessionRefresh.ts.
+installSessionRefresh()
 
 // Hash routes serve standalone screens with no server-side routing, so the
 // nginx config stays a plain SPA fallback and nothing here depends on how the
