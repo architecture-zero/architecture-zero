@@ -49,8 +49,9 @@ LOCKOUT_DURATION_MINUTES = int(os.getenv("LOCKOUT_DURATION_MINUTES", "15"))
 # Upstream's SSO-provisioned accounts have no password anyone knows; they used
 # to carry bcrypt(random), unguessable but indistinguishable from a real hash,
 # so no rule could be ENFORCED on them. The sentinel is not a bcrypt string
-# at all (Django's "!" pattern): verify_password refuses it without calling
-# bcrypt, has_usable_password can see it, and the role/permission writers
+# at all (Django's "!" pattern): verify_password refuses it - after paying
+# the dummy bcrypt round, since 2026-09-21, so the refusal is not a timing
+# tell - has_usable_password can see it, and the role/permission writers
 # refuse to hand such an account manage_users or manage_system. This surface
 # has no SSO today; the rule rides here so a port inherits it.
 UNUSABLE_PASSWORD_PREFIX = "!"
