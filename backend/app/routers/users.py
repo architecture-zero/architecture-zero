@@ -130,9 +130,14 @@ def change_role(user_id: int, body: dict, current_user: dict = Depends(require_p
         from app.users import count_active_owners
         if count_active_owners() <= 1:
             raise HTTPException(status_code=400, detail="Cannot demote the last Owner")
+    # The role change resets any explicit permission list to the new role's
+    # preset (users.update_user_role); the answer says so, so the caller knows
+    # to grant any extra scope again.
+    had_list = bool(target and target.get("permissions"))
     update_user_role(user_id, role)
-    log("auth_change_role", admin_id=current_user["id"], target_user_id=user_id, role=role)
-    return {"status": "updated"}
+    log("auth_change_role", admin_id=current_user["id"], target_user_id=user_id, role=role,
+        permissions_reset=had_list)
+    return {"status": "updated", "permissions_reset": had_list}
 
 
 @router.patch("/api/users/{user_id}/department")

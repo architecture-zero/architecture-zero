@@ -94,8 +94,14 @@ def deactivate_user(user_id: int):
 
 
 def update_user_role(user_id: int, role: str):
+    # A role change resets the account's explicit permission list to "{}" -
+    # the new role's preset, what a new account stores - in the same write
+    # (2026-09-22). A stored list REPLACES the preset (effective_permissions),
+    # so kept across a role change it held authority the new role withholds
+    # (an Admin with a list, demoted, kept manage_users) or lacked what the
+    # new role grants. Extras are granted again explicitly after the change.
     with get_session() as db:
-        db.query(User).filter(User.id == user_id).update({"role": role})
+        db.query(User).filter(User.id == user_id).update({"role": role, "permissions": "{}"})
 
 
 def update_user_department(user_id: int, department: str):
