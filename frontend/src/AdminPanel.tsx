@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { actionError, emitError, guardedJson, guardedPoll } from './errorSurface'
+import { SCRAPE_CONFIG_YAML } from './scrapeConfig'
 
 const PRIMARY_COLOR = import.meta.env.VITE_PRIMARY_COLOR || '#2563eb'
 
@@ -1415,44 +1416,10 @@ function MonitoringTab({ api, headers }: { api: string; headers: () => Record<st
   }, [])
 
   const downloadScrapeConfig = () => {
-    // THREE things were wrong with the file this used to hand out, and each one
-    // alone made it useless. Port 80 is not published by the shipped compose
-    // (8000 is the backend, 5173 the client), so the scrape got connection
-    // refused. Pointing it at the client port instead returns HTTP 200 and an
-    // HTML page - the SPA fallback answers any unmatched path, and nginx only
-    // proxies /api/, so Prometheus would have parsed index.html as metrics.
-    // And /metrics is authenticated, so even the right host and port answered
-    // 401 unless a credential rides along - which no scraper could hold,
-    // because the only credential this platform issued was a 30-minute access
-    // token. METRICS_TOKEN now exists for exactly this.
-    const yaml = `# Prometheus scrape config for Architecture Zero
-# MERGE this file into prometheus.yml. It declares scrape_configs itself, so
-# pasting it UNDER an existing scrape_configs key gives you the key twice and
-# Prometheus refuses to load its whole configuration - not just this job. If
-# prometheus.yml already has scrape_configs, copy only the '- job_name:' block
-# below into it.
-#
-# /metrics is authenticated. Set METRICS_TOKEN in the .env at the repo root
-# (the one docker-compose.yml reads for both services - there is no
-# backend/.env) to a long random string, and paste the SAME value below,
-# replacing YOUR_METRICS_TOKEN. A user login will not work here, because its
-# access token expires in 30 minutes and Prometheus cannot refresh one.
-#
-# The target is the BACKEND port (8000 in the shipped compose), not the client
-# port: nginx only proxies /api/, so /metrics on the client port returns the
-# HTML page with a 200 and Prometheus would scrape markup.
-scrape_configs:
-  - job_name: 'architecture-zero'
-    static_configs:
-      - targets: ['YOUR_HOST:8000']
-    metrics_path: /metrics
-    scrape_interval: 30s
-    authorization:
-      type: Bearer
-      credentials: 'YOUR_METRICS_TOKEN'
-`
+    // The file, and why each line of it is what it is, lives in ./scrapeConfig
+    // (pinned by src/__tests__/scrapeConfig.test.ts).
     const a = document.createElement('a')
-    a.href = URL.createObjectURL(new Blob([yaml], { type: 'text/yaml' }))
+    a.href = URL.createObjectURL(new Blob([SCRAPE_CONFIG_YAML], { type: 'text/yaml' }))
     a.download = 'az-prometheus-scrape.yml'
     a.click()
   }
@@ -1572,10 +1539,11 @@ scrape_configs:
           <p className="text-xs text-gray-500">
             <span className="font-mono text-gray-400">GET /metrics</span> exposes counters in Prometheus text format.
             Set <span className="font-mono text-gray-400">METRICS_TOKEN</span> in the
-            <span className="font-mono text-gray-400"> .env</span> at the repo root and paste the
-            same value into the downloaded file, replacing
-            <span className="font-mono text-gray-400"> YOUR_METRICS_TOKEN</span> - a user
-            session expires in 30 minutes, which no scraper can hold.
+            <span className="font-mono text-gray-400"> .env</span> at the repo root and write the
+            same value, alone on one line, into the file the download's
+            <span className="font-mono text-gray-400"> credentials_file</span> names - the
+            token is never part of the download, and a user session expires in 30
+            minutes, which no scraper can hold.
           </p>
           <button onClick={downloadScrapeConfig}
             className="px-3 py-1.5 rounded-lg text-xs border border-gray-700 text-gray-300 hover:text-white hover:border-gray-500 transition-colors">
