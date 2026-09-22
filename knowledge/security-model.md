@@ -82,11 +82,12 @@ a failed login, so the step-up is not a second guessing surface. An account
 with no usable password (the `!` sentinel hash) cannot be handed those
 scopes until an Owner sets one.
 
-Known limitation, recorded rather than hidden: the administrative MFA reset
-(`POST /api/admin/users/{id}/mfa-reset`) requires the manage_users scope
-and refuses Admin-on-Owner, but takes no password step-up; whether an
-operator's session alone may strip another account's second factor is a
-trust-model call for the deploying organization.
+The administrative MFA reset (`POST /api/admin/users/{id}/mfa-reset`)
+requires the manage_users scope, refuses Admin-on-Owner, and since
+2026-09-21 re-asks the caller's own password like the other authority
+writes, so a bearer session alone cannot strip a second factor. Targeting
+your own account is allowed with the step-up, because there is no
+self-service disable route and refusing it would strand a sole Owner.
 
 Password logins carry per-account lockout after repeated failures. TOTP
 two-factor is built in, and REQUIRE_MFA=true refuses password logins for
