@@ -23,9 +23,9 @@ from pydantic import BaseModel
 
 from app.config import set_config, encrypt_secret
 from app.logger import log
-from app.jwt_auth import get_current_user, require_owner
+from app.jwt_auth import get_current_user, require_owner, require_step_up
 from app.providers import (ENABLE_OLLAMA, ENABLE_ANTHROPIC, ENABLE_OPENAI,
-                           OLLAMA_BASE, ANTHROPIC_KEY, OPENAI_COMPAT,
+                           OLLAMA_BASE, ANTHROPIC_KEY, OPENAI_COMPAT, offered_providers,
                            compat_key_configured, _compat_base, _compat_headers,
                            _get_runtime)
 from app.runtime_config import (_config_or_default, _ollama_get, DEFAULT_MODEL,
@@ -52,6 +52,12 @@ class ProviderSettingsRequest(BaseModel):
     deepseek_api_key: str | None = None
     default_model: str | None = None
     rag_similarity_threshold: float | None = None
+    # The caller's OWN password - the step-up (ruled 2026-09-21): this route
+    # holds the egress address and every provider key. Optional at the schema
+    # so a missing value is the route's 400 (a string detail), never
+    # pydantic's 422 (a list detail the admin panel cannot render). Stored
+    # nowhere: the handler writes fields by name.
+    current_password: str = ""
 
 
 def _settings_dict() -> dict:
@@ -76,6 +82,11 @@ def get_settings(current_user: dict = Depends(require_owner)):
 
 @router.put("/api/settings")
 def update_settings(body: ProviderSettingsRequest, current_user: dict = Depends(require_owner)):
+    # STEP-UP FIRST (ruled 2026-09-21). A bearer proves possession of a browser;
+    # the password proves the person - and this is the route that points the
+    # instance's egress somewhere and holds every provider key, so a stolen
+    # Owner session on an unlocked device must not be enough to redirect it.
+    require_step_up(current_user, body.current_password, "change provider settings")
     _MASKED = {"***", "········", ""}
     # VALIDATE BEFORE WRITING ANYTHING. This check used to sit at the bottom,
     # after eight set_config calls had already committed - and the admin UI
@@ -270,7 +281,13 @@ def get_available_models():
     """Returns grouped models for all enabled providers. Covered by
     AuthMiddleware when ENABLE_AUTH=true."""
     groups = []
-    if ENABLE_OLLAMA:
+    # ONE predicate with the chat route's dispatch gate (ruled 2026-09-21):
+    # providers.offered_providers. What the picker shows is dispatchable and
+    # nothing else is - and the Settings tab's Ollama toggle now hides the
+    # local models it disables (this read the import-time env flag before and
+    # ignored the toggle).
+    offered = offered_providers()
+    if "ollama" in offered:
         try:
             data = _ollama_get("/api/tags", timeout=5).json()
             models = [
@@ -283,9 +300,9 @@ def get_available_models():
         groups.append({"provider": "ollama", "label": "Local", "models": models})
     # Anthropic/OpenAI follow the registry's dormant-until-keyed rule: a
     # configured key activates them, the legacy ENABLE_* flags still can too.
-    if ENABLE_ANTHROPIC or bool(_get_runtime("anthropic_api_key", "ANTHROPIC_API_KEY", ANTHROPIC_KEY)):
+    if "anthropic" in offered:
         groups.append({"provider": "anthropic", "label": "Anthropic", "models": _fetch_anthropic_models()})
-    if ENABLE_OPENAI or compat_key_configured("openai"):
+    if "openai" in offered:
         groups.append({"provider": "openai", "label": "OpenAI", "models": _OPENAI_MODELS})
     # Registry providers appear the moment their key is configured - no
     # enable flag; dormant (unkeyed) providers stay out of the picker
@@ -293,7 +310,7 @@ def get_available_models():
     for name, entry in OPENAI_COMPAT.items():
         if name == "openai":  # legacy ENABLE_OPENAI flag handles it above
             continue
-        if compat_key_configured(name):
+        if name in offered:
             groups.append({"provider": name, "label": entry["label"],
                            "models": _fetch_compat_models(name)})
     return {"groups": groups}

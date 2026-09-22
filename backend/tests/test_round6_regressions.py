@@ -96,7 +96,7 @@ def test_settings_put_refuses_an_out_of_range_threshold(client, admin_headers):
     ge/le, so there was no 422 either, and the input went on displaying the
     rejected value under a green banner."""
     r = client.put("/api/settings",
-                   json={"rag_similarity_threshold": 5.0},
+                   json={"rag_similarity_threshold": 5.0, "current_password": "AdminPass1"},
                    headers=admin_headers)
     assert r.status_code == 400, r.text
     assert "between 0 and 1" in r.json()["detail"]
@@ -109,7 +109,7 @@ def test_settings_put_accepts_zero(client, admin_headers):
     original = client.get("/api/settings", headers=admin_headers).json()
     try:
         r = client.put("/api/settings",
-                       json={"rag_similarity_threshold": 0.0},
+                       json={"rag_similarity_threshold": 0.0, "current_password": "AdminPass1"},
                        headers=admin_headers)
         assert r.status_code == 200, r.text
         assert float(r.json()["rag_similarity_threshold"]) == 0.0
@@ -120,7 +120,7 @@ def test_settings_put_accepts_zero(client, admin_headers):
             restore = None
         if restore is not None:
             client.put("/api/settings",
-                       json={"rag_similarity_threshold": restore},
+                       json={"rag_similarity_threshold": restore, "current_password": "AdminPass1"},
                        headers=admin_headers)
 
 

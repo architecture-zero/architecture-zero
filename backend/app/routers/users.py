@@ -12,7 +12,7 @@ can_grant, IntegrityError) move verbatim and are NOT hoisted. count_active_owner
 in particular is imported inside a branch of change_role - the last-owner latch -
 and hoisting it would separate the import from the guard it exists for.
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.jwt_auth import (require_permission, hash_password, validate_password,
@@ -181,9 +181,26 @@ def change_permissions(user_id: int, body: dict, current_user: dict = Depends(re
     return {"status": "updated"}
 
 
+class MfaResetRequest(BaseModel):
+    # The caller's OWN password - the step-up (ruled 2026-09-21). Optional at
+    # the schema so a missing value is the route's 400, never a 422.
+    current_password: str = ""
+
+
 @router.post("/api/admin/users/{user_id}/mfa-reset")
-def admin_mfa_reset(user_id: int, current_user: dict = Depends(require_permission("manage_users"))):
+def admin_mfa_reset(user_id: int, body: MfaResetRequest | None = Body(None),
+                    current_user: dict = Depends(require_permission("manage_users"))):
     """Admin: disable MFA for a user (e.g. lost authenticator).
+
+    STEP-UP FIRST (ruled 2026-09-21). Stripping a second factor is a write to
+    an authentication boundary, and until now a manage-users bearer alone did
+    it - a stolen session on an unlocked device could switch MFA off for any
+    account it could reach, its own included. The caller's password is
+    required, refused with a string 400, counted against their lockout.
+    Self-target is ALLOWED with the step-up and logged as such: this surface
+    has no self-service disable route, so refusing it would strand a sole
+    Owner who wants their own second factor off; with the password proven it
+    is exactly the door a self-service route would be.
 
     Owner targets are Owner-only. Stripping a principal's second factor is a
     write to THEIR authentication boundary, not to your own - an Admin who can
@@ -192,6 +209,8 @@ def admin_mfa_reset(user_id: int, current_user: dict = Depends(require_permissio
     already refuse to let an Admin act on an Owner; this is the same rule on
     the authentication axis, which was the one path still missing it.
     """
+    require_step_up(current_user, body.current_password if body else "",
+                    "reset a second factor")
     from app.permissions import is_owner
     target = get_user_by_id(user_id)
     if target and target.get("role") == "owner" and not is_owner(current_user):

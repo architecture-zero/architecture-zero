@@ -26,7 +26,7 @@ def test_settings_write_stores_ciphertext_and_masked_read_unchanged(
         client, admin_headers):
     try:
         r = client.put("/api/settings", headers=admin_headers,
-                       json={"anthropic_api_key": _KEY})
+                       json={"anthropic_api_key": _KEY, "current_password": "AdminPass1"})
         assert r.status_code == 200, r.text
 
         raw = get_config("anthropic_api_key", "")

@@ -720,3 +720,21 @@ def get_provider_config() -> dict:
     for name in OPENAI_COMPAT:
         cfg[f"{name}_configured"] = compat_key_configured(name)
     return cfg
+
+
+def offered_providers() -> set[str]:
+    """The providers this instance OFFERS - ONE predicate behind the model
+    picker (/api/models) and the chat route's dispatch gate (ruled 2026-09-21),
+    so the two cannot disagree: a model the picker shows is dispatchable, and a
+    model the picker would not show is refused before its name prefix routes it
+    to a provider the operator turned off. Ollama by its runtime toggle;
+    Anthropic and OpenAI by their toggle OR a configured key (the registry's
+    dormant-until-keyed rule); registry providers by a key alone."""
+    cfg = get_provider_config()
+    offered = set(cfg["enabled_providers"])
+    if cfg["anthropic_configured"]:
+        offered.add("anthropic")
+    for name in OPENAI_COMPAT:
+        if compat_key_configured(name):
+            offered.add(name)
+    return offered

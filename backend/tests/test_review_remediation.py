@@ -197,11 +197,12 @@ def test_admin_cannot_reset_an_owners_mfa(client, admin_headers):
                                                "password": payload["password"]}).json()
     admin_h = {"Authorization": f"Bearer {tok['access_token']}"}
 
-    r = client.post(f"/api/admin/users/{owner}/mfa-reset", headers=admin_h)
+    r = client.post(f"/api/admin/users/{owner}/mfa-reset", headers=admin_h,
+                    json={"current_password": payload["password"]})
     assert r.status_code == 403, r.text
     # The Owner may still do it.
-    assert client.post(f"/api/admin/users/{owner}/mfa-reset",
-                       headers=admin_headers).status_code == 200
+    assert client.post(f"/api/admin/users/{owner}/mfa-reset", headers=admin_headers,
+                       json={"current_password": "AdminPass1"}).status_code == 200
 
 
 def test_rate_limit_store_evicts_idle_ips():

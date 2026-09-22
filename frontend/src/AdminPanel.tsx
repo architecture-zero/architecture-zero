@@ -215,8 +215,15 @@ function UsersTab({ api, headers }: { api: string; headers: () => Record<string,
 
   const resetMFA = async (id: number) => {
     if (!confirm('Disable MFA for this user? They will need to re-enroll.')) return
-    await mutate(fetch(`${api}/api/admin/users/${id}/mfa-reset`, { method: 'POST', headers: headers() }),
-                 'Resetting MFA')
+    const u = users.find(x => x.id === id)
+    // Step-up (2026-09-21): stripping a second factor costs the caller's own password.
+    const pw = await stepUp.ask(`reset MFA for ${u?.username ?? 'this user'}`)
+    if (pw === null) return
+    await mutate(fetch(`${api}/api/admin/users/${id}/mfa-reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers() },
+      body: JSON.stringify({ current_password: pw }),
+    }), 'Resetting MFA')
   }
 
   const changeRole = async (id: number, role: string) => {
@@ -2168,6 +2175,7 @@ interface ProviderSettings {
 }
 
 function SettingsTab({ api, headers }: { api: string; headers: () => Record<string, string> }) {
+  const stepUp = useStepUp()
   const [settings, setSettings] = useState<ProviderSettings | null>(null)
   const [ollamaEnabled, setOllamaEnabled] = useState(false)
   const [anthropicEnabled, setAnthropicEnabled] = useState(false)
@@ -2240,6 +2248,11 @@ function SettingsTab({ api, headers }: { api: string; headers: () => Record<stri
       }
       if (anthropicKey.trim()) body.anthropic_api_key = anthropicKey.trim()
       if (openaiKey.trim()) body.openai_api_key = openaiKey.trim()
+      // Step-up (2026-09-21): this route holds the egress address and every
+      // provider key, so saving costs the caller's own password. Cancel = no save.
+      const pw = await stepUp.ask('change provider settings')
+      if (pw === null) return
+      body.current_password = pw
 
       const r = await fetch(`${api}/api/settings`, {
         method: 'PUT',
@@ -2292,6 +2305,7 @@ function SettingsTab({ api, headers }: { api: string; headers: () => Record<stri
 
   return (
     <div className="max-w-xl space-y-8">
+      {stepUp.prompt}
 
       {/* Providers */}
       <section className="space-y-3">

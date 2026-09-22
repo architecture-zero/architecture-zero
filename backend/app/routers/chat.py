@@ -36,7 +36,8 @@ from app.logger import log, log_error
 from app.metrics import increment, record_request
 from app.peers import get_peers, query_peer_kb
 from app.permissions import MEMBER_LEVEL
-from app.providers import stream_chat_events, non_stream_tool_call, supports_tools
+from app.providers import (stream_chat_events, non_stream_tool_call, supports_tools,
+                           _provider_for_model, offered_providers)
 from app.security import (check_rate_limit, check_injection, client_ip_from_request,
                           check_daily_guest_budget)
 from app.runtime_config import (_config_or_default, DEFAULT_MODEL, RAG_ONLY_MODE,
@@ -372,6 +373,19 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
         request.model = GUEST_MODEL or _pinned
     elif not request.model or get_config("allow_model_selection", "true") != "true":
         request.model = _pinned
+    else:
+        # A CALLER-CHOSEN model (ruled 2026-09-21): its provider must be one
+        # this instance offers - providers.offered_providers, the same
+        # predicate the picker uses - or the choice is refused here, at the
+        # untrusted edge, before dispatch routes the name by its prefix to a
+        # provider the operator turned off. The operator's own pin above is
+        # trusted config and is never gated; the eval paths dispatch their own
+        # pinned models and are untouched.
+        _prov = _provider_for_model(request.model)
+        if _prov not in offered_providers():
+            raise HTTPException(status_code=400, detail=(
+                f"The model '{request.model}' routes to the {_prov} provider, which is "
+                "not enabled on this instance. Pick a model from the list."))
     rag_threshold = float(_config_or_default("rag_similarity_threshold", str(RAG_SIMILARITY_THRESHOLD)))
 
     prompt = request.prompt

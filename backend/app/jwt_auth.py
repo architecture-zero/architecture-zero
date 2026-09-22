@@ -74,8 +74,13 @@ def has_usable_password(user_or_hash) -> bool:
 
 def verify_password(plain: str, hashed: str) -> bool:
     # The sentinel is not a bcrypt string; checkpw would raise "Invalid salt"
-    # and turn that account's login into a 500. Refuse it plainly.
+    # and turn that account's login into a 500. Refuse it plainly - but PAY
+    # THE ROUND FIRST (ruled 2026-09-21): a sub-millisecond refusal for a
+    # sign-in-only account against a full bcrypt round for every other
+    # username told a caller which accounts have no password - the same
+    # oracle the login equalizer below closes for unknown usernames.
     if not has_usable_password(hashed):
+        bcrypt.checkpw(plain.encode(), _DUMMY_PASSWORD_HASH.encode())
         return False
     return bcrypt.checkpw(plain.encode(), hashed.encode())
 

@@ -169,12 +169,12 @@ def test_settings_roundtrip_gemini_key(client, admin_headers):
     assert r.status_code == 200
     assert r.json()["gemini_key_set"] is False
     r = client.put("/api/settings", headers=admin_headers,
-                   json={"gemini_api_key": "gem-key-123"})
+                   json={"gemini_api_key": "gem-key-123", "current_password": "AdminPass1"})
     assert r.status_code == 200
     assert r.json()["gemini_key_set"] is True
     # masked placeholder must not overwrite the stored key
     r = client.put("/api/settings", headers=admin_headers,
-                   json={"gemini_api_key": "***"})
+                   json={"gemini_api_key": "***", "current_password": "AdminPass1"})
     assert r.json()["gemini_key_set"] is True
     set_config("gemini_api_key", "")  # don't leak state into other tests
 

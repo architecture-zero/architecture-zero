@@ -140,7 +140,8 @@ def test_settings_refusal_does_not_partially_write(client, admin_headers):
 
     r = client.put("/api/settings",
                    json={"default_model": "should-not-land",
-                         "rag_similarity_threshold": 5.0},
+                         "rag_similarity_threshold": 5.0,
+                         "current_password": "AdminPass1"},
                    headers=admin_headers)
     assert r.status_code == 400, r.text
 
