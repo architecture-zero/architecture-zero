@@ -398,7 +398,8 @@ def rerank(query: str, candidates: list[dict], top_k: int | None = None,
 
 
 def retrieve(query: str, department: str | None = None, top_k: int | None = None,
-             user_level: int | None = None, stats: dict | None = None) -> list[dict]:
+             user_level: int | None = None, stats: dict | None = None,
+             only_department: bool = False) -> list[dict]:
     """The full retrieval pipeline used by chat and eval: route -> retrieve
     wide -> cross-encoder rerank down to top_k. Single source of truth for how
     RAG context is selected, so both paths stay identical.
@@ -420,20 +421,31 @@ def retrieve(query: str, department: str | None = None, top_k: int | None = None
     from app.rag_config import department_min_level, FLOOR_DEPARTMENTS
     from app.permissions import OWNER_LEVEL
     level = OWNER_LEVEL if user_level is None else user_level
-    departments = [department] if department else []
-    departments += [d for d in route_departments(query) if d not in departments]
-    # FLOOR: always add the "always-on" departments this level is cleared for
-    # (the internal `restricted` docs), independent of query shape - the way
-    # query_similar always queries the general/global collection. This keeps a
-    # higher tier's recall over the internal docs identical to an ungated
-    # corpus, while lower tiers never get the collection queried at all.
-    # history stays routing-only (added above), never floored - its size would
-    # crowd the pool even for Owner.
-    departments += [d for d in FLOOR_DEPARTMENTS
-                    if department_min_level(d) <= level and d not in departments]
-    # ACCESS-TIER GATE: keep only departments this clearance level may read.
-    departments = [d for d in departments if department_min_level(d) <= level]
-    wide = query_similar(query, n_results=RERANK_FETCH, department=departments or None)
+    if only_department:
+        # THE HELP LANE (2026-09-21): the product's own help pages, read ALONE.
+        # No routing, no floor, no global merge - and no tier gate, because
+        # the help collection holds the product's pages and nothing of the
+        # operator's, and it is served to every caller the chat gate admits,
+        # a guest included. The reserved name is deliberately NOT listed in
+        # DEPARTMENT_MIN_LEVEL: listed, it would read as a department, and the
+        # department-list invariant is that it never is one.
+        wide = query_similar(query, n_results=RERANK_FETCH, department=[department],
+                             only_department=True)
+    else:
+        departments = [department] if department else []
+        departments += [d for d in route_departments(query) if d not in departments]
+        # FLOOR: always add the "always-on" departments this level is cleared for
+        # (the internal `restricted` docs), independent of query shape - the way
+        # query_similar always queries the general/global collection. This keeps a
+        # higher tier's recall over the internal docs identical to an ungated
+        # corpus, while lower tiers never get the collection queried at all.
+        # history stays routing-only (added above), never floored - its size would
+        # crowd the pool even for Owner.
+        departments += [d for d in FLOOR_DEPARTMENTS
+                        if department_min_level(d) <= level and d not in departments]
+        # ACCESS-TIER GATE: keep only departments this clearance level may read.
+        departments = [d for d in departments if department_min_level(d) <= level]
+        wide = query_similar(query, n_results=RERANK_FETCH, department=departments or None)
     # Source diversity BEFORE rerank: big multi-chunk docs otherwise flood the
     # candidate pool and small fact docs never reach the reranker at all. Cap
     # chunks-per-source so every matching doc gets a seat, THEN let the

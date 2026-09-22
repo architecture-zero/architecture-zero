@@ -48,6 +48,22 @@ def test_empty_collections_never_reach_the_department_list(monkeypatch):
     assert database.department_residue() == ["stray_probe"]
 
 
+def test_the_help_collection_is_never_a_department(monkeypatch):
+    """In-product help (2026-09-21): the product's own pages live in kb_help,
+    which uses the department machinery and is NOT a department - never
+    listed, never residue, never counted. One predicate,
+    _is_corpus_collection, decides it for every enumeration."""
+    monkeypatch.setattr(database, "client", _Client([
+        _Col("kb_help", 30),
+        _Col("kb_restricted", 3),
+        _Col("knowledge_base", 10),
+    ]))
+    assert database.list_departments() == ["general", "restricted"]
+    assert database.department_residue() == []
+    assert database.count_documents() == 13
+    assert database._collection_name(database.HELP_DEPARTMENT) == database.HELP_COLLECTION
+
+
 def test_unreadable_count_fails_closed_to_residue(monkeypatch):
     """A collection whose count cannot be read is not PROVABLY real, so it must
     not ride a department list on faith - residue, loudly, until an operator

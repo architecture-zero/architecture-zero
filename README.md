@@ -161,6 +161,18 @@ and the public trust panel at GET /api/trust). The records carry no
 document names, no account names, and nothing a user typed - only values
 the code produced or that passed an allowlist.
 
+That starter corpus is the operator's to replace, and once it is gone
+nothing in it answers "how do I sign in?" for the people who use the
+instance. So the product also carries its own help: five short pages for
+week one - signing in, how answers work, documents and who can see them,
+data and privacy, a map of the admin panel - shipped inside the backend
+image and synced at boot into a reserved collection that is never a
+department. The Help button on the chat shell asks those pages alone: a
+help question is never answered from your documents, a normal question is
+never answered from a help page, and the pages never appear in the
+Knowledge Base tab, the document count or the evaluation fingerprint.
+`HELP_DOCS=false` turns the lane off.
+
 ## Extending it
 
 There is no SDK - the platform's own seams are the developer surface:

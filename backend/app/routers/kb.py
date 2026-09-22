@@ -113,6 +113,11 @@ def admin_release_quarantine(item_id: int,
             raise HTTPException(status_code=404, detail="No held quarantine item with that id.")
         source, department, text = row.source, row.department, row.text
         findings = json.loads(row.findings) if row.findings else []
+    # The release re-ingests to the row's department: the reserved name is
+    # refused here as on every other write door (a row could only carry it
+    # from before the name was reserved).
+    from app.help_docs import refuse_reserved_department
+    refuse_reserved_department(department)
     # Re-ingest OUTSIDE the txn (embedding is slow); tag preserved, block
     # waived.
     #
@@ -201,6 +206,14 @@ def _check_department_write(current_user: dict, department: str):
     """Write-authz: the Owner ingests anywhere; everyone else only 'general'
     or their own department (so an Admin can't write into an Owner-only
     collection)."""
+    # The product's own help collection (2026-09-21): reserved, refused at
+    # every write door and for EVERY role, the Owner included - the pages come
+    # from the image, the Help button cites them as the product's guidance,
+    # and anything planted there would be wiped by the next boot's sync. The
+    # Owner's write-anywhere below is authority over the operator's
+    # departments; this name is not one of them.
+    from app.help_docs import refuse_reserved_department
+    refuse_reserved_department(department)
     from app.permissions import is_owner
     if is_owner(current_user):
         return
@@ -266,12 +279,19 @@ def kb_sync(current_user: dict = Depends(require_permission("manage_kb"))):
     from app.system_records import sync_system_records
     # Records last, same order as boot: they report corpus counts, which are
     # only true once the two file syncs above have finished changing them.
-    return {
+    out = {
         "synced_at":       datetime.now(timezone.utc).isoformat(),
         "files":           _sync_knowledge_dir(),
         "docs":            _sync_docs(),
-        "system_records":  sync_system_records(),
     }
+    # The product's help pages too (2026-09-21), so a help index lost to an
+    # unclean stop comes back on the operator's sync, not only on a restart.
+    from app.runtime_config import HELP_DOCS_SYNC
+    if HELP_DOCS_SYNC:
+        from app import help_docs
+        out["help"] = help_docs.sync()
+    out["system_records"] = sync_system_records()
+    return out
 
 
 @router.get("/api/kb/files")
@@ -299,6 +319,10 @@ def get_departments(current_user: dict = Depends(require_permission("manage_kb")
 
 @router.delete("/api/ingest/source/{source}")
 def remove_source(source: str, department: str | None = None, current_user: dict = Depends(require_permission("manage_kb"))):
+    # The help pages are not the operator's to delete (they would return at
+    # the next boot anyway) - the reserved name is refused here too.
+    from app.help_docs import refuse_reserved_department
+    refuse_reserved_department(department)
     delete_source(source, department=department)
     return {"status": "deleted", "source": source, "department": department or "general"}
 

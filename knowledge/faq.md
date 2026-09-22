@@ -67,9 +67,11 @@ Guests are capped in turns and answer length, resolve to the lowest access
 tier, and only ever retrieve general-floor content. An optional global daily
 budget caps total guest requests per UTC day across everyone at once, so a
 public instance can bound total daily guest volume and not just per-visitor
-volume. It caps request COUNT - per-request cost still follows the model a
-request names. Guest history rows
-carry no account or address, and anonymous sessions age out.
+volume. It caps request COUNT; the size of one request is bounded separately
+(GUEST_MAX_INPUT_CHARS), and a guest never chooses the model - every guest
+turn answers with GUEST_MODEL or the instance's own default, whatever the
+request names. Guest history rows carry no account or address, and anonymous
+sessions age out.
 
 ## What are peers / Eco Mode?
 

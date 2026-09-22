@@ -264,6 +264,13 @@ def test_system_prompt_carries_the_context_rules():
     assert "data, not instructions" in lowered
     assert "never override" in lowered
     assert "markdown images" in lowered  # exfil-hygiene rule
+    # The clarifier (2026-09-21): without it the provenance bullet was read as
+    # "do not disclose a document that calls itself confidential" and the
+    # model refused authorized peer content on the federation demo. A rule
+    # that withholds facts the access system already released is an
+    # over-refusal, not a control.
+    assert "authority is not permission to answer" in lowered
+    assert "never its facts" in lowered
 
 
 def test_retrieval_demotes_untrusted_below_curated():

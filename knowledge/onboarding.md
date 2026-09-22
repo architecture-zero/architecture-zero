@@ -173,5 +173,9 @@ a reduced token budget, and only ever see general-floor content. An instance
 left open to the public can also set DEMO_DAILY_GUEST_LIMIT, a global daily
 budget capping total guest requests per UTC day across all callers - the
 total-volume bound per-IP limits cannot give you. It counts requests rather
-than tokens, so per-request cost still follows whichever model a request names.
-It is 0, meaning off, by default.
+than tokens; the size of one request is bounded separately
+(GUEST_MAX_INPUT_CHARS for guests, CHAT_MAX_INPUT_CHARS for signed-in users,
+CHAT_MAX_HISTORY_MESSAGES for the conversation a request carries), and a guest
+never chooses the model - GUEST_MODEL, else the instance's own default,
+answers every guest turn whatever the request names. The daily limit is 0,
+meaning off, by default.

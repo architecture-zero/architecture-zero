@@ -15,12 +15,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.auth import AuthMiddleware
+from app.body_limit import BodySizeLimit
 from app.audit import purge_old_entries
 from app.config import init_config_db
 from app.db import init_db as _create_schema
 from app.logger import log, log_error
 from app.security import setup_claim_code, claim_code_source
-from app.users import owner_exists          # the boot banner's occupancy check
+from app.users import owner_exists, list_users   # the boot banner's occupancy check; the reserved-department sweep
 # The startup hooks drive these; the kb router imports its own from the same
 # module. One-way: main -> ingest_sync.
 from app.ingest_sync import _sync_knowledge_dir, _sync_docs, _watch_knowledge_dir
@@ -30,7 +31,7 @@ from app.eval_runner import sync_eval_questions_from_seed
 # Imported as a MODULE so _startup_ingest_active is written THROUGH it and the
 # evals router sees the rebind. A from-import would snapshot False forever.
 from app import runtime_config
-from app.runtime_config import _all_origins, _allow_all, ENABLE_AUDIT_LOG
+from app.runtime_config import _all_origins, _allow_all, ENABLE_AUDIT_LOG, MAX_JSON_BODY_BYTES
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,19 @@ app = FastAPI(
     docs_url="/docs" if _API_DOCS else None,
     redoc_url="/redoc" if _API_DOCS else None,
     openapi_url="/openapi.json" if _API_DOCS else None,
+)
+# INNERMOST (added first): the request-body ceiling, so the JSON parser is
+# never handed more than MAX_JSON_BODY_BYTES on any route a caller can reach
+# before authentication. The two ingest doors carry their own figure - see
+# app/body_limit.py. AuthMiddleware sits outside it and already answers 401
+# to a bearer-less request on a non-excluded route before any body is read.
+app.add_middleware(
+    BodySizeLimit,
+    default_limit=MAX_JSON_BODY_BYTES,
+    per_path={
+        "/api/ingest/upload": None,                       # streams and stops AT MAX_UPLOAD_MB itself
+        "/api/ingest": int(os.getenv("MAX_UPLOAD_MB", "50")) * 1024 * 1024,   # the JSON text-ingest door
+    },
 )
 app.add_middleware(AuthMiddleware)
 app.add_middleware(
@@ -292,6 +306,37 @@ async def startup_tasks():
             _report_sync("docs", res)
         except Exception as e:
             log_error("startup_sync_crashed", stage="docs", error=str(e))
+        # IN-PRODUCT HELP (2026-09-21): the help pages shipped in the image
+        # into their reserved collection (app/help_docs.py). Off the request
+        # path like the two syncs above; a changed page costs one batch embed,
+        # an unchanged one a sha256. A failed sync logs loudly and the
+        # previous pages keep serving - nothing here can stop the API from
+        # coming up. The disabled line is emitted too: a lane that is silent
+        # when off is indistinguishable from one that failed.
+        if runtime_config.HELP_DOCS_SYNC:
+            try:
+                from app import help_docs
+                res = await asyncio.get_running_loop().run_in_executor(None, help_docs.sync)
+                log("help_docs_sync", **res)
+            except Exception as e:
+                log_error("help_docs_sync_failed", error=str(e)[:200])
+        else:
+            log("help_docs_sync_disabled")
+        # An account already IN the reserved department (only possible on an
+        # instance that had such a department before the name was reserved):
+        # an Owner-role account there would have the help pages merged into
+        # its normal answers. The two department doors refuse the name now;
+        # this names what they cannot reach. Loud, not fatal.
+        try:
+            from app.database import HELP_DEPARTMENT
+            stuck = [u.get("username") for u in list_users()
+                     if (u.get("department") or "").strip().lower() == HELP_DEPARTMENT]
+            if stuck:
+                log_error("reserved_department_accounts", accounts=stuck,
+                          note="move these accounts to another department - the help "
+                               "pages merge into their normal answers while they stay")
+        except Exception as e:
+            log_error("reserved_department_check_crashed", error=str(e))
         # Live-system records LAST of the three ingest stages: the corpus record
         # reports source and chunk counts, and those are only true for this boot
         # once both file syncs have finished moving them. Still inside the

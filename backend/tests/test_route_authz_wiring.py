@@ -46,6 +46,9 @@ PUBLIC_BY_DESIGN = {
     # Chat: guest access is double-gated inside (ALLOW_GUEST_MODE env AND
     # admin config), resolved via optional_user - not get_current_user.
     ("POST", "/api/chat"),
+    # In-product help's page read: the same double gate as chat, resolved via
+    # optional_user (test_help_docs pins the 403 / 200 / 404).
+    ("GET", "/api/help/page"),
     # Public trust panel: read-only, derived from stored eval rows - the
     # point is that visitors see it. The operator variant (/api/admin/trust)
     # authenticates route-level.
@@ -214,6 +217,10 @@ REQUIRED_GUARD = {
     ("POST", "/api/auth/setup"): "public",
     ("GET", "/api/backup-status"): "public",
     ("POST", "/api/chat"): "optional_user",
+    # In-product help (2026-09-21): one help page for the citation chip,
+    # gated in the body EXACTLY like chat (a signed-in account, or a guest
+    # where the guest door is open) - test_help_docs pins the 403.
+    ("GET", "/api/help/page"): "optional_user",
     ("GET", "/api/config"): "get_current_user",
     ("POST", "/api/feedback"): "get_current_user",
     ("GET", "/api/feedback/summary"): "require_permission:view_analytics",
@@ -373,6 +380,7 @@ def test_the_pin_covers_every_route():
     """Cheap canary: the split moves routes between files, and a router that
     silently fails to register would shrink this number with nothing else in
     the suite noticing."""
-    assert len(_actual_guards()) == 98, (
-        f"expected 98 routes, found {len(_actual_guards())} - a router failed "
+    # 99 since 2026-09-21: GET /api/help/page, the in-product help's page read.
+    assert len(_actual_guards()) == 99, (
+        f"expected 99 routes, found {len(_actual_guards())} - a router failed "
         "to register, or routes were added without updating this count")

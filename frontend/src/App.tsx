@@ -22,6 +22,11 @@ interface ChatMessage {
   content: string
   toolCalls?: ToolCall[]
   sources?: string[]
+  // TRUE when this answer came from the help lane: its help/ sources open
+  // through the help page read. Keyed on the lane, not the source name - an
+  // operator file under knowledge/help/ carries the same prefix in a normal
+  // answer and must not render as an openable product page.
+  help?: boolean
   // TRUE while this bubble has NO row in stored history. That is the whole
   // meaning - not "is a notice", which is what it meant when it was introduced
   // and why it missed the cases that mattered. The distinction is load-bearing
@@ -90,6 +95,11 @@ interface AuthConfig {
   // and a guest therefore never learned it - so the toggle rendered on every
   // instance, including ones where the operator had turned it off.
   allow_rag_toggle?: boolean
+  // In-product help: whether the server runs the help lane (HELP_DOCS). On
+  // the public read for the same reason as the two above - a guest never
+  // reaches /api/config, and a Help button that sends a lane the server
+  // ignores would be a control that does nothing.
+  help_enabled?: boolean
 }
 
 interface Analytics {
@@ -132,6 +142,17 @@ const DEFAULT_SUGGESTIONS = [
   'What can you help me with?',
   'Summarize or explain a document for me.',
   'Help me draft or improve some text.',
+]
+
+// In-product help (2026-09-21): the questions a first user asks in week one,
+// answered from the product's own help pages - never from the operator's
+// documents.
+const HELP_SUGGESTIONS = [
+  'How do I sign in?',
+  'Why can the assistant not find a document I know exists?',
+  'What do the Sources under an answer mean?',
+  'Where do my questions and the documents go?',
+  'What will the assistant refuse to answer, and why?',
 ]
 
 // ── Markdown code renderer (extracted to avoid re-creation on render) ───────
@@ -181,28 +202,56 @@ function TypingIndicator() {
 
 interface CitationsPanelProps {
   sources?: string[]
+  // The answer came from the help lane, so its help/ chips open a product page.
+  openable?: boolean
 }
 
-function CitationsPanel({ sources }: CitationsPanelProps) {
+function CitationsPanel({ sources, openable }: CitationsPanelProps) {
   // The chips name what the answer was grounded in - the claim a reader checks
-  // it against. They are deliberately NOT clickable: opening one would need a
-  // document-read endpoint this API does not expose, and a chip that always
-  // answers "preview is not available" is a promise the platform does not keep.
-  // Serving GET /api/kb/file would make them openable, and the shape below is
-  // ready for it.
+  // it against. Corpus chips are deliberately NOT clickable: opening one would
+  // need a document-read endpoint this API does not expose, and a chip that
+  // always answers "preview is not available" is a promise the platform does
+  // not keep. Serving GET /api/kb/file would make them openable, and the shape
+  // below is ready for it. HELP chips (in-product help, 2026-09-21) DO open:
+  // the product's own pages have their own read, GET /api/help/page, gated
+  // like chat, so a help citation opens for a guest and a plain user too.
+  const [viewing, setViewing] = useState<{ name: string; content: string } | null>(null)
   if (!sources?.length) return null
+
+  const openHelp = (s: string) => {
+    fetch(`${API}/api/help/page?name=${encodeURIComponent(s)}`, { headers: authHeaders() })
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
+      .then(d => setViewing({ name: d.name, content: d.content }))
+      .catch(() => setViewing({ name: s, content: 'This help page could not be loaded.' }))
+  }
 
   return (
     <div className="mt-2 pt-2 border-t border-gray-700/50">
       <p className="text-xs text-gray-500 mb-1.5">Sources</p>
       <div className="flex flex-wrap gap-1">
-        {sources.map((s, i) => (
+        {sources.map((s, i) => openable && s.startsWith('help/') ? (
+          <button key={i} title={`Open ${s}`} onClick={() => openHelp(s)}
+            className="text-xs bg-gray-700/50 text-gray-300 hover:text-white hover:bg-gray-700 px-2 py-0.5 rounded-full border border-gray-600/50 truncate max-w-[200px] transition-colors">
+            {s}
+          </button>
+        ) : (
           <span key={i} title={s}
             className="text-xs bg-gray-700/50 text-gray-400 px-2 py-0.5 rounded-full border border-gray-600/50 truncate max-w-[200px]">
             {s}
           </span>
         ))}
       </div>
+      {viewing && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={() => setViewing(null)}>
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl max-w-2xl w-full max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()} role="dialog" aria-label={viewing.name}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
+              <span className="text-xs text-gray-400 truncate">{viewing.name}</span>
+              <button onClick={() => setViewing(null)} className="text-xs text-gray-500 hover:text-white transition-colors">Close</button>
+            </div>
+            <pre className="px-4 py-3 text-xs text-gray-300 whitespace-pre-wrap break-words overflow-auto font-sans leading-relaxed">{viewing.content}</pre>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -242,6 +291,8 @@ interface MessageProps {
   content: string
   toolCalls?: ToolCall[]
   sources?: string[]
+  // See ChatMessage.help - the answer came from the help lane.
+  helpLane?: boolean
   // Shown under the bubble, never part of `content`. See ChatMessage.notice.
   notice?: string
   msgIndex: number
@@ -253,7 +304,7 @@ interface MessageProps {
   isStreaming?: boolean
 }
 
-function Message({ role, content, toolCalls, sources, notice, msgIndex, onFeedback, onRegenerate, onEdit, isStreaming }: MessageProps) {
+function Message({ role, content, toolCalls, sources, helpLane, notice, msgIndex, onFeedback, onRegenerate, onEdit, isStreaming }: MessageProps) {
   const isUser = role === 'user'
   const [copied, setCopied] = useState(false)
   const [voted, setVoted] = useState<1 | -1 | null>(null)
@@ -355,7 +406,7 @@ function Message({ role, content, toolCalls, sources, notice, msgIndex, onFeedba
               {content}
             </ReactMarkdown>
           )}
-          {!isUser && <CitationsPanel sources={sources} />}
+          {!isUser && <CitationsPanel sources={sources} openable={helpLane} />}
         </div>
         {notice && (
           <div className="px-1 text-xs text-amber-400/80 italic">{notice}</div>
@@ -458,6 +509,17 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null)
   const [isGuest, setIsGuest] = useState(false)
   const [guestModeEnabled, setGuestModeEnabled] = useState(false)
+  // In-product help. helpEnabled comes from the public auth config (the
+  // server may run with HELP_DOCS=false). helpMode is the toggle: pressed,
+  // the next question asks the product's own help pages (the reserved `help`
+  // department, retrieval forced on, never a peer) instead of the knowledge
+  // base. Persisted beside the session pointer so a reload mid-help comes
+  // back IN help mode with the help thread, not in normal mode with a help
+  // transcript riding along as history.
+  const [helpEnabled, setHelpEnabled] = useState(true)
+  const [helpMode, setHelpMode] = useState(() => localStorage.getItem('help_mode') === '1')
+  // The conversation the visitor left to open help, restored when they leave it.
+  const preHelp = useRef<{ id: string; messages: ChatMessage[] } | null>(null)
   const [profileOpen, setProfileOpen] = useState(false)
 
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -602,6 +664,7 @@ export default function App() {
         // The guest door is reported by the same expression the chat gate
         // reads, so the login screen cannot offer one the server refuses.
         setGuestModeEnabled(cfg.guest_mode_enabled === true)
+        if (cfg.help_enabled !== undefined) setHelpEnabled(cfg.help_enabled)
         // Guests get the operator's answer here or nowhere. The server enforces
         // the setting on the chat route regardless, so this only stops the UI
         // offering a control that cannot do anything.
@@ -902,6 +965,13 @@ export default function App() {
 
   const switchSession = (id: string) => {
     abandonStream()
+    // Opening a past conversation is leaving help: a help-lane request must
+    // never be sent into a conversation held under the knowledge base.
+    if (helpMode) {
+      localStorage.removeItem('help_mode')
+      setHelpMode(false)
+      preHelp.current = null
+    }
     localStorage.setItem(sessionKey(currentUser?.id), id)
     setSessionId(id)
     setMessages([])
@@ -961,6 +1031,42 @@ export default function App() {
     setContextSummarized(false)
   }
 
+  // In-product help. A fresh session WITHOUT touching the current one on the
+  // server: entering or leaving help must not erase the conversation the
+  // visitor was in the middle of (the sidebar's per-session delete is the only
+  // thing that deletes).
+  const freshSession = () => {
+    const newId = crypto.randomUUID()
+    localStorage.setItem(sessionKey(currentUser?.id), newId)
+    setSessionId(newId)
+    setMessages([])
+    setInput('')
+    setContextWarning(false)
+    setContextSummarized(false)
+  }
+  const enterHelp = () => {
+    abandonStream()
+    preHelp.current = { id: sessionId, messages }
+    localStorage.setItem('help_mode', '1')
+    setHelpMode(true)
+    setView('chat')
+    freshSession()
+  }
+  const leaveHelp = () => {
+    abandonStream()
+    localStorage.removeItem('help_mode')
+    setHelpMode(false)
+    const prev = preHelp.current
+    preHelp.current = null
+    if (!prev) { freshSession(); return }
+    // Back to where they were: the same session id and the messages they had
+    // (a signed-in user's copy reloads from the server on the id change).
+    localStorage.setItem(sessionKey(currentUser?.id), prev.id)
+    setSessionId(prev.id)
+    setMessages(prev.messages)
+    setInput('')
+  }
+
   // Core SSE stream handler - prompt is already in messages state when called
   const sendCore = async (prompt: string, historyForRequest: Array<{ role: string; content: string }>) => {
     const controller = new AbortController()
@@ -1017,6 +1123,9 @@ export default function App() {
           // client was never told the default. Omitted only when this client
           // has no basis for an opinion, which is when the server should decide.
           ...(ragKnown || ragTouched ? { use_rag: useRag } : {}),
+          // Help mode: the product's own help pages, retrieval forced on and
+          // never a peer. Last, so it wins over the toggle's value above.
+          ...(helpMode ? { department: 'help', use_rag: true, use_peers: false } : {}),
         }),
         signal: controller.signal,
       })
@@ -1153,7 +1262,7 @@ export default function App() {
                 // every abort and every provider death, and it was never
                 // flagged, because the flag was being set on notice bubbles
                 // rather than on bubbles with no row.
-                return [...prev, { role: 'assistant', content: '', toolCalls: [], sources: [], ephemeral: true }]
+                return [...prev, { role: 'assistant', content: '', toolCalls: [], sources: [], ephemeral: true, help: helpMode }]
               })
               setLoading(false)
               assistantStarted = true
@@ -1602,6 +1711,25 @@ export default function App() {
             </svg>
           </button>
           <div className="flex-1" />
+          {/* In-product help: the same chat, pointed at the product's own help
+              pages. A toggle, not a page - pressed means the next question is
+              about the assistant; pressed again returns to the knowledge base.
+              Hidden when the server runs without the help lane. */}
+          {helpEnabled && (
+            <button
+              onClick={() => (helpMode ? leaveHelp() : enterHelp())}
+              aria-pressed={helpMode}
+              title={helpMode
+                ? 'Back to your documents'
+                : `How ${instanceName} works - signing in, documents and who can see them, privacy - answered from its own help pages`}
+              className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                helpMode ? 'border-transparent' : 'text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 border-gray-700'
+              }`}
+              style={helpMode ? { backgroundColor: PRIMARY_COLOR, color: ON_PRIMARY } : {}}
+            >
+              Help
+            </button>
+          )}
           {/* The measured-trust page is the campaign's proof surface - it must be
               reachable from the front door, not only from inside the admin tour. */}
           <a
@@ -1690,8 +1818,14 @@ export default function App() {
                     ? 'Answers come from a model running on this server.'
                     : 'A cloud-powered AI assistant. Conversations are processed via a provider API.'}
               </p>
+              {helpMode && (
+                <div className="w-full mb-6 rounded-xl border border-gray-700/50 bg-gray-800/40 px-4 py-3 text-left" data-testid="help-card">
+                  <p className="text-xs text-gray-400"><span className="font-medium text-white">Help</span> <span className="text-gray-500">&middot; ask how {instanceName} works.</span></p>
+                  <p className="text-[11px] text-gray-600 mt-1">Answers here come from the assistant's own help pages, not from your organization's documents. Click Help again to go back.</p>
+                </div>
+              )}
               <div className="w-full space-y-2">
-                {suggestions.map(s => (
+                {(helpMode ? HELP_SUGGESTIONS : suggestions).map(s => (
                   <button
                     key={s}
                     onClick={() => send(s)}
@@ -1706,7 +1840,7 @@ export default function App() {
             <div className="max-w-3xl mx-auto">
               {messages.map((m, i) => (
                 <Message key={i} role={m.role} content={m.content} toolCalls={m.toolCalls}
-                  sources={m.sources} notice={m.notice} msgIndex={i}
+                  sources={m.sources} helpLane={m.help} notice={m.notice} msgIndex={i}
                   isStreaming={busy}
                   // Guests have no session; /api/feedback needs one, and a 401 here
                     // raises the sticky session-expired banner at someone who never
@@ -1759,7 +1893,7 @@ export default function App() {
               <textarea
                 ref={textareaRef}
                 className="flex-1 bg-transparent text-white text-sm resize-none outline-none placeholder-gray-500 leading-relaxed disabled:opacity-50"
-                placeholder={guestAtLimit ? 'Sign in to continue chatting…' : `Message ${instanceName}...  (Ctrl+Enter to send)`}
+                placeholder={guestAtLimit ? 'Sign in to continue chatting…' : helpMode ? `Ask how ${instanceName} works...  (Ctrl+Enter to send)` : `Message ${instanceName}...  (Ctrl+Enter to send)`}
                 value={input}
                 rows={1}
                 // Typing is allowed mid-answer; SENDING is not. send() carries

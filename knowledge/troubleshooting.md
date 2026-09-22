@@ -40,6 +40,21 @@ instance's own database otherwise (the `security_state` table, since
 2026-09-11), so on the default single-container setup a restart no longer
 clears it - the day's count survives a redeploy.
 
+## "Message too long: this request carries N characters and the limit is M"
+
+A per-request input bound, not an outage. The count is your message PLUS the
+conversation the client sends back with it, because that is what reaches the
+model provider. Guests are bounded by GUEST_MAX_INPUT_CHARS (24,000 by
+default), signed-in users by CHAT_MAX_INPUT_CHARS (200,000). Shorten the
+message or start a new chat; an operator raises the bound in the host
+environment, and 0 removes it.
+
+## "This conversation is too long to send (N messages; the limit is M)"
+
+The same bound counted in messages: CHAT_MAX_HISTORY_MESSAGES (200 by default).
+Start a new chat. The stored conversation is untouched - the bound is on what
+one request may carry, not on what History keeps.
+
 ## "Session expired - sign in again"
 
 Your access token expired and the presented token was invalid - this is the

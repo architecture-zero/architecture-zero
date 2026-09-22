@@ -27,7 +27,7 @@ from pydantic import BaseModel
 from app.agent import get_active_tools, execute_tool
 from app.audit import log_audit_entry
 from app.config import get_config, get_system_prompt
-from app.database import query_similar, list_departments
+from app.database import query_similar, list_departments, HELP_DEPARTMENT
 from app.history import (save_message, load_history, clear_session,
                          delete_tail_messages, upsert_session_meta,
                          get_session_meta)
@@ -42,7 +42,9 @@ from app.security import (check_rate_limit, check_injection, client_ip_from_requ
 from app.runtime_config import (_config_or_default, DEFAULT_MODEL, RAG_ONLY_MODE,
                                 RAG_SIMILARITY_THRESHOLD,
                                 guest_chat_available,
-                                DEMO_DAILY_GUEST_LIMIT,
+                                DEMO_DAILY_GUEST_LIMIT, GUEST_MODEL,
+                                CHAT_MAX_INPUT_CHARS, GUEST_MAX_INPUT_CHARS,
+                                CHAT_MAX_HISTORY_MESSAGES, HELP_DOCS_SYNC,
                                 MAX_CONTEXT_TOKENS, ENABLE_AUDIT_LOG,
                                 _output_filter, _pii_receipt, OutputFilter,
                                 _SAFETY_RULES, _NON_OWNER_RULES, _GROUNDING_RULES,
@@ -146,6 +148,12 @@ class ChatRequest(BaseModel):
     use_peers: bool = False
     history: list[Message] = []
     session_id: str = "default"
+    # THE HELP LANE (2026-09-21): "help" asks about the assistant itself and is
+    # honoured for every caller the guest gate admits. Any OTHER value is
+    # IGNORED - a caller's department is server-side truth (their account),
+    # and this surface has no demo persona switcher. A field rather than a
+    # flag so the request shape matches the product surface it was ported from.
+    department: str | None = None
 
 
 # -- Eco Mode: the SERVE side -------------------------------------------------
@@ -228,6 +236,34 @@ def _summarize_history(old_messages: list, model: str) -> str:
         return "Previous conversation was summarized."
 
 
+def _check_request_size(request: ChatRequest, guest: bool) -> None:
+    """Guest spend gap (a), closed 2026-09-21: bound what ONE request may carry.
+
+    Every other guest control counted something else - turns per conversation,
+    tokens per answer, requests per day - while the request body itself was
+    unbounded: no cap on the prompt, on a history message, or on the history's
+    length, and context_strategy=warn truncates nothing. One guest turn could
+    carry a megabyte of prompt to a metered provider. The bound is the prompt
+    PLUS the conversation the client sends back, because that is what reaches
+    the provider; guests get the tighter figure. A plain-string 413, not a
+    pydantic max_length: the client renders `detail` as the bubble, and
+    pydantic's list-shaped 422 would not render. Runs before the injection
+    scan so its regexes never see an unbounded body."""
+    if CHAT_MAX_HISTORY_MESSAGES > 0 and len(request.history) > CHAT_MAX_HISTORY_MESSAGES:
+        raise HTTPException(status_code=413, detail=(
+            f"This conversation is too long to send ({len(request.history)} messages; "
+            f"the limit is {CHAT_MAX_HISTORY_MESSAGES}). Start a new chat."))
+    cap = GUEST_MAX_INPUT_CHARS if guest else CHAT_MAX_INPUT_CHARS
+    # Every string the body carries to the provider counts - the role field
+    # included, or the bound has a hole in its own terms.
+    total = len(request.prompt) + sum(len(m.content) + len(m.role) for m in request.history)
+    if cap > 0 and total > cap:
+        raise HTTPException(status_code=413, detail=(
+            f"Message too long: this request carries {total:,} characters and the "
+            f"limit is {cap:,} (your message plus the conversation so far). "
+            "Shorten the message or start a new chat."))
+
+
 @router.post("/api/chat")
 async def chat(request: ChatRequest, req: Request, current_user: dict | None = Depends(optional_user)):
     # Latency clock starts at request arrival so the audit row records the
@@ -238,6 +274,13 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
     # reads it with .get() so a turn with no retrieval records NULLs.
     _rr_stats: dict = {}
     check_rate_limit(client_ip_from_request(req))
+    # Size before scan. A caller with no VALID session is bounded as a guest -
+    # except one presenting an expired token, who is a signed-in user about to
+    # be told 401 (the client refreshes on that and replays): the wider bound
+    # applies so a 413 cannot pre-empt the 401 they need. Parse cost is bounded
+    # before this line by the body ceiling (app/body_limit.py).
+    _check_request_size(request, guest=current_user is None
+                        and not getattr(req.state, "auth_token_invalid", False))
     check_injection(request.prompt)
 
     # Server-side origin validation - blocks cross-origin browser requests
@@ -312,14 +355,41 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
     record_request()
     increment("chat_requests_total")
 
-    if not request.model:
-        request.model = get_config("chat_model", "") or _config_or_default("default_model", DEFAULT_MODEL)
+    # WHICH MODEL ANSWERS. Guest spend gap (b), closed 2026-09-21: a guest
+    # never chooses - the request's model field is ignored and GUEST_MODEL,
+    # else the instance's own chain (the chat_model pin, else default_model),
+    # answers. It used to fill the field only when blank, and the provider is
+    # chosen by the name's prefix with no enable check at the dispatch site,
+    # so a guest named the model that bills. The same server-side rule now
+    # applies to EVERY caller when the operator turned model selection off:
+    # allow_model_selection hid the picker and nothing more, so a caller who
+    # typed the field still chose the provider (the allow_rag_toggle lesson -
+    # a control the operator disabled must not be honoured because a caller
+    # asserts it).
+    _pinned = (get_config("chat_model", "").strip()
+               or _config_or_default("default_model", DEFAULT_MODEL))
+    if current_user is None:
+        request.model = GUEST_MODEL or _pinned
+    elif not request.model or get_config("allow_model_selection", "true") != "true":
+        request.model = _pinned
     rag_threshold = float(_config_or_default("rag_similarity_threshold", str(RAG_SIMILARITY_THRESHOLD)))
 
     prompt = request.prompt
     rag_sources: list[str] = []
     rag_refused = False
     dept = current_user.get("department", "general") if current_user else None
+    # THE HELP LANE (2026-09-21): department="help" asks about the assistant
+    # itself. Honoured for EVERY caller the gate above admitted - a guest
+    # where the guest door is open, a signed-in user whose department is
+    # otherwise their account's - because the help collection holds the
+    # product's pages, not anyone's documents. Retrieval reads that collection
+    # ALONE (only_department), peers are never asked, and the answer is held
+    # to the pages even where RAG_ONLY_MODE is off. No new door: the guest
+    # gate ran already, unchanged. With HELP_DOCS off the value is ignored
+    # like any other department name, and the client shows no button.
+    help_mode = HELP_DOCS_SYNC and (request.department or "").strip().lower() == HELP_DEPARTMENT
+    if help_mode:
+        dept = HELP_DEPARTMENT
 
     from app.permissions import effective_level, OWNER_LEVEL
     # Caller's clearance level, resolved once and used for retrieval, the
@@ -347,7 +417,7 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
         use_rag = get_config("default_rag_enabled", "true") == "true"
     else:
         use_rag = request.use_rag
-    use_rag = use_rag or RAG_ONLY_MODE
+    use_rag = use_rag or RAG_ONLY_MODE or help_mode
 
     if use_rag:
         increment("rag_requests_total")
@@ -371,9 +441,13 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
         # stalls behind one chat turn - health checks and status polls
         # included. It does not make retrieval itself faster - it stops one
         # answer from freezing the instance.
+        # The help lane's scope rides only on the help lane: every other call
+        # keeps its exact keyword set, which the retrieval stubs in the suite
+        # pin.
+        _scope = {"only_department": True} if help_mode else {}
         context_results = await asyncio.get_running_loop().run_in_executor(
             None, lambda: retrieve(retrieval_query, department=dept,
-                                   user_level=caller_level, stats=_rr_stats))
+                                   user_level=caller_level, stats=_rr_stats, **_scope))
         # Filter by similarity threshold - always, not just in RAG_ONLY_MODE
         context_results = [r for r in context_results if r.get("score", 0) >= rag_threshold]
         if context_results:
@@ -386,7 +460,17 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
                 if s not in seen:
                     rag_sources.append(s)
                     seen.add(s)
-            if RAG_ONLY_MODE:
+            if help_mode:
+                prompt = (
+                    "The person is asking how to use this assistant itself. Answer using ONLY "
+                    "the help pages in the context below, in plain language, naming the exact "
+                    "buttons, menus and steps the pages name. If the pages do not cover the "
+                    "question, say so and suggest asking their administrator. Never invent a "
+                    "setting, a menu or a feature.\n\n"
+                    f"CONTEXT:\n{context}\n\n"
+                    f"QUESTION: {prompt}"
+                )
+            elif RAG_ONLY_MODE:
                 prompt = (
                     "Answer the question using ONLY the context below. "
                     "Do not use outside knowledge. If the context does not contain the answer, say so.\n\n"
@@ -400,7 +484,7 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
                     f"CONTEXT:\n{context}\n\n"
                     f"QUESTION: {prompt}"
                 )
-        elif RAG_ONLY_MODE:
+        elif RAG_ONLY_MODE or help_mode:
             rag_refused = True
 
     # Query enabled peer knowledge bases in parallel - returns raw chunks, no
@@ -419,7 +503,9 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
     # the access ladder - see query_kb_for_peer), and the CONSUME side decides
     # who may RECEIVE it, here. Both halves answer to the same ladder, and
     # neither depends on the other being honest.
-    if request.use_peers and caller_level < PEER_CONSUME_MIN_LEVEL:
+    if help_mode:
+        pass   # the help lane never asks a peer: product help is local by definition
+    elif request.use_peers and caller_level < PEER_CONSUME_MIN_LEVEL:
         logger.info("Peer query refused - caller level %d below floor %d",
                     caller_level, PEER_CONSUME_MIN_LEVEL)
         log("peer_query_refused", caller_level=caller_level,
@@ -492,15 +578,22 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
         upsert_session_meta(request.session_id, name=auto_name, user_id=uid)
 
     log("chat_request", session_id=request.session_id, model=request.model,
-        use_rag=use_rag, rag_sources=rag_sources, rag_refused=rag_refused)
+        use_rag=use_rag, rag_sources=rag_sources, rag_refused=rag_refused,
+        help_mode=help_mode)
 
     def generate():
         if rag_refused:
-            refusal = (
-                "I can only answer questions based on the documents in my knowledge base. "
-                "I don't have relevant information to answer that question. "
-                "Please ask something related to the available content."
-            )
+            if help_mode:
+                refusal = (
+                    "I don't have a help page that covers that. Try asking it another "
+                    "way, or ask your administrator."
+                )
+            else:
+                refusal = (
+                    "I can only answer questions based on the documents in my knowledge base. "
+                    "I don't have relevant information to answer that question. "
+                    "Please ask something related to the available content."
+                )
             save_message(request.session_id, "assistant", refusal, request.model, user_id=uid)
             if ENABLE_AUDIT_LOG:
                 log_audit_entry(
@@ -572,7 +665,9 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
             else:
                 yield f"data: {json.dumps({'context_warning': True})}\n\n"
 
-        tools = get_active_tools() if supports_tools(request.model) else []
+        # No tools on the help lane: a help answer comes from the pages alone,
+        # never from a workspace file the agent tools could read.
+        tools = [] if help_mode else (get_active_tools() if supports_tools(request.model) else [])
         # IDENTITY CARD BY CLEARANCE (2026-09-11): the owner's profile used to
         # ship on EVERY turn regardless of tier, while content of that kind
         # is Owner-only for retrieval - disclosure was mediated by a prompt
@@ -793,3 +888,39 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
             yield f"data: {json.dumps({'error': 'The assistant failed to complete this answer.', 'error_id': error_id})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@router.get("/api/help/page")
+async def help_page(name: str, req: Request, user: dict | None = Depends(optional_user)):
+    """One help page, for the citation chip under a help answer (2026-09-21).
+
+    Gated EXACTLY like chat - a signed-in account, or a guest where the guest
+    door is open - because a page the assistant just quoted to you is not more
+    sensitive than the answer, and no wider, because these are the product's
+    pages, not a public docs site. Membership-gated inside help_docs.read_page
+    (the name must equal a listed page; no path is ever joined from it).
+    Listed in auth.EXCLUDED_PATHS beside /api/chat for the same reason chat
+    is: on an ENABLE_AUTH=true instance with the guest door open, a guest
+    could otherwise hold a help conversation and get a middleware 401 on
+    every citation. Off with the lane: HELP_DOCS=false answers 404."""
+    if not HELP_DOCS_SYNC:
+        raise HTTPException(status_code=404, detail="In-product help is off on this instance.")
+    # The three pre-gate checks chat runs, in chat's order: the origin
+    # allowlist (same-origin always passes, exactly as in the chat handler,
+    # whose block above is the canonical, commented form), the stale-token 401
+    # (the client's silent-refresh signal), then the guest door.
+    if not _allow_all:
+        origin = req.headers.get("origin", "")
+        host = req.headers.get("host", "")
+        same_origin = bool(host) and origin.split("://", 1)[-1] == host
+        if origin and origin not in _all_origins and not same_origin:
+            raise HTTPException(status_code=403, detail="Origin not allowed")
+    if user is None and getattr(req.state, "auth_token_invalid", False):
+        raise HTTPException(status_code=401, detail="Session expired - sign in again.")
+    if user is None and not guest_chat_available():
+        raise HTTPException(status_code=403, detail="Sign in to read the help pages.")
+    from app import help_docs
+    text = help_docs.read_page(name)
+    if text is None:
+        raise HTTPException(status_code=404, detail="No such help page")
+    return {"name": name, "content": text}

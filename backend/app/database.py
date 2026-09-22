@@ -39,6 +39,22 @@ client = chromadb.PersistentClient(
 
 GLOBAL_COLLECTION = "knowledge_base"
 
+# THE HELP COLLECTION (in-product help, ported 2026-09-21): the product's own
+# help pages, synced from the image at boot (app/help_docs.py). It uses the
+# department machinery (add/search/delete by department name) but it is NOT a
+# department: it never appears in the department list, the residue report,
+# the source listing, the document count, the corpus fingerprint, or the
+# injection and PII source lists. _is_corpus_collection is the ONE predicate
+# every corpus-wide enumeration uses, so a new enumeration inherits the
+# exclusion the way a new ingestion path inherits the injection gate.
+HELP_DEPARTMENT = "help"
+HELP_COLLECTION = "kb_help"   # == _collection_name(HELP_DEPARTMENT), pinned by a test
+
+
+def _is_corpus_collection(name: str) -> bool:
+    """A kb_* DEPARTMENT collection - the global and help collections are not."""
+    return name.startswith("kb_") and name not in (GLOBAL_COLLECTION, HELP_COLLECTION)
+
 
 def collection_metadata() -> dict:
     """The ONE metadata dict every collection is created with. The hnsw
@@ -532,11 +548,17 @@ def add_documents_batch(entries: list[tuple[str, str, dict]],
 
 
 def query_similar(query: str, n_results: int = 5,
-                  department: str | list[str] | None = None) -> list[dict]:
+                  department: str | list[str] | None = None,
+                  only_department: bool = False) -> list[dict]:
     """Hybrid vector + BM25 search. Merges the global KB with each department
     KB given. Accepts a single department or a list (e.g. the user's own
     department plus a query-routed one - see app/routing.py); the global
-    collection is always queried."""
+    collection is always queried.
+
+    only_department=True reads the named department's collection ALONE, with
+    no global merge - the help lane (2026-09-21): product help must never be
+    answered from the operator's documents, and it is the one caller that
+    wants exactly one collection."""
     embedding = _embed(query)
     fetch_k = max(n_results * 2, 10)
 
@@ -545,7 +567,7 @@ def query_similar(query: str, n_results: int = 5,
     all_metas: list[dict] = []
 
     departments = [department] if isinstance(department, str) else list(department or [])
-    collections_to_query = [_get_collection()]  # always include global
+    collections_to_query = [] if only_department else [_get_collection()]  # global unless scoped
     seen_names = {GLOBAL_COLLECTION}
     for dept in departments:
         if not dept or dept == "general":
@@ -639,8 +661,7 @@ def list_sources(department: str | None = None) -> list[dict]:
 
     # Aggregate across all collections
     all_collections = [GLOBAL_COLLECTION] + [
-        c.name for c in client.list_collections()
-        if c.name.startswith("kb_") and c.name != GLOBAL_COLLECTION
+        c.name for c in client.list_collections() if _is_corpus_collection(c.name)
     ]
     merged: dict[tuple[str, str], int] = {}
     for col_name in all_collections:
@@ -735,7 +756,7 @@ def _department_partition() -> tuple[list[str], list[str]]:
     """
     real, residue = [], []
     for col in client.list_collections():
-        if not col.name.startswith("kb_") or col.name == GLOBAL_COLLECTION:
+        if not _is_corpus_collection(col.name):
             continue
         try:
             n = col.count()
@@ -788,6 +809,8 @@ def count_documents(department: str | None = None) -> int:
         return col.count() if col is not None else 0
     total = 0
     for col in client.list_collections():
+        if col.name == HELP_COLLECTION:
+            continue   # product help pages are not the operator's documents
         try:
             total += col.count()
         except Exception:
@@ -801,8 +824,7 @@ def list_injection_flagged_sources() -> list[dict]:
     (tagged-not-quarantined content; quarantined content never reaches the
     index and lives in the quarantined_docs table instead)."""
     all_collection_names = [GLOBAL_COLLECTION] + [
-        c.name for c in client.list_collections()
-        if c.name.startswith("kb_") and c.name != GLOBAL_COLLECTION
+        c.name for c in client.list_collections() if _is_corpus_collection(c.name)
     ]
     flagged: dict[tuple, dict] = {}
     for col_name in all_collection_names:
@@ -829,8 +851,7 @@ def list_injection_flagged_sources() -> list[dict]:
 def list_pii_sources() -> list[dict]:
     """Return unique sources that were flagged during PII scanning."""
     all_collection_names = [GLOBAL_COLLECTION] + [
-        c.name for c in client.list_collections()
-        if c.name.startswith("kb_") and c.name != GLOBAL_COLLECTION
+        c.name for c in client.list_collections() if _is_corpus_collection(c.name)
     ]
     flagged: dict[tuple, dict] = {}
     for col_name in all_collection_names:

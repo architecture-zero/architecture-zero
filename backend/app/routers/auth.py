@@ -534,12 +534,17 @@ def auth_config():
     eventually offer a guest door the server refuses. It discloses nothing new:
     posting to /api/chat already answers the same question, and less politely.
     """
-    from app.runtime_config import guest_chat_available
+    from app.runtime_config import guest_chat_available, HELP_DOCS_SYNC
     from app.config import get_config
     return {
         "needs_setup": not owner_exists(),
         "auth_mode": "local",
         "guest_mode_enabled": guest_chat_available(),
+        # In-product help (2026-09-21): whether the chat shell shows the Help
+        # button. Public for the same reason guest_mode_enabled is - a guest
+        # never reaches /api/config, and a button that sends a lane the server
+        # ignores would be a control that does nothing.
+        "help_enabled": HELP_DOCS_SYNC,
         # Guests never reach /api/config, so the chat client had no way to learn
         # this and rendered the retrieval toggle unconditionally - including on
         # instances where the operator had turned it off. The server enforces the

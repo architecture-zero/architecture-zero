@@ -82,6 +82,12 @@ EXCLUDED_PATHS = {
     "/api/auth/config",
     "/api/auth/mfa/complete",
     "/api/chat",
+    # In-product help (2026-09-21): the help page behind a citation chip,
+    # self-gated in the handler EXACTLY like /api/chat (a signed-in account,
+    # or a guest where the guest door is open). Without this line a guest on
+    # an ENABLE_AUTH=true instance could hold a help conversation and get a
+    # middleware 401 on every citation.
+    "/api/help/page",
     "/api/trust",
     "/api/version",
     "/api/backup-status",

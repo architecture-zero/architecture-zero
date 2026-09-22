@@ -55,6 +55,11 @@ def add_user(request: CreateUserRequest, current_user: dict = Depends(require_pe
     # Re-authentication precedes the authority checks below, so a wrong
     # password learns nothing about the ceilings either.
     require_step_up(current_user, request.current_password, "create an account")
+    # An account IN the reserved help department would have the product's
+    # help pages merged into its NORMAL answers (2026-09-21) - a department
+    # resolves through the same machinery. Refused at both department doors.
+    from app.help_docs import refuse_reserved_department
+    refuse_reserved_department(request.department)
     if request.role not in ("owner", "admin", "member"):
         raise HTTPException(status_code=400, detail="role must be 'owner', 'admin', or 'member'")
     # Only an Owner can mint another Owner - an Admin holds manage_users but
@@ -133,6 +138,8 @@ def change_role(user_id: int, body: dict, current_user: dict = Depends(require_p
 @router.patch("/api/users/{user_id}/department")
 def change_department(user_id: int, body: dict, current_user: dict = Depends(require_permission("manage_users"))):
     dept = body.get("department", "general").strip() or "general"
+    from app.help_docs import refuse_reserved_department
+    refuse_reserved_department(dept)   # same reason as add_user: the other door
     update_user_department(user_id, dept)
     log("auth_change_dept", admin_id=current_user["id"], target_user_id=user_id, department=dept)
     return {"status": "updated"}
