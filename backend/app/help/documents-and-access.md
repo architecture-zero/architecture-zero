@@ -26,7 +26,7 @@ The usual reasons, in order of likelihood:
 
 1. It is not in the assistant yet. A file in the server folder is picked up within moments; an uploaded file is in as soon as the upload finishes. Your administrator can see the full list under Knowledge Base.
 2. It is in a department above your tier.
-3. It was withheld. Documents from outside sources are checked for hidden instructions when they are added; a suspicious one is held instead of being indexed. Administrators see it under Quarantine; the owner decides whether to release it.
+3. It was withheld. Documents from outside sources are checked for hidden instructions when they are added; a suspicious one is held instead of being indexed. Administrators see it under Quarantine for the departments their clearance covers; the owner sees every department and decides whether to release it.
 4. Its file type is not one the assistant can read.
 
 ## Checking what the assistant knows

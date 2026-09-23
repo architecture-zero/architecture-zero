@@ -74,8 +74,9 @@ def _route_protected(route) -> bool:
         return True
     # /metrics guards itself through _metrics_auth, which calls get_current_user
     # from inside its body rather than declaring it - it has to, because it
-    # accepts EITHER a session or the METRICS_TOKEN scrape credential, and a
-    # declared dependency would enforce the session before the token is read.
+    # accepts EITHER a session holding view_analytics or the METRICS_TOKEN
+    # scrape credential, and a declared dependency would enforce the session
+    # before the token is read.
     # So this sweep cannot see the guard, and it is right that it could not.
     #
     # The exception is not taken on trust: test_a_protected_route_actually_401s_

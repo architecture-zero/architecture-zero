@@ -339,7 +339,8 @@ def health_detailed(current_user: dict = Depends(require_owner)):
 #
 # METRICS_TOKEN is the missing credential: a long-lived static secret that opens
 # THIS ONE read-only endpoint and nothing else. UNSET BY DEFAULT, in which case
-# the behaviour here is exactly what it was - a valid user session or nothing.
+# only the session half below applies - a session holding view_analytics, or
+# nothing.
 # Compared with compare_digest because a scrape token is guessable by timing
 # otherwise, and an empty or whitespace value is treated as unset so a blank
 # line in .env cannot open the endpoint to everyone.

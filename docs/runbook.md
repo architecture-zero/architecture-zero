@@ -274,7 +274,8 @@ and the admin roster carries the same field per user.
   and the output-side PII mode on answers with the types it masks), provider
   config, agent-tool gates.
 - GET /metrics - Prometheus counters. Authenticated: a signed-in request
-works, and for a scraper set METRICS_TOKEN in the backend environment
+holding `view_analytics` (the Owner, or the Admin preset) works, and for a
+scraper set METRICS_TOKEN in the backend environment
 and send it as a bearer. A user session cannot serve a scraper - access
 tokens expire in 30 minutes and Prometheus cannot refresh one. The
 Monitoring tab's downloadable scrape config already carries the right
