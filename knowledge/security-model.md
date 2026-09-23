@@ -69,7 +69,8 @@ never touch.
 A session alone cannot create durable authority. Every write that creates or
 raises it - creating an account, changing a role, a permissions write that
 adds manage_users or manage_system, registering or changing a federation
-peer - re-asks the caller's own password (`jwt_auth.require_step_up`), so a
+peer, changing the provider settings (the egress address and every provider
+key) - re-asks the caller's own password (`jwt_auth.require_step_up`), so a
 stolen or unattended session cannot mint an account that outlives it. The
 same rule covers the two self-service credential doors: changing your
 username (the route re-issues the token pair, a fresh refresh token
