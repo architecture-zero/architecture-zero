@@ -276,8 +276,8 @@ Stated here rather than discovered later. Each is tracked in
   scales up, not out.
 - **`/metrics` needs `METRICS_TOKEN` for a scraper.** A user session expires
   faster than a scrape interval matters, so set the static token if you want
-  Prometheus to pull. Unset, the endpoint is still reachable with a normal
-  signed-in request.
+  Prometheus to pull. Unset, the endpoint is still reachable with a signed-in
+  request that holds `view_analytics` (the Owner, or the Admin preset).
 - **The client is a reference implementation.** It exercises the whole API
   and is what the acceptance suite drives, but it is a starting point to
   build on rather than a finished product surface.

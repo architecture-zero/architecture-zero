@@ -47,7 +47,9 @@ render-time exfiltration channel.
 A clearance level guards content at every surface that could serve it:
 retrieval drops departments above the caller's level (including
 query-routed ones), the assistant's file tools refuse reads above level
-(and hide even the NAMES of higher-tier files in listings and searches),
+(and hide even the NAMES of higher-tier files in listings and searches -
+the admin panel's source listings and its quarantine queue follow the same
+rule, showing only the departments the caller's level clears),
 the answer layer itself carries a non-owner rule that refuses to
 recount internal operational history even if fragments of it leaked into
 general-floor context, and federation gates both directions - a peer

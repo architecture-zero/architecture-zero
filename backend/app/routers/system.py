@@ -358,9 +358,17 @@ async def _metrics_auth(request: Request, credentials=Depends(oauth2_scheme)):
             if secrets.compare_digest(presented.encode("utf-8"), token.encode("utf-8")):
                 return {"id": None, "username": "metrics-scraper", "role": "scraper"}
     # No scrape token, or it did not match: fall back to a real session, which
-    # keeps the endpoint reachable from the admin UI and from a signed-in curl,
-    # and keeps the 401 identical to what it was when METRICS_TOKEN is unset.
-    return await get_current_user(credentials)
+    # keeps the endpoint reachable from a signed-in curl and keeps the 401
+    # identical to what it was when METRICS_TOKEN is unset. The session must
+    # hold view_analytics (the Owner, or the Admin preset) - counters are
+    # usage stats, which is what that scope names; since 2026-09-23, matching
+    # the forks' token-or-analytics guard.
+    from fastapi import HTTPException
+    from app.permissions import effective_permissions, is_owner
+    user = await get_current_user(credentials)
+    if not is_owner(user) and "view_analytics" not in effective_permissions(user):
+        raise HTTPException(status_code=403, detail="Permission required: view_analytics")
+    return user
 
 
 @router.get("/metrics")

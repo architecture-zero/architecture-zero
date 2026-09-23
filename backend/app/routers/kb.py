@@ -55,33 +55,55 @@ class IngestRequest(BaseModel):
     department: str = "general"
 
 
+def _clears_department(current_user: dict, department: str | None) -> bool:
+    """The read axis for a listing or review row: the caller's clearance
+    level must reach the department's floor (rag_config.DEPARTMENT_MIN_LEVEL;
+    an unlisted department fails closed to Owner-only). manage_kb is the
+    action scope; the level decides what the listing may show, the same rule
+    the file tools apply to directory listings. Since 2026-09-23."""
+    from app.permissions import effective_level
+    from app.rag_config import department_min_level
+    return effective_level(current_user) >= department_min_level(department)
+
+
+def _sources_the_caller_clears(current_user: dict, sources: list[dict]) -> list[dict]:
+    return [s for s in sources if _clears_department(current_user, s.get("department"))]
+
+
 @router.get("/api/admin/pii-sources")
 def admin_pii_sources(current_user: dict = Depends(require_permission("manage_kb"))):
-    """Return all sources flagged during PII scanning."""
-    return {"sources": list_pii_sources(), "mode": PII_SCAN_MODE}
+    """Sources flagged during PII scanning, limited to the departments the
+    caller's level clears."""
+    return {"sources": _sources_the_caller_clears(current_user, list_pii_sources()),
+            "mode": PII_SCAN_MODE}
 
 
 # -- Injection gate: quarantine review ----------------------------------------
 
 @router.get("/api/admin/injection-sources")
 def admin_injection_sources(current_user: dict = Depends(require_permission("manage_kb"))):
-    """Sources carrying INDEXED-but-flagged chunks (tagged, not withheld)."""
+    """Sources carrying INDEXED-but-flagged chunks (tagged, not withheld),
+    limited to the departments the caller's level clears."""
     from app.database import list_injection_flagged_sources
     from app.corpus_scan import INJECTION_SCAN_MODE
-    return {"sources": list_injection_flagged_sources(), "mode": INJECTION_SCAN_MODE}
+    return {"sources": _sources_the_caller_clears(current_user, list_injection_flagged_sources()),
+            "mode": INJECTION_SCAN_MODE}
 
 
 @router.get("/api/admin/kb/quarantine")
 def admin_list_quarantine(status: str = "held",
                           current_user: dict = Depends(require_permission("manage_kb"))):
     """Content the injection gate WITHHELD from the corpus, awaiting review.
-    Owner-only decision surface (manage_kb), newest first."""
+    A manage_kb surface, newest first, showing only the rows whose department
+    the caller's level clears (the Owner sees every row). Release stays
+    Owner-only below."""
     from app.models import QuarantinedDoc
     with get_session() as db:
         q = db.query(QuarantinedDoc)
         if status:
             q = q.filter(QuarantinedDoc.status == status)
-        rows = q.order_by(QuarantinedDoc.id.desc()).all()
+        rows = [r for r in q.order_by(QuarantinedDoc.id.desc()).all()
+                if _clears_department(current_user, r.department)]
         return {"items": [
             {"id": r.id, "source": r.source, "department": r.department,
              "trust_tier": r.trust_tier,
@@ -192,11 +214,12 @@ def admin_release_quarantine(item_id: int,
 def admin_delete_quarantine(item_id: int,
                             current_user: dict = Depends(require_permission("manage_kb"))):
     """Discard held content - it was never indexed, so this just marks the
-    review row deleted (the text is retained for audit unless purged)."""
+    review row deleted (the text is retained for audit unless purged). A row
+    above the caller's level answers as absent, matching the listing."""
     from app.models import QuarantinedDoc
     with get_session() as db:
         row = db.get(QuarantinedDoc, item_id)
-        if not row:
+        if not row or not _clears_department(current_user, row.department):
             raise HTTPException(status_code=404, detail="No quarantine item with that id.")
         row.status = "deleted"
         row.reviewed_at = _dt.datetime.utcnow().isoformat()
@@ -270,7 +293,10 @@ def ingest(request: IngestRequest, current_user: dict = Depends(require_permissi
 
 @router.get("/api/ingest/sources")
 def get_sources(department: str | None = None, current_user: dict = Depends(require_permission("manage_kb"))):
-    return {"sources": list_sources(department=department)}
+    # Limited to the departments the caller's level clears. An explicit
+    # ?department= above the caller's level lists nothing rather than
+    # refusing: the department names are code, not a secret.
+    return {"sources": _sources_the_caller_clears(current_user, list_sources(department=department))}
 
 
 @router.post("/api/kb/sync")
@@ -299,9 +325,16 @@ def kb_files(current_user: dict = Depends(require_permission("manage_kb"))):
     if not os.path.isdir(KNOWLEDGE_DIR):
         return {"files": [], "directory": KNOWLEDGE_DIR}
     ingested_names = {s["source"] for s in list_sources()}
+    # A knowledge-root file's department is what the classifier says
+    # (rag_config.dept_for_source, by the same name the sync stamps: a
+    # top-level file is keyed by p.name); a name above the caller's level is
+    # left out of the listing.
+    from app.rag_config import dept_for_source
     files = []
     for p in sorted(pathlib.Path(KNOWLEDGE_DIR).iterdir()):
         if p.is_file() and p.suffix.lower() in _WATCHED_EXTS:
+            if not _clears_department(current_user, dept_for_source(p.name)):
+                continue
             stat = p.stat()
             files.append({
                 "name":     p.name,

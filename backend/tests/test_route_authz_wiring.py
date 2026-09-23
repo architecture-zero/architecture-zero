@@ -187,6 +187,11 @@ REQUIRED_GUARD = {
     ("GET", "/api/admin/injection-sources"): "require_permission:manage_kb",
     ("GET", "/api/admin/jobs"): "require_permission:manage_kb",
     ("POST", "/api/admin/kb/prune-orphans"): "require_owner",
+    # The declared guard is the scope; the read axis runs in the body since
+    # 2026-09-23 - the list shows, and discard reaches, only rows whose
+    # department the caller's level clears, and release stays Owner-only
+    # in the body. Carried by test_read_axis_listings.py and
+    # test_corpus_scan.py::test_quarantine_release_requires_owner.
     ("GET", "/api/admin/kb/quarantine"): "require_permission:manage_kb",
     ("DELETE", "/api/admin/kb/quarantine/{item_id}"): "require_permission:manage_kb",
     ("POST", "/api/admin/kb/quarantine/{item_id}/release"): "require_permission:manage_kb",
@@ -233,6 +238,9 @@ REQUIRED_GUARD = {
     ("POST", "/api/ingest"): "require_permission:manage_kb",
     ("GET", "/api/ingest/departments"): "require_permission:manage_kb",
     ("DELETE", "/api/ingest/source/{source}"): "require_permission:manage_kb",
+    # The four source listings (this one, kb/files, pii-sources and
+    # injection-sources) omit entries above the caller's level in the body
+    # since 2026-09-23 - test_read_axis_listings.py carries the claim.
     ("GET", "/api/ingest/sources"): "require_permission:manage_kb",
     ("POST", "/api/ingest/upload"): "require_permission:manage_kb",
     ("GET", "/api/kb/files"): "require_permission:manage_kb",
@@ -267,27 +275,31 @@ REQUIRED_GUARD = {
     ("PATCH", "/api/users/{user_id}/permissions"): "require_permission:manage_users",
     ("PATCH", "/api/users/{user_id}/role"): "require_permission:manage_users",
     ("GET", "/api/version"): "public",
-    # _metrics_auth delegates to get_current_user unless METRICS_TOKEN is set
-    # AND matches - a scraper cannot hold a 30-minute session. Unset (the
-    # default) this route behaves exactly as it did.
+    # _metrics_auth admits the METRICS_TOKEN scrape credential (a scraper
+    # cannot hold a 30-minute session) or, since 2026-09-23, a session that
+    # holds view_analytics. Unset (the default) the token half does nothing.
+    # test_read_axis_listings.py::test_metrics_session_fallback_needs_view_analytics
+    # carries the session half.
     ("GET", "/metrics"): "_metrics_auth",
 }
 
-# _metrics_auth ranks WITH get_current_user, and the reason it needs an entry
-# at all is worth stating: this sweep reads DECLARED dependencies, and
-# _metrics_auth calls get_current_user from inside its own body rather than
-# declaring it. Statically the route therefore looks unguarded, and the sweep
-# said so - correctly, on the evidence it can see. It is not unguarded: with
+# _metrics_auth ranks WITH require_permission (2): its session half admits
+# only a caller holding view_analytics. The reason it needs an entry at all is
+# worth stating: this sweep reads DECLARED dependencies, and _metrics_auth
+# calls get_current_user from inside its own body rather than declaring it.
+# Statically the route therefore looks unguarded, and the sweep said so -
+# correctly, on the evidence it can see. It is not unguarded: with
 # METRICS_TOKEN unset the route 401s exactly as before, and the token only ever
 # opens /metrics.
 #
 # A name in this table is a claim the static scan cannot verify, so the claim is
 # carried by BEHAVIOUR instead - test_hardening.py's three METRICS_TOKEN tests
 # assert the 401 with no token, the 401 on a wrong or blank one, and that the
-# token authenticates nothing but this endpoint. If those are ever deleted, this
+# token authenticates nothing but this endpoint; test_read_axis_listings.py
+# asserts the scope on the session half. If those are ever deleted, this
 # entry becomes an unbacked assertion and should go with them.
 _RANK = {"require_owner": 3, "require_permission": 2, "get_current_user": 1,
-         "_metrics_auth": 1, "optional_user": 0, "public": -1}
+         "_metrics_auth": 2, "optional_user": 0, "public": -1}
 
 
 def _rank(ident: str) -> int:
@@ -332,13 +344,30 @@ def _guard_identity(route) -> str:
 
 
 def _actual_guards():
+    """(METHOD, path) -> the strongest declared guard, FIRST registration
+    wins. Starlette matches routes in registration order, so when two routes
+    share a method and path the first one answers every request and the
+    second is dead code. setdefault mirrors the router (this assigned with
+    `=` until 2026-09-23, so the LAST registration described the pair);
+    test_no_two_routes_share_a_method_and_path refuses the duplicate itself."""
     out = {}
     for route in app.routes:
         if not isinstance(route, APIRoute):
             continue
         for method in route.methods - {"HEAD", "OPTIONS"}:
-            out[(method, route.path)] = _guard_identity(route)
+            out.setdefault((method, route.path), _guard_identity(route))
     return out
+
+
+def _registrations():
+    """Every (METHOD, path) registration, duplicates included."""
+    seen = []
+    for route in app.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        for method in route.methods - {"HEAD", "OPTIONS"}:
+            seen.append((method, route.path))
+    return seen
 
 
 def test_no_route_silently_drops_to_a_weaker_privilege_level():
@@ -384,3 +413,30 @@ def test_the_pin_covers_every_route():
     assert len(_actual_guards()) == 99, (
         f"expected 99 routes, found {len(_actual_guards())} - a router failed "
         "to register, or routes were added without updating this count")
+
+
+def test_no_two_routes_share_a_method_and_path():
+    """A second registration of one (METHOD, path) is dead code with a guard
+    nobody runs - Starlette answers from the first - and a pin that read the
+    LAST one could describe a live route by its shadow's guard. Refused
+    outright: there is no legitimate duplicate."""
+    regs = _registrations()
+    dupes = sorted({r for r in regs if regs.count(r) > 1})
+    assert not dupes, f"(method, path) registered more than once: {dupes}"
+
+
+def test_the_pin_literal_has_no_duplicate_keys():
+    """The other half of last-write-wins: a Python dict literal keeps the LAST
+    of two equal keys silently, so a pin edited in two places would read as
+    whichever line came later. Read from the source, not the dict."""
+    import ast
+    from pathlib import Path
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    literal = next(
+        node.value for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "REQUIRED_GUARD" for t in node.targets))
+    keys = [ast.literal_eval(k) for k in literal.keys]
+    dupes = sorted({k for k in keys if keys.count(k) > 1})
+    assert not dupes, f"REQUIRED_GUARD pins the same route twice: {dupes}"
+    assert len(keys) == len(REQUIRED_GUARD)
