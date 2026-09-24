@@ -278,3 +278,54 @@ def test_the_mfa_posture_is_not_readable_without_the_claim_code(
 
     assert r.status_code == 401, r.text
     assert "REQUIRE_MFA" not in r.text
+
+
+# -- The signal that routes an operator to the claim screen --------------------
+#
+# Two public reads carry it: /api/auth/config, which the reference frontend
+# boots on, and /api/auth/needs-setup, the bare probe the claim screen names
+# for anyone checking by hand. Both are pinned so neither key can be renamed
+# silently under the client built against it.
+
+def _signals(client):
+    return (client.get("/api/auth/config").json()["needs_setup"],
+            client.get("/api/auth/needs-setup").json()["needs_setup"])
+
+
+def test_config_says_needs_setup_on_an_unclaimed_deployment(client, unclaimed):
+    """The only branch that matters on a fresh deploy, and the one the lab
+    normally cannot reach - the session fixture claims the deployment before
+    anything runs. Without this the frontend redirect is untested in the
+    direction that fires, and a refactor could invert it silently."""
+    assert _signals(client) == (True, True)
+
+
+def test_config_says_no_setup_needed_once_claimed(client):
+    """The steady state: every existing deployment, every reload after the
+    first. If this ever returns True the boot handler bounces signed-out
+    visitors to a claim form whose code was burned at first claim - a dead end
+    replacing a working login screen."""
+    assert _signals(client) == (False, False)
+
+
+def test_a_broken_owner_check_fails_toward_claimed_and_says_so(client, monkeypatch):
+    """The except branch, which is otherwise green either way: the claimed-state
+    test asserts False, which is also what a silent failure returns. Without
+    this a refactor that makes owner_exists() raise would answer needs_setup
+    False to a genuinely fresh deployment with nothing on screen and nothing
+    in the log to say so.
+
+    Fails toward "claimed" on purpose: a flaky claimed deployment must never
+    invite a visitor to claim it. The log line is half the control - a wrong
+    answer that announces itself is recoverable, a silent one is not."""
+    def boom():
+        raise RuntimeError("no such column: users.is_active")
+
+    calls = []
+    monkeypatch.setattr(auth_route_mod, "owner_exists", boom)
+    monkeypatch.setattr(auth_route_mod, "log_error",
+                        lambda event, **kw: calls.append((event, kw)))
+
+    assert _signals(client) == (False, False)
+    assert [e for e, _ in calls] == ["auth_needs_setup_failed"] * 2
+    assert "no such column" in calls[0][1]["error"]

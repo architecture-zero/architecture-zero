@@ -34,7 +34,7 @@ from app.jwt_auth import (authenticate_user, create_access_token,
                           create_mfa_challenge_token, decode_mfa_challenge_token,
                           refuse_if_mfa_seed_stranded, require_step_up,
                           MAX_LOGIN_ATTEMPTS, LOCKOUT_DURATION_MINUTES)
-from app.logger import log
+from app.logger import log, log_error
 from app.metrics import increment
 from app.permissions import effective_permissions
 from app.security import (check_setup_rate_limit, check_auth_rate_limit,
@@ -520,9 +520,35 @@ def change_username(request: ChangeUsernameRequest, current_user: dict = Depends
     }
 
 
+def _needs_setup() -> bool:
+    """Whether this deployment is still unclaimed - the one bit the reference
+    frontend's boot handler routes on, read before any session exists.
+
+    Wrapped, unlike owner_exists()'s other call sites, because this app
+    registers no exception handlers: an unwrapped database fault on a pre-auth
+    read is a bare 500 that takes the rest of the public config down with it
+    (the login screen then renders blind) and leaves nothing in the log to say
+    what broke. Defaults to "claimed" because the wrong direction is the
+    expensive one - a flaky CLAIMED deployment must never invite a visitor to
+    claim it, while a flaky unclaimed one merely fails to offer the shortcut
+    (#setup still works by hand, and the claim endpoint reads the database
+    again for itself). The log line is the other half of the control: a wrong
+    answer that announces itself is recoverable, a silent one is not.
+
+    This hands claimed-ness to anonymous callers. Acceptable only because the
+    boot-minted claim code closed the race behind it - exposing this signal
+    without that code in place would re-open what the code was added to shut.
+    """
+    try:
+        return not owner_exists()
+    except Exception as e:
+        log_error("auth_needs_setup_failed", error=str(e))
+        return False
+
+
 @router.get("/api/auth/needs-setup")
 def check_needs_setup():
-    return {"needs_setup": not owner_exists()}
+    return {"needs_setup": _needs_setup()}
 
 
 @router.get("/api/auth/config")
@@ -537,7 +563,7 @@ def auth_config():
     from app.runtime_config import guest_chat_available, HELP_DOCS_SYNC
     from app.config import get_config
     return {
-        "needs_setup": not owner_exists(),
+        "needs_setup": _needs_setup(),
         "auth_mode": "local",
         "guest_mode_enabled": guest_chat_available(),
         # In-product help (2026-09-21): whether the chat shell shows the Help
