@@ -64,7 +64,8 @@ interface SysStatus {
   rag_only_mode?: boolean
   agent_tools?: { agent_enabled: boolean }
   provider?: { provider: string }
-  // Optional on purpose: the slim unauth payload omits most of these already,
+  // Optional on purpose: /api/status requires a login on this backend, so the
+  // boot decision never reads it from here (it comes from /api/auth/config),
   // and a backend predating this key must not become a type error.
   needs_setup?: boolean
 }
@@ -685,16 +686,17 @@ export default function App() {
             localStorage.removeItem('az_jwt_token')
           } catch { /* fall through to the unauthenticated paths */ }
         }
-        // Nobody to sign in as yet: route the operator to the wizard instead of
-        // a login screen with no account behind it. AFTER the token restore, not
-        // before - this repo has no last-admin guard, so deactivating the last
-        // admin flips needs_setup back to true on a CLAIMED instance, and a
-        // signed-in user must not be bounced to a claim form whose code was
-        // burned at first claim.
+        // Nobody to sign in as yet: route the operator to the claim screen
+        // instead of a login screen with no account behind it. AFTER the token
+        // restore, not before - the backend refuses to deactivate or demote the
+        // last Owner (routers/users.py), so needs_setup flips back to true on a
+        // CLAIMED deployment only by a database edit, but a signed-in user must
+        // still never be bounced to a claim form whose code was burned at first
+        // claim.
         //
         // The reload is load-bearing: main.tsx builds `page` once at module
         // scope with no hashchange listener, so setting the hash alone renders
-        // nothing. It cannot loop - at '#setup' main.tsx picks Setup over App,
+        // nothing. It cannot loop - at '#setup' main.tsx picks Claim over App,
         // so this effect never mounts again; the hash check in
         // wantsSetupRedirect is belt-and-braces for whoever adds a hashchange
         // listener later.
