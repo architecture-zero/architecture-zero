@@ -311,7 +311,7 @@ def _rank(ident: str) -> int:
     return _RANK.get(ident.split(":", 1)[0], -1)
 
 
-# The guard callables THEMSELVES, keyed by identity (2026-09-23, Kin's 1b) -
+# The guard callables THEMSELVES, keyed by identity (2026-09-23) -
 # the objects the app imports, so a route's dependency is matched only if it
 # IS one of them. _RANK above keeps the names for the pinned strings;
 # this map is what _guard_identity reads. require_permission's closures are
@@ -352,14 +352,14 @@ def _permission_scope(fn):
 def _guard_identity(route) -> str:
     """The STRONGEST guard on the route, rendered as a comparable string.
 
-    Matched by IDENTITY since 2026-09-23 (Kin's 1b, template first): the
+    Matched by IDENTITY since 2026-09-23: the
     callable in the dependency tree must BE the guard the ladder names - the
     object the app itself imports - or, for require_permission's closures,
     share that factory's inner code object. Until then the match read
     __name__ / __qualname__, so a local look-alike named like the apex guard,
     or a local require_permission factory, that checked nothing pinned as the
-    real thing and passed every test in this file (reproduced on Kin
-    2026-09-22, cont. 9). test_the_guard_match_is_by_identity_not_name carries
+    real thing and passed every test in this file (reproduced on a downstream
+    instance 2026-09-22). test_the_guard_match_is_by_identity_not_name carries
     the proof."""
     acc = []
     _dep_callables(route.dependant, acc)
@@ -479,7 +479,7 @@ def test_the_guard_match_is_by_identity_not_name():
     """A local look-alike named like a real guard checks nothing and must not
     read as that guard: until 2026-09-23 the match read __name__ and
     __qualname__, so both forgeries below pinned as the real thing and passed
-    every test in this file (Kin, 2026-09-22 cont. 9). Two forgeries - a bare
+    every test in this file (found downstream 2026-09-22). Two forgeries - a bare
     function named like the apex guard, and a local require_permission factory
     whose closure carries the real one's qualname and a `scope` cell - and the
     real apex guard as the control. Built on a scratch app, so the live pin is
@@ -505,9 +505,8 @@ def test_the_guard_match_is_by_identity_not_name():
         return {}
 
     # The controls are the IMPORT-TIME bindings - the map's own key and the
-    # factory imported by name - not _ja.<guard> read now: test_hardening (the
-    # forks) and test_security_brick (the template, Kin) reload app.jwt_auth
-    # earlier in the suite, after which the module attribute is a new object
+    # factory imported by name - not _ja.<guard> read now: test_security_brick
+    # reloads app.jwt_auth earlier in the suite, after which the module attribute is a new object
     # while the app's routes and this map still hold the one imported with the
     # app. The pin describes the app as imported; so does this control.
     real_apex = next(fn for fn, (ident, _) in _GUARD_RANK.items() if ident == "require_owner")
