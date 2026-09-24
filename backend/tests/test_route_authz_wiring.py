@@ -20,8 +20,12 @@ suite until REQUIRED_GUARD existed.
 """
 from fastapi.routing import APIRoute
 
-from app.jwt_auth import get_current_user
+from app import jwt_auth as _ja
+from app.jwt_auth import get_current_user, require_owner
+from app.jwt_auth import require_permission as _real_require_permission
 from app.main import app
+from app.routers.chat import optional_user
+from app.routers.system import _metrics_auth
 
 # (METHOD, path) pairs that are route-level anonymous BY DESIGN. Each carries
 # its own gate where one is needed - stated per entry.
@@ -307,6 +311,24 @@ def _rank(ident: str) -> int:
     return _RANK.get(ident.split(":", 1)[0], -1)
 
 
+# The guard callables THEMSELVES, keyed by identity (2026-09-23, Kin's 1b) -
+# the objects the app imports, so a route's dependency is matched only if it
+# IS one of them. _RANK above keeps the names for the pinned strings;
+# this map is what _guard_identity reads. require_permission's closures are
+# recognised by their shared inner code object, the one thing a look-alike
+# factory defined elsewhere cannot have.
+_GUARD_RANK = {
+    require_owner: ("require_owner", 3),
+    _metrics_auth: ("_metrics_auth", 2),
+    get_current_user: ("get_current_user", 1),
+    optional_user: ("optional_user", 0),
+}
+# Bound at import, like the map: the app's closures were made by the factory
+# imported with the app, and a reload elsewhere in the suite must not move
+# this reference off them.
+_PERMISSION_CHECK_CODE = _real_require_permission("__pin_probe__").__code__
+
+
 def _dep_callables(dependant, acc):
     for d in dependant.dependencies:
         call = getattr(d, "call", None)
@@ -328,15 +350,25 @@ def _permission_scope(fn):
 
 
 def _guard_identity(route) -> str:
-    """The STRONGEST guard on the route, rendered as a comparable string."""
+    """The STRONGEST guard on the route, rendered as a comparable string.
+
+    Matched by IDENTITY since 2026-09-23 (Kin's 1b, template first): the
+    callable in the dependency tree must BE the guard the ladder names - the
+    object the app itself imports - or, for require_permission's closures,
+    share that factory's inner code object. Until then the match read
+    __name__ / __qualname__, so a local look-alike named like the apex guard,
+    or a local require_permission factory, that checked nothing pinned as the
+    real thing and passed every test in this file (reproduced on Kin
+    2026-09-22, cont. 9). test_the_guard_match_is_by_identity_not_name carries
+    the proof."""
     acc = []
     _dep_callables(route.dependant, acc)
     best, best_rank = "public", -1
     for fn in acc:
-        if "require_permission" in getattr(fn, "__qualname__", ""):
+        if getattr(fn, "__code__", None) is _PERMISSION_CHECK_CODE:
             ident, r = f"require_permission:{_permission_scope(fn)}", _RANK["require_permission"]
-        elif getattr(fn, "__name__", "") in _RANK:
-            ident, r = fn.__name__, _RANK[fn.__name__]
+        elif fn in _GUARD_RANK:
+            ident, r = _GUARD_RANK[fn]
         else:
             continue
         if r > best_rank:
@@ -441,3 +473,57 @@ def test_the_pin_literal_has_no_duplicate_keys():
     dupes = sorted({k for k in keys if keys.count(k) > 1})
     assert not dupes, f"REQUIRED_GUARD pins the same route twice: {dupes}"
     assert len(keys) == len(REQUIRED_GUARD)
+
+
+def test_the_guard_match_is_by_identity_not_name():
+    """A local look-alike named like a real guard checks nothing and must not
+    read as that guard: until 2026-09-23 the match read __name__ and
+    __qualname__, so both forgeries below pinned as the real thing and passed
+    every test in this file (Kin, 2026-09-22 cont. 9). Two forgeries - a bare
+    function named like the apex guard, and a local require_permission factory
+    whose closure carries the real one's qualname and a `scope` cell - and the
+    real apex guard as the control. Built on a scratch app, so the live pin is
+    untouched."""
+    from fastapi import APIRouter, Depends, FastAPI
+
+    async def require_owner():        # the name, none of the check
+        return {"role": "forged"}
+
+    def require_permission(scope):    # the qualname and the cell, no check
+        async def _check():
+            return {"role": "forged", "scope": scope}
+        return _check
+
+    router = APIRouter()
+
+    @router.get("/pin-probe/forged-apex")
+    async def forged_apex(_u: dict = Depends(require_owner)):
+        return {}
+
+    @router.get("/pin-probe/forged-scope")
+    async def forged_scope(_u: dict = Depends(require_permission("manage_system"))):
+        return {}
+
+    # The controls are the IMPORT-TIME bindings - the map's own key and the
+    # factory imported by name - not _ja.<guard> read now: test_hardening (the
+    # forks) and test_security_brick (the template, Kin) reload app.jwt_auth
+    # earlier in the suite, after which the module attribute is a new object
+    # while the app's routes and this map still hold the one imported with the
+    # app. The pin describes the app as imported; so does this control.
+    real_apex = next(fn for fn, (ident, _) in _GUARD_RANK.items() if ident == "require_owner")
+
+    @router.get("/pin-probe/real-apex")
+    async def real_apex_route(_u: dict = Depends(real_apex)):
+        return {}
+
+    @router.get("/pin-probe/real-scope")
+    async def real_scope(_u: dict = Depends(_real_require_permission("manage_system"))):
+        return {}
+
+    probe = FastAPI()
+    probe.include_router(router)
+    got = {r.path: _guard_identity(r) for r in probe.routes if isinstance(r, APIRoute)}
+    assert got["/pin-probe/forged-apex"] == "public", got
+    assert got["/pin-probe/forged-scope"] == "public", got
+    assert got["/pin-probe/real-apex"] == "require_owner", got
+    assert got["/pin-probe/real-scope"] == "require_permission:manage_system", got
