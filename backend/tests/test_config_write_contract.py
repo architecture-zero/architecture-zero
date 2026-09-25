@@ -217,9 +217,10 @@ def test_the_setup_store_does_not_grow_without_bound(monkeypatch):
     # bump_window sweeps opportunistically every _SWEEP_EVERY calls, and this
     # test's own bump can be the one that trips it - then the expired rows are
     # gone before the explicit sweep below and it counts 0. It did, on
-    # 2026-09-25, in az-thestatic-tv's prod-image gate, once a new test file
-    # ahead of this one shifted the session's call count. Pin the counter so
-    # the assertion measures sweep(), not where the session happened to be.
+    # 2026-09-25, in a downstream deployment's prod-image gate, once a new
+    # test file ahead of this one shifted the session's call count. Pin the
+    # counter so the assertion measures sweep(), not where the session
+    # happened to be.
     monkeypatch.setattr(state_store, "_calls_since_sweep", 0)
     state_store.put("setup:10.0.0.1", {"ts": [0.0]}, ttl=-1)    # long expired
     state_store.put("setup:10.0.0.2", {"ts": []}, ttl=-1)       # never populated, expired
