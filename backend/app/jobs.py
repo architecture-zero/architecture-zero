@@ -317,6 +317,24 @@ def dispatch_ingest(job_id: str, filename: str, text: str, department: str,
     def _work():
         try:
             _run_ingest(job_id, filename, text, department, extra_meta)
+        except Exception as e:
+            # _run_ingest fails its own row for anything raised inside its
+            # try - but an exception raised INSIDE one of its except clauses
+            # (a chroma delete failing in the quarantine backstop, a DB fault
+            # in update_job) escapes it: Python does not route an exception
+            # from one handler to a sibling. On a pool thread the escape lands
+            # in a Future nobody reads - no log line, the row left 'running'
+            # until the next boot fails it for the wrong reason. This is the
+            # last handler on the thread, so it logs and fails the row itself
+            # (found by the 2026-09-25 fleet review of the port).
+            from app.logger import log_error
+            log_error("ingest_worker_crashed", job_id=job_id, source=filename,
+                      error=str(e))
+            try:
+                update_job(job_id, status="failed", error=f"worker crashed: {e}")
+            except Exception as e2:
+                log_error("ingest_worker_row_not_failed", job_id=job_id,
+                          error=str(e2))
         finally:
             _release()
 

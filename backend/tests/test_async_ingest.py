@@ -248,6 +248,27 @@ def test_a_dispatched_job_runs_and_releases(monkeypatch):
     assert jobs.pending_count() == 0
 
 
+def test_a_crash_that_escapes_the_worker_still_fails_the_row(monkeypatch):
+    """_run_ingest fails its own row for anything raised inside its try, but
+    an exception raised inside one of its except clauses (a chroma delete
+    failing in the quarantine backstop) escapes it - Python does not route an
+    exception from one handler to a sibling - and on a pool thread it lands
+    in a Future nobody reads. The thread's own wrapper is the last handler:
+    the row is failed with the reason and the slot comes back. Found by the
+    2026-09-25 fleet review of this module's port to the four forks."""
+    job_id = jobs.create_job(source="crash.md", department="general")
+    monkeypatch.setattr(jobs, "_run_ingest",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            RuntimeError("delete failed inside the backstop")))
+    jobs.dispatch_ingest(job_id, "crash.md", "text", "general")
+    jobs._pool().submit(lambda: None).result(timeout=10)   # serial pool: drains
+    row = next(j for j in jobs.list_jobs(limit=200) if j["job_id"] == job_id)
+    assert row["status"] == "failed"
+    assert "delete failed inside the backstop" in (row["error"] or "")
+    assert row["completed_at"]
+    assert jobs.pending_count() == 0
+
+
 # -- What a restart costs ----------------------------------------------------
 
 def test_reconcile_fails_rows_a_restart_orphaned():
