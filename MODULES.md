@@ -35,7 +35,14 @@ These run in production deployments and are available commercially:
   restricted at the source stays restricted in answers.
 - **Single sign-on** - Google Sign-In (OIDC) with per-instance auth modes,
   server-side allow policies, and a break-glass local admin; the same seam
-  extends to other identity providers.
+  extends to other identity providers - Microsoft Entra sign-in runs on it,
+  landing people on the account that carries their address.
+- **Microsoft 365** - a SharePoint / OneDrive connector on the same
+  permission-aware engine as Drive: application permissions consented once,
+  per-item grants mapped onto the platform's access control.
+- **Chat where people already are** - a Microsoft Teams bot and a Slack app
+  that answer as the asker, through the same chat route and with the same
+  document permissions as the web app; there is no second answer pipeline.
 - **The MCP server** - the platform's knowledge served to MCP clients as
   read-only tools behind an OAuth 2.1 authorization server.
 
