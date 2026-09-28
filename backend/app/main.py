@@ -14,7 +14,7 @@ import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.auth import AuthMiddleware
+from app.auth import AuthMiddleware, presents_a_credential
 from app.body_limit import BodySizeLimit
 from app.audit import purge_old_entries
 from app.config import init_config_db
@@ -55,15 +55,23 @@ app = FastAPI(
 # INNERMOST (added first): the request-body ceiling, so the JSON parser is
 # never handed more than MAX_JSON_BODY_BYTES on any route a caller can reach
 # before authentication. The two ingest doors carry their own figure - see
-# app/body_limit.py. AuthMiddleware sits outside it and already answers 401
-# to a bearer-less request on a non-excluded route before any body is read.
+# app/body_limit.py, and its note on why the upload door is no longer exempt.
+# AuthMiddleware sits outside it and already answers 401 to a bearer-less
+# request on a non-excluded route before any body is read.
 app.add_middleware(
     BodySizeLimit,
     default_limit=MAX_JSON_BODY_BYTES,
     per_path={
-        "/api/ingest/upload": None,                       # streams and stops AT MAX_UPLOAD_MB itself
+        # the file plus its multipart envelope; the handler bounds the FILE
+        "/api/ingest/upload": (int(os.getenv("MAX_UPLOAD_MB", "50")) + 1) * 1024 * 1024,
         "/api/ingest": int(os.getenv("MAX_UPLOAD_MB", "50")) * 1024 * 1024,   # the JSON text-ingest door
     },
+    # A path with a wider figure is a door for a caller who has shown a
+    # credential - asked whatever ENABLE_AUTH says, because with auth off the
+    # middleware outside admits everyone and the doors above answer 401 only
+    # after their body has been read and parsed. No credential: 401 here, on
+    # the headers, with nothing read.
+    wider_for=presents_a_credential,
 )
 app.add_middleware(AuthMiddleware)
 app.add_middleware(

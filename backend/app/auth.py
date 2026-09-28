@@ -6,6 +6,7 @@ sweeps app.routes to keep that true - so authorization holds even with
 ENABLE_AUTH=false (the test suite's own mode, and the reason a
 middleware-only gate is invisible to tests).
 """
+import hmac
 import os
 
 from fastapi import Request
@@ -93,6 +94,44 @@ EXCLUDED_PATHS = {
     "/api/backup-status",
     "/metrics",
 }
+
+
+# The longest Authorization header the credential check will look at. A token
+# this instance signs is a few hundred characters, and the check runs before
+# any authentication - it must not be handed megabytes to decode.
+MAX_CREDENTIAL_CHARS = 4096
+
+
+def presents_a_credential(authorization: str) -> bool:
+    """Whether an Authorization header carries something this instance
+    accepts: the watcher's service key, or an unexpired session token it
+    signed.
+
+    The body ceiling (app/body_limit.py) asks this before it lets a caller
+    through a DOOR - a path that takes a document, and so carries a wider
+    figure than the default - and it asks whatever ENABLE_AUTH says. With
+    auth off the middleware below admits everyone, and the routes that take
+    a document answer 401 from a dependency - which FastAPI resolves only
+    AFTER it has read and parsed the body. So "who may send 50 MB" cannot be
+    left to the route. It says nothing about what the caller may DO: the
+    route's own guard still decides that, after the body is in."""
+    if len(authorization) > MAX_CREDENTIAL_CHARS or not authorization.startswith("Bearer "):
+        return False
+    token = authorization.removeprefix("Bearer ").strip()
+    if not token:
+        return False
+    if WATCHER_API_KEY and hmac.compare_digest(token.encode("utf-8"),
+                                               WATCHER_API_KEY.encode("utf-8")):
+        return True
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except JWTError:
+        return False
+    # A TYPED token is a step on the way to a session - the second-factor
+    # challenge, a sign-in handoff - not a session, and one with no expiry is
+    # not one this instance mints. Every place that reads a token for who the
+    # caller IS refuses both, and so does this.
+    return payload.get("type") is None and payload.get("exp") is not None
 
 
 class AuthMiddleware(BaseHTTPMiddleware):

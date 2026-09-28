@@ -18,14 +18,20 @@ def test_oversize_upload_is_refused_without_buffering_it_all(client, admin_heade
     `await file.read()` read the whole body and checked the size afterwards, so
     a body larger than the container's memory took the process down before the
     limit could be applied. The cap now applies as the bytes arrive.
+
+    The size is chosen to land on the HANDLER's cap: over the file's limit,
+    inside the room the body ceiling leaves for the multipart envelope. At two
+    chunks over, as this was first written, the ceiling answered instead and
+    the test stayed green with the handler's cap deleted.
     """
     from app.routers.kb import MAX_UPLOAD_MB, _UPLOAD_CHUNK_BYTES
-    body = b"x" * (MAX_UPLOAD_MB * 1024 * 1024 + _UPLOAD_CHUNK_BYTES * 2)
+    body = b"x" * (MAX_UPLOAD_MB * 1024 * 1024 + _UPLOAD_CHUNK_BYTES // 2)
     r = client.post("/api/ingest/upload",
                     files={"file": ("huge.txt", body, "text/plain")},
                     data={"department": "general"},
                     headers=admin_headers)
     assert r.status_code == 413, r.text
+    assert "File too large" in r.json()["detail"]
 
 
 def test_upload_within_the_limit_still_works(client, admin_headers):

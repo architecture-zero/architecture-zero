@@ -49,7 +49,9 @@ from app.runtime_config import (_config_or_default, DEFAULT_MODEL, RAG_ONLY_MODE
                                 guest_chat_available,
                                 DEMO_DAILY_GUEST_LIMIT, GUEST_MODEL,
                                 CHAT_MAX_INPUT_CHARS, GUEST_MAX_INPUT_CHARS,
-                                CHAT_MAX_HISTORY_MESSAGES, HELP_DOCS_SYNC,
+                                CHAT_MAX_HISTORY_MESSAGES, CHAT_MAX_FIELD_CHARS,
+                                CHAT_MAX_MODEL_CHARS,
+                                HELP_DOCS_SYNC,
                                 MAX_CONTEXT_TOKENS, ENABLE_AUDIT_LOG,
                                 _output_filter, _pii_receipt, OutputFilter,
                                 _SAFETY_RULES, _NON_OWNER_RULES, _GROUNDING_RULES,
@@ -241,6 +243,28 @@ def _summarize_history(old_messages: list, model: str) -> str:
         return "Previous conversation was summarized."
 
 
+def _say_the_bounds() -> None:
+    """Said once, at import: the figures in force - as an ERROR when one is
+    switched off, because a bound at 0 is silent everywhere else."""
+    figures = {"chat_chars": CHAT_MAX_INPUT_CHARS, "guest_chars": GUEST_MAX_INPUT_CHARS,
+               "history_messages": CHAT_MAX_HISTORY_MESSAGES}
+    off = sorted(name for name, figure in figures.items() if figure <= 0)
+    (log_error if off else log)("chat_request_bounds", off=off, **figures)
+
+
+_say_the_bounds()
+
+
+def _refuse_oversize(reason: str, detail: str, **figures) -> None:
+    """The one exit for a size refusal, so each is counted and logged the same
+    way: the reason and the figures, never the caller's text. Until 2026-09-28
+    these refusals were silent - the 409 beside them had a counter and a log
+    line, and an operator could not see this bound firing at all."""
+    increment("chat_request_refused_total")
+    log("chat_request_refused", reason=reason, **figures)
+    raise HTTPException(status_code=413, detail=detail)
+
+
 def _check_request_size(request: ChatRequest, guest: bool) -> None:
     """Guest spend gap (a), closed 2026-09-21: bound what ONE request may carry.
 
@@ -253,20 +277,44 @@ def _check_request_size(request: ChatRequest, guest: bool) -> None:
     the provider; guests get the tighter figure. A plain-string 413, not a
     pydantic max_length: the client renders `detail` as the bubble, and
     pydantic's list-shaped 422 would not render. Runs before the injection
-    scan so its regexes never see an unbounded body."""
+    scan so its regexes never see an unbounded body.
+
+    THE SHORT FIELDS (2026-09-28). The bound counts what reaches the provider
+    as conversation, and the request carries strings that are not that: which
+    session, which model, which lane. Each is written down or routed on as
+    given - the session id into the messages table and the audit row on every
+    answered turn, a guest's included - and none was bounded, so a megabyte
+    could ride in a field the bound's own terms did not cover. Every string on
+    the request other than the prompt is held to the width of the column it
+    is stored in, by iteration rather than by name, so a field added later is
+    covered the day it is added."""
+    for name, value in request:
+        limit = CHAT_MAX_MODEL_CHARS if name == "model" else CHAT_MAX_FIELD_CHARS
+        if name != "prompt" and isinstance(value, str) and len(value) > limit:
+            _refuse_oversize("field", (
+                f"Request refused: {name} carries {len(value):,} characters and "
+                f"the limit is {limit}."),
+                field=name, chars=len(value), limit=limit, guest=guest)
     if CHAT_MAX_HISTORY_MESSAGES > 0 and len(request.history) > CHAT_MAX_HISTORY_MESSAGES:
-        raise HTTPException(status_code=413, detail=(
+        _refuse_oversize("history_messages", (
             f"This conversation is too long to send ({len(request.history)} messages; "
-            f"the limit is {CHAT_MAX_HISTORY_MESSAGES}). Start a new chat."))
-    cap = GUEST_MAX_INPUT_CHARS if guest else CHAT_MAX_INPUT_CHARS
+            f"the limit is {CHAT_MAX_HISTORY_MESSAGES}). Start a new chat."),
+            messages=len(request.history), limit=CHAT_MAX_HISTORY_MESSAGES, guest=guest)
+    # A guest is never given more than a signed-in caller: with the guest
+    # figure switched off (0) the other one still holds for a guest, and a
+    # guest figure set above it is not honoured.
+    cap = CHAT_MAX_INPUT_CHARS
+    if guest and GUEST_MAX_INPUT_CHARS > 0:
+        cap = GUEST_MAX_INPUT_CHARS if cap <= 0 else min(cap, GUEST_MAX_INPUT_CHARS)
     # Every string the body carries to the provider counts - the role field
     # included, or the bound has a hole in its own terms.
     total = len(request.prompt) + sum(len(m.content) + len(m.role) for m in request.history)
     if cap > 0 and total > cap:
-        raise HTTPException(status_code=413, detail=(
+        _refuse_oversize("characters", (
             f"Message too long: this request carries {total:,} characters and the "
             f"limit is {cap:,} (your message plus the conversation so far). "
-            "Shorten the message or start a new chat."))
+            "Shorten the message or start a new chat."),
+            chars=total, limit=cap, guest=guest)
 
 
 @router.post("/api/chat")

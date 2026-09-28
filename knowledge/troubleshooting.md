@@ -55,6 +55,23 @@ The same bound counted in messages: CHAT_MAX_HISTORY_MESSAGES (200 by default).
 Start a new chat. The stored conversation is untouched - the bound is on what
 one request may carry, not on what History keeps.
 
+## "Request refused: session_id carries N characters and the limit is M"
+
+A chat request names its session, and may name a model. Neither is part of
+the conversation, so the bounds above do not count them; each is held to the
+width of the column it is stored in (255 characters for the session id, 100
+for the model name). No client that ships with this project sends a value
+that long - this is a hand-written or scripted request.
+
+## "Request body too large: N bytes, and this route accepts up to M"
+
+The byte ceiling on a request's body, checked before anything parses it:
+MAX_JSON_BODY_BYTES (2 MB by default) on every route, and the upload size
+plus room for its envelope on the two routes that take a document. It is
+refused on the headers when the request declares its length, and as it
+crosses the ceiling when it does not. An operator raises the figure in the
+host environment; 0 switches the default ceiling off.
+
 ## "Session expired - sign in again"
 
 Your access token expired and the presented token was invalid - this is the
@@ -215,7 +232,11 @@ the client inside Linux.
 
 ## Uploads rejected: "File too large" or "Unsupported file type"
 
-The upload cap defaults to 50 MB (MAX_UPLOAD_MB). Supported types: md,
+The upload cap defaults to 50 MB (MAX_UPLOAD_MB). A file far over the cap is
+refused before it is read, with "Request body too large" (above). An upload
+answered "Not authenticated" carried no credential: the two routes that take
+a document ask for one before they read anything, whatever ENABLE_AUTH is
+set to. Supported types: md,
 txt, pdf, docx, py, js, ts, json, yaml. "No text could be extracted" on a
 PDF usually means a scanned/image-only PDF - run OCR first, the platform
 ingests text, not images.

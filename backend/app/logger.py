@@ -32,11 +32,19 @@ def get_logger(name: str = "az") -> logging.Logger:
     sh.setFormatter(fmt)
     logger.addHandler(sh)
 
-    # File handler - writes to /app/logs/app.log inside the container
+    # File handler - writes to /app/logs/app.log inside the container.
+    # ROTATING since 2026-09-28: a plain handler grows without bound, and the
+    # size refusals added that day are lines a caller with no session can
+    # write as fast as they can send. The footprint is LOG_MAX_MB x
+    # (LOG_BACKUPS + 1), 10 MB x 6 by default.
     log_dir = Path(os.getenv("LOG_DIR", "/app/logs"))
     try:
+        from logging.handlers import RotatingFileHandler
         log_dir.mkdir(parents=True, exist_ok=True)
-        fh = logging.FileHandler(log_dir / "app.log", encoding="utf-8")
+        fh = RotatingFileHandler(
+            log_dir / "app.log", encoding="utf-8",
+            maxBytes=int(float(os.getenv("LOG_MAX_MB", "10")) * 1024 * 1024),
+            backupCount=int(os.getenv("LOG_BACKUPS", "5")))
         fh.setFormatter(fmt)
         logger.addHandler(fh)
     except OSError:

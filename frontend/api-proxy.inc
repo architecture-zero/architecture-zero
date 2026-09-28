@@ -1,7 +1,8 @@
 # Shared by the two /api locations in nginx.conf - the general one and the
 # exact-match upload one. Everything about reaching the backend lives here, so
-# the two blocks differ in ONE directive (client_max_body_size) and cannot
-# drift apart. Included, not duplicated.
+# the two blocks differ only in what they do with the request BODY (how large
+# it may be, and whether it is buffered first) and cannot drift apart.
+# Included, not duplicated.
 #
 # proxy_pass through a VARIABLE on purpose: with a literal upstream, nginx
 # resolves the name at startup and REFUSES TO START when it cannot - so

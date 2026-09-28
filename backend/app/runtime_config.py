@@ -104,10 +104,19 @@ DEMO_DAILY_GUEST_LIMIT      = _env_num("DEMO_DAILY_GUEST_LIMIT", "0", int)
 CHAT_MAX_INPUT_CHARS        = _env_num("CHAT_MAX_INPUT_CHARS", "200000", int)
 GUEST_MAX_INPUT_CHARS       = _env_num("GUEST_MAX_INPUT_CHARS", "24000", int)
 CHAT_MAX_HISTORY_MESSAGES   = _env_num("CHAT_MAX_HISTORY_MESSAGES", "200", int)
+# The short strings a chat request carries BESIDE the conversation - which
+# session, which model, which lane. None is part of the conversation, so the
+# character bounds above do not count them, and each is written down or
+# routed on as given. Not env knobs: each figure is the width of the column
+# the value is stored in - the session id's, and the model name's, which is
+# narrower - a fact about the schema and not a preference.
+CHAT_MAX_FIELD_CHARS        = 255
+CHAT_MAX_MODEL_CHARS        = 100
 # The request-body ceiling BEFORE the JSON parser (app/body_limit.py): the
 # character bounds above are checked after parsing, so this is what keeps a
 # 60 MB body out of json.loads on the routes a caller reaches before
-# authentication. 2 MB holds CHAT_MAX_INPUT_CHARS four times over. The two
+# authentication. CHAT_MAX_INPUT_CHARS' 200,000 characters is under 800 KB
+# even as raw four-byte UTF-8, so 2 MB holds it more than twice over. The two
 # ingest doors carry MAX_UPLOAD_MB instead.
 MAX_JSON_BODY_BYTES         = _env_num("MAX_JSON_BODY_BYTES", str(2 * 1024 * 1024), int)
 # The model every guest turn answers with. Blank = the instance's own
