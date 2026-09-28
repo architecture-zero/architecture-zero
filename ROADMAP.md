@@ -99,3 +99,9 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   guest) whose state resets are currently verified by hand. Each wants the
   same treatment - find the rule, find where the rule becomes an observable,
   test that rather than the symptoms.
+- **Stop that stops the model** - a client disconnect cancels the streaming
+  response without closing its synchronous generator, so the provider stream
+  keeps running until garbage collection finalises it. Found 2026-09-28 while
+  releasing the one-turn guard's slot on disconnect (which is done). The fix:
+  check for the disconnect between chunks, or stream from an async generator
+  the framework does close, and close the provider stream when it fires.

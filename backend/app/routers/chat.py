@@ -8,9 +8,11 @@ EXCLUDED_PATHS, so a prefix would silently un-exclude them. /api/chat is also
 the only route in the repo wired to check_rate_limit, and the only one using
 optional_user - which moves here with it, since nothing else reads it any more.
 
-The chat handler is the largest in the codebase and moved INTACT. It is pinned
-by source-text assertions and by TTFT tests that import it directly; reformatting
-it would break both without changing behaviour.
+The chat handler is the largest in the codebase and moved INTACT; since
+2026-09-28 it is three functions - chat, _chat_gates and _chat_answer, with the
+one-turn-at-a-time guard between the gates and the answer - still pinned by
+source-text assertions (which read all three through one conftest fixture) and
+by TTFT tests; reformatting it would break both without changing behaviour.
 """
 import os
 import json

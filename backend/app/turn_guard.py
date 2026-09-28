@@ -1,30 +1,32 @@
-"""One turn at a time per caller and session on /api/chat (build 6, 2026-09-27).
+"""One turn at a time per caller and session on /api/chat (2026-09-28).
 
 The rule: a caller may have ONE turn answering on a session at a time. A second
 turn on the same (caller, session) while one is in flight is refused at the door
 with 409 - before retrieval, before the model, before any row is written - so a
 double-tap, a network resend or a second device can neither buy a second answer
-nor interleave the transcript. Those are the load-proof's two probes
-(docs/LOAD-PROOF-2026-09-16.md): two concurrent turns on one session persisted
-`u u a a`, and a duplicate submission answered twice.
+nor interleave the transcript. A load test on one deployment measured both
+(2026-09-16): two concurrent turns on one session persisted `u u a a`, and a
+duplicate submission answered twice.
 
 Refuse, not queue. Three reasons, each its own: the model's context is built
 from the transcript the client sends, so a queued turn would be answered against
 a transcript that lacks the answer in flight; a queued duplicate still pays for
 a second answer, a refusal pays nothing; and a queue needs a bound, a hang rule
 and a way to cancel, each a new edge. The chat products people know refuse
-(the send button is Stop while the answer streams), and the shipped clients do
-too, so only a second device, a second tab or a script ever meets this 409. A
-queued draft, if wanted, belongs on the client, which holds the fresh
-transcript.
+(the send button is Stop while the answer streams). A client that blocks its
+own second send for the whole answer meets this 409 only from a second device,
+a second tab or a script; a client that re-enables Send at the first token
+meets it on an ordinary second send mid-answer - which is exactly why the
+server, not the client, is the guard. A queued draft, if wanted, belongs on the
+client, which holds the fresh transcript.
 
 The window is the in-flight time, not a content hash: a deliberate resend
 after the answer landed is a new question. (The email ledger's content hash
 treats a retry and a repeat as the same thing forever - the limitation this
 guard does not copy.)
 
-Process model: one uvicorn process (entrypoint.sh, no --workers), the same
-property jobs.py and oauth_server's single-use claim rely on, so an in-process
+Process model: one uvicorn process (the image starts it with no --workers), the
+same property the async-ingest worker in jobs.py relies on, so an in-process
 registry IS the truth here. A second worker would make this per-worker: a
 property of the deployment, stated so it is not mistaken for one the code
 makes on its own.

@@ -273,7 +273,17 @@ Stated here rather than discovered later. Each is tracked in
 - **One box.** Queued ingest runs on a worker thread inside the backend, not
   a separate process, because the vector store is an embedded database on a
   local directory - a second writing process would corrupt the index. This
-  scales up, not out.
+  scales up, not out. The one-turn-at-a-time guard on chat (a second message
+  on a conversation that is still answering is refused with 409) keeps its
+  slots in the same process for the same reason: a second replica would make
+  it per-replica.
+- **Stop ends the stream, not the generation.** Pressing Stop closes the
+  connection and the client stops reading, but the web framework cancels the
+  streaming response on a disconnect without closing its synchronous
+  generator, so the model keeps generating until the abandoned generator is
+  collected - on a hosted model, those are paid tokens. (The one-turn guard's
+  slot is released on the disconnect itself, by a background task the
+  framework does run.)
 - **`/metrics` needs `METRICS_TOKEN` for a scraper.** A user session expires
   faster than a scrape interval matters, so set the static token if you want
   Prometheus to pull. Unset, the endpoint is still reachable with a signed-in
