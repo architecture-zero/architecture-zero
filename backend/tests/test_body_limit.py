@@ -82,6 +82,26 @@ def test_a_chunked_body_is_refused_as_it_crosses_the_ceiling():
     assert seen == [60]            # the first chunk reached the app, the second never did
 
 
+def test_a_chunked_oversize_body_is_a_json_413_through_the_whole_stack(client):
+    """The same refusal end to end, with no Content-Length to read: the count
+    trips INSIDE FastAPI's body read, under every middleware the app carries,
+    and the caller must still get the JSON 413 - not a 500 from an exception
+    nobody handled, and not the 400 the parse wrapper turns a stray exception
+    into. The unit test above proves the counting; this proves the stack
+    around it lets the refusal out."""
+    def body():
+        yield b'{"prompt": "'
+        yield b"x" * (MAX_JSON_BODY_BYTES + 16)
+        yield b'"}'
+
+    with patch("app.routers.chat.check_injection") as scan:
+        r = client.post("/api/chat", content=body(),
+                        headers={"Content-Type": "application/json"})
+    assert "content-length" not in {k.lower() for k in r.request.headers}
+    assert r.status_code == 413
+    assert "Request body too large" in r.json()["detail"]
+    scan.assert_not_called()
+
 def test_zero_disables_the_ceiling():
     async def inner(scope, receive, send):
         await receive()
