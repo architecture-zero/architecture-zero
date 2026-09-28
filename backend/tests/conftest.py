@@ -95,6 +95,18 @@ def client():
 
 
 @pytest.fixture
+def chat_route_src() -> str:
+    """The chat route's source as ONE text: chat() plus the two functions it
+    was split into 2026-09-28 (one turn at a time - the guard sits between the
+    gates and the answer). Every guard that used to inspect chat() alone reads
+    this, so the split moved no guard's meaning, and a further split cannot."""
+    import inspect
+    from app.routers import chat as chat_mod
+    return "\n".join(inspect.getsource(f)
+                     for f in (chat_mod.chat, chat_mod._chat_gates, chat_mod._chat_answer))
+
+
+@pytest.fixture
 def admin_headers(client):
     r = client.post("/api/auth/login", json=_ADMIN)
     assert r.status_code == 200, f"Admin login failed: {r.text}"

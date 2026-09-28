@@ -525,6 +525,11 @@ export default function App() {
 
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
+  // The one-line notice under the transcript when the server refused a turn
+  // because this conversation is still answering (409, one turn at a time).
+  // Cleared on the next send; never an error bubble, because nothing was
+  // written and nothing was billed.
+  const [turnNotice, setTurnNotice] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   // TRUE for the whole stream, not just until the first token. `loading` flips
   // false the moment anything arrives (that is what swaps the thinking dots for
@@ -1132,6 +1137,26 @@ export default function App() {
         signal: controller.signal,
       })
 
+      if (res.status === 409) {
+        // ONE TURN AT A TIME: another turn on this conversation is still
+        // answering (a second tab, a resend, a tap that beat the Stop swap).
+        // Nothing was written or billed, so this is a state, not an error:
+        // take back the ephemeral user bubble this send added, put the draft
+        // back in the box, say so under the transcript. No retry loop - the
+        // user sends again when the other answer is done. mine() for the same
+        // reason every other branch has it.
+        if (mine()) {
+          setMessages(prev => {
+            const last = prev[prev.length - 1]
+            return last && last.role === 'user' && last.ephemeral && last.content === prompt
+              ? prev.slice(0, -1) : prev
+          })
+          setInput(prompt)
+          setTurnNotice('Still answering your last message on this conversation. Wait for it to finish, then send again.')
+          setLoading(false)
+        }
+        return
+      }
       if (!res.ok) {
         // Surface the server's own message (guest limit, widget-only guest scope,
         // guest mode off) instead of masking it as a connectivity failure.
@@ -1400,6 +1425,7 @@ export default function App() {
     const prompt = (text || input).trim()
     if (!prompt || busy || guestAtLimit) return
     setInput('')
+    setTurnNotice(null)
     setContextWarning(false)
     setContextSummarized(false)
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
@@ -1891,6 +1917,9 @@ export default function App() {
         {/* Input */}
         <div className="border-t border-gray-800 bg-gray-900/30 p-4">
           <div className="max-w-3xl mx-auto">
+            {turnNotice && (
+              <div className="text-xs text-gray-300 px-1 pb-2" role="status">{turnNotice}</div>
+            )}
             <div className="flex gap-3 items-end bg-gray-800 border border-gray-700 focus-within:border-blue-500/60 rounded-2xl px-4 py-3 transition-colors">
               <textarea
                 ref={textareaRef}

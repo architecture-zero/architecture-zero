@@ -213,3 +213,27 @@ describe('what reaches the model', () => {
     expect(blob).not.toMatch(/provider failed/i)
   })
 })
+
+describe('one turn at a time', () => {
+  it('a refused turn (409) leaves no bubble, restores the draft and says so', async () => {
+    await signedInApp()
+    // The server's one-turn-at-a-time refusal: another turn on this
+    // conversation is still answering. Nothing was written or billed.
+    h.setChat(() => new Response(
+      JSON.stringify({ detail: 'Still answering your last message on this conversation - wait for it to finish, then send again.' }),
+      { status: 409, headers: { 'Content-Type': 'application/json' } }))
+    await ask('question five')
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/still answering/i))
+
+    // The draft is back in the box, and no bubble carries it - it was never a
+    // turn. (The box itself matches a text query through its value, so the
+    // bubble check looks past it.)
+    const box = screen.getByPlaceholderText(/Message/i) as HTMLTextAreaElement
+    expect(box.value).toBe('question five')
+    expect(screen.queryByText('question five', { ignore: 'textarea, script, style' })).toBeNull()
+    // Not an error bubble either.
+    expect(screen.queryByText(/the server returned/i)).toBeNull()
+    // And the composer is live again: Send, not Stop.
+    await waitFor(() => expect(screen.getByTitle('Send message')).toBeInTheDocument())
+  })
+})

@@ -137,12 +137,11 @@ def test_receipt_columns_round_trip_through_the_writer(client):
 
 # -- WIRING: columns are useless if the call sites never stamp them -----------
 
-def test_every_audit_call_site_in_chat_stamps_the_receipt():
+def test_every_audit_call_site_in_chat_stamps_the_receipt(chat_route_src):
     """Both chat audit call sites (the rag_refusal lane and the model lane)
     must read the stats dict, or one lane silently records NULLs forever
     while looking covered."""
-    from app.routers.chat import chat
-    src = inspect.getsource(chat)
+    src = chat_route_src
     calls = src.count("log_audit_entry(")
     assert calls == 2, f"chat has {calls} audit call sites - update this guard"
     for field in ("rerank_ms", "rerank_pool", "rerank_provider"):

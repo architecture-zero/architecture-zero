@@ -135,9 +135,8 @@ def test_no_model_lanes_record_null_ttft_never_zero():
 
 # -- WIRING: the columns are useless if the call sites never stamp them -------
 
-def test_every_audit_call_site_in_chat_stamps_a_lane():
-    from app.routers.chat import chat
-    src = inspect.getsource(chat)
+def test_every_audit_call_site_in_chat_stamps_a_lane(chat_route_src):
+    src = chat_route_src
     calls = src.count("log_audit_entry(")
     stamps = src.count("answer_lane=")
     assert calls == 2, f"chat has {calls} audit call sites - update this guard"
@@ -146,9 +145,8 @@ def test_every_audit_call_site_in_chat_stamps_a_lane():
         "silently re-enters the per-model latency pool")
 
 
-def test_chat_stamps_both_lanes_and_captures_ttft():
-    from app.routers.chat import chat
-    src = inspect.getsource(chat)
+def test_chat_stamps_both_lanes_and_captures_ttft(chat_route_src):
+    src = chat_route_src
     for lane in ('answer_lane="model"', 'answer_lane="rag_refusal"'):
         assert lane in src, f"missing lane stamp: {lane}"
     # TTFT is taken off the provider stream, not computed after the fact.

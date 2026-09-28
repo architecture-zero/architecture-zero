@@ -23,6 +23,7 @@ import pathlib
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 from app.agent import get_active_tools, execute_tool
 from app.audit import log_audit_entry
@@ -40,6 +41,7 @@ from app.providers import (stream_chat_events, non_stream_tool_call, supports_to
                            _provider_for_model, offered_providers)
 from app.security import (check_rate_limit, check_injection, client_ip_from_request,
                           check_daily_guest_budget)
+from app import turn_guard
 from app.runtime_config import (_config_or_default, DEFAULT_MODEL, RAG_ONLY_MODE,
                                 RAG_SIMILARITY_THRESHOLD,
                                 guest_chat_available,
@@ -271,9 +273,35 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
     # FULL user-experienced duration - retrieval, tool rounds, and streaming
     # included (the Overview dashboard derives percentiles from these).
     _t0 = time.monotonic()
-    # Rerank receipt: retrieve() fills this when it runs; every audit lane
-    # reads it with .get() so a turn with no retrieval records NULLs.
-    _rr_stats: dict = {}
+    # The cheap refusals first (rate limit, size, injection, origin, the 401,
+    # the guest gates, the model gate), then the turn guard, then the answer.
+    # Split into three functions 2026-09-28 (one turn at a time) so the guard
+    # could sit between the gates and retrieval without re-indenting the body:
+    # a refused turn must cost nothing - no rerank, no model, no row.
+    _chat_gates(request, req, current_user)
+    # ONE TURN AT A TIME per caller and session (app/turn_guard.py carries the
+    # rule and the reasons - refuse, not queue). Taken here so a double-tap, a
+    # resend or a second tab is refused before retrieval; freed by
+    # guarded_stream and the response's background task on every stream exit,
+    # and below on any raise between here and the response.
+    _turn_caller = turn_guard.caller_key(
+        current_user["id"] if current_user else None, client_ip_from_request(req))
+    _turn_token = turn_guard.acquire(_turn_caller, request.session_id)
+    if _turn_token is None:
+        increment("chat_turn_refused_total")
+        log("chat_turn_refused", session_id=request.session_id, reason="in_flight")
+        raise HTTPException(status_code=409, detail=turn_guard.IN_FLIGHT_DETAIL)
+    try:
+        return await _chat_answer(request, req, current_user, _t0, _turn_caller, _turn_token)
+    except BaseException:
+        turn_guard.release(_turn_caller, request.session_id, _turn_token)
+        raise
+
+
+def _chat_gates(request: ChatRequest, req: Request, current_user: dict | None) -> None:
+    """The refusals that cost nothing, in the order they always ran (moved out
+    of chat() verbatim 2026-09-28; the lines below are unchanged). Everything
+    here raises or returns None; request.model is resolved in place."""
     check_rate_limit(client_ip_from_request(req))
     # Size before scan. A caller with no VALID session is bounded as a guest -
     # except one presenting an expired token, who is a signed-in user about to
@@ -386,6 +414,16 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
             raise HTTPException(status_code=400, detail=(
                 f"The model '{request.model}' routes to the {_prov} provider, which is "
                 "not enabled on this instance. Pick a model from the list."))
+
+
+async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | None,
+                       _t0: float, _turn_caller: str, _turn_token: str):
+    """The answer path, exactly as it sat inside chat() before 2026-09-28 (the
+    split is explained at chat()). Returns the StreamingResponse, whose
+    generator and background task free the turn slot on every exit."""
+    # Rerank receipt: retrieve() fills this when it runs; every audit lane
+    # reads it with .get() so a turn with no retrieval records NULLs.
+    _rr_stats: dict = {}
     rag_threshold = float(_config_or_default("rag_similarity_threshold", str(RAG_SIMILARITY_THRESHOLD)))
 
     prompt = request.prompt
@@ -901,7 +939,15 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
                       error_id=error_id, error=str(e))
             yield f"data: {json.dumps({'error': 'The assistant failed to complete this answer.', 'error_id': error_id})}\n\n"
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    # Two releases for the two ways a stream ends: the generator's finally when
+    # it ran to the end or raised, and the response's background task when the
+    # client went away - Starlette 0.41 cancels the task group on a disconnect
+    # WITHOUT closing a sync generator, so without this a Stop left the slot
+    # held until GC or the TTL. Token-checked, so the second is a no-op.
+    return StreamingResponse(
+        turn_guard.guarded_stream(generate(), _turn_caller, request.session_id, _turn_token),
+        media_type="text/event-stream",
+        background=BackgroundTask(turn_guard.release, _turn_caller, request.session_id, _turn_token))
 
 
 @router.get("/api/help/page")

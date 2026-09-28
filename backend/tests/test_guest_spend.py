@@ -180,9 +180,9 @@ def test_an_expired_session_gets_its_401_not_the_guest_413(client):
     stream.assert_not_called()
 
 
-def test_the_call_sites_exist_in_the_handler():
+def test_the_call_sites_exist_in_the_handler(chat_route_src):
     """The def is not the guard; the call is."""
-    src = inspect.getsource(chat_mod.chat)
+    src = chat_route_src
     assert "_check_request_size(request, guest=current_user is None" in src
     assert "request.model = GUEST_MODEL or _pinned" in src
     # size before scan: the injection regexes must never see an unbounded body

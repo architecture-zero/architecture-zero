@@ -258,12 +258,12 @@ def test_status_names_the_output_mode_and_the_masked_types(client, admin_headers
 
 # ── 8. the wiring ────────────────────────────────────────────────────────────
 
-def test_no_per_token_blocklist_call_is_left_and_every_round_flushes():
+def test_no_per_token_blocklist_call_is_left_and_every_round_flushes(chat_route_src):
     import app.routers.chat as chat_mod
     import app.eval_runner as ev
     assert "apply_blocklist" not in inspect.getsource(chat_mod)
     assert "apply_blocklist" not in inspect.getsource(ev)
-    chat_src = inspect.getsource(chat_mod.chat)
+    chat_src = chat_route_src
     # Two streamed rounds (the tool loop and the empty-answer retry), one
     # filter and one flush each; one audit site stamps the receipt (the model
     # lane) - the refusal lane serves canned text and records NULL by omission.
