@@ -47,8 +47,6 @@ background task after the task group exits on the normal AND the disconnect
 path (responses.py, __call__), and a token-checked release is a no-op when the
 finally already ran. The TTL remains the last bound.
 """
-from __future__ import annotations
-
 import os
 import secrets
 import threading
