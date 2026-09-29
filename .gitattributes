@@ -17,6 +17,9 @@ Dockerfile  text eol=lf
 *.py        text eol=lf
 *.yml       text eol=lf
 *.yaml      text eol=lf
+# Release schemas the upgrade test loads (backend/tests/fixtures/): a dump is
+# kept byte for byte as the release wrote it.
+*.sql       text eol=lf
 
 # Binary, so git never rewrites bytes inside them.
 *.png       binary

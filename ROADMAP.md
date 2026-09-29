@@ -99,6 +99,23 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   guest) whose state resets are currently verified by hand. Each wants the
   same treatment - find the rule, find where the rule becomes an observable,
   test that rather than the symptoms.
+- **Alerts that fire on an unwatched box** - the disk and Ollama alerts are
+  raised inside `GET /api/health/detailed`, so they fire while an Owner has
+  the Monitoring tab open and at no other time. Rehearsed 2026-09-29: a
+  webhook configured, Ollama stopped, five minutes with nobody signed in, and
+  nothing was sent. The fix is a check inside the instance that runs the same
+  probes, and reads the backup heartbeat's age, on an interval and raises
+  through the same cooldown. Small, but it is a task on the boot path, and
+  what it should watch wants deciding once rather than one alert at a time.
+  Until then the runbook's Monitoring section says which routes an outside
+  monitor can read without a session and what each one does not tell it.
+- **An update that takes its own copy first** - the first boot after an
+  update encrypts the second-factor seeds and saved provider keys in place,
+  and an older version cannot read them afterwards (the runbook's "Going
+  back"). The way back is a copy of the data directory taken before the
+  update, which today is a step the operator has to remember. Still ahead: the
+  boot taking that copy itself before its first one-way change, and refusing
+  the change if the copy cannot be written.
 - **Stop that stops the model** - a client disconnect cancels the streaming
   response without closing its synchronous generator, so the provider stream
   keeps running until garbage collection finalises it. Found 2026-09-28 while

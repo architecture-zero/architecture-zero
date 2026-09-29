@@ -117,6 +117,17 @@ knows about it, including at what privilege level. That is intentional: guard
 *removal* was already caught loudly, and guard *downgrade* was caught by nothing
 until the sweep became level-aware.
 
+**A column added to a model needs a line in `app/db.py`.** There is no
+migration system here: `create_all()` builds a table that is missing and never
+alters one that exists, so a new column reaches a new deployment by itself and
+an upgraded one only through the ADD COLUMN list in `_run_migrations`. The
+suite's own database is always new, which is why a forgotten line used to be
+green everywhere except on an operator's box.
+`backend/tests/test_upgrade_from_release.py` boots today's code on the schema
+each release created and fails, naming the column, until the line is there.
+When a release is tagged, its schema goes beside the others in
+`backend/tests/fixtures/` - the command is in each fixture's header.
+
 ## Style
 
 Match the surrounding code. There is no separate style guide, and a PR will not
