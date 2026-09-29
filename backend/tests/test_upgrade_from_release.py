@@ -17,9 +17,11 @@ a session somebody left signed in - and one row the release could not have
 written through its own API, a refresh token whose account is gone, so the
 orphan sweep has something to find.
 
-WHEN A RELEASE IS TAGGED: dump its schema beside the others (the command is in
-each fixture's header) and add the tag to RELEASES. What this file is for is
-that the last release is always in that list.
+WHEN A RELEASE CHANGES THE SCHEMA: dump its schema beside the others (the
+command is in each fixture's header) and add the tag to RELEASES. v0.1.1
+changed no model and no line of app/db.py, so the schema v0.1.1 creates is
+v0.1.0's and one fixture stands for both. What this file is for is that the
+schema the last release creates is always in that list.
 """
 import hashlib
 import json
@@ -161,8 +163,10 @@ def test_nothing_the_models_declare_is_missing_from_the_upgraded_database(upgrad
 def test_every_row_the_release_wrote_is_still_there(upgraded):
     db, before = upgraded["db"], upgraded["before"]
     after = {t: _rows(db, f"SELECT COUNT(*) FROM {t}")[0][0] for t in before}
-    # Two tables move, and by exactly this much: the orphan token is swept,
-    # and the boot helper wrote one audit row and refreshed a session.
+    # Three tables move: audit_log by exactly one (the helper's write,
+    # asserted); refresh_tokens by an amount not checked here (the orphan is
+    # swept, the helper's two sign-ins and one refresh add rows); config gains
+    # the defaults today's code seeds.
     assert after.pop("audit_log") == before.pop("audit_log") + 1
     before.pop("refresh_tokens"), after.pop("refresh_tokens")
     # config only ever gains keys: the defaults today's code seeds.

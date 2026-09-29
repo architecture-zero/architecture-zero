@@ -124,9 +124,12 @@ an upgraded one only through the ADD COLUMN list in `_run_migrations`. The
 suite's own database is always new, which is why a forgotten line used to be
 green everywhere except on an operator's box.
 `backend/tests/test_upgrade_from_release.py` boots today's code on the schema
-each release created and fails, naming the column, until the line is there.
-When a release is tagged, its schema goes beside the others in
-`backend/tests/fixtures/` - the command is in each fixture's header.
+a release created and fails, naming the column or index, until the line is
+there. It sees missing columns, indexes and tables, not a changed type or
+constraint on a column that exists. When a release changes the schema, its
+schema goes beside the others in `backend/tests/fixtures/` - the command is in
+each fixture's header (v0.1.1 changed none, so v0.1.0's fixture stands for
+both).
 
 ## Style
 

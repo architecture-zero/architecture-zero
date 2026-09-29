@@ -100,10 +100,11 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   same treatment - find the rule, find where the rule becomes an observable,
   test that rather than the symptoms.
 - **Alerts that fire on an unwatched box** - the disk and Ollama alerts are
-  raised inside `GET /api/health/detailed`, so they fire while an Owner has
-  the Monitoring tab open and at no other time. Rehearsed 2026-09-29: a
-  webhook configured, Ollama stopped, five minutes with nobody signed in, and
-  nothing was sent. The fix is a check inside the instance that runs the same
+  raised inside `GET /api/health/detailed`, so they fire only when an Owner
+  session reads that route - in practice while the Monitoring tab is open,
+  which re-reads it every 30 seconds - and at no other time. Rehearsed
+  2026-09-29: a webhook configured, Ollama stopped, five minutes with nobody
+  signed in, and nothing was sent. The fix is a check inside the instance that runs the same
   probes, and reads the backup heartbeat's age, on an interval and raises
   through the same cooldown. Small, but it is a task on the boot path, and
   what it should watch wants deciding once rather than one alert at a time.

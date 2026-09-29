@@ -59,13 +59,14 @@ override was added; the README carries the same note).
 ## Updating
 
     docker compose stop
-    sudo cp -a backend/data ../data-before-update-$(date +%Y%m%d)
+    sudo cp -a backend/data ../data-before-update-$(date +%Y%m%d-%H%M%S)
     git pull
     docker compose up -d --build
 
-(`sudo` on a Linux host: the container wrote those files as root. The date in
+(`sudo` on a Linux host: the container wrote those files as root. The time in
 the name is not decoration: `cp -a` into a directory that already exists puts
-the copy INSIDE it, so a fixed name is right once and wrong the next time.)
+the copy INSIDE it, so a name that can repeat - a fixed one, or a date alone
+on a day you update twice - is right once and wrong the next time.)
 
 Stop first, and copy before you pull. The copy is the only way back - see
 "Going back" below - and it is only whole while nothing is writing: the
@@ -94,11 +95,13 @@ Rehearsed 2026-09-29, from v0.1.0 to the main of that day, on a deployment
 with a first week in it: four accounts in two departments, one of them with a
 second factor, a provider key saved through the settings page, uploads, a
 held upload, conversations, and a session left signed in. All of it came
-through - the same accounts, roles and departments, the same authenticator,
-the session still refreshing, and the same answers from the same documents
-to the same people, including the two people a document must never reach.
+through - the same accounts, roles and departments; the Owner signed in with
+the same authenticator and both members with their passwords (the admin's
+account was compared, not signed in); the session still refreshing; and the
+same answers from the same documents to the same people, including the two
+people a document must never reach.
 
-Three things change on disk:
+Four things change on disk:
 
 - **Secrets are encrypted at rest.** v0.1.x stored second-factor seeds and
   saved provider keys as written. The first boot encrypts both, under a key
@@ -111,6 +114,9 @@ Three things change on disk:
 - **Rows whose account is gone are removed**, and the log names what went
   (`fk orphan sweep: ...`). Silent when there are none, which is the usual
   case: v0.1.x deactivates an account and never deletes one.
+- **The index gains the help pages.** A `kb_help` collection holding the
+  product's own help pages is written on the first boot. v0.1.x ignores it
+  if you go back.
 
 A later boot finds nothing left to do and prints none of those lines.
 
@@ -120,10 +126,10 @@ Since v0.1.x, for a script or a client of your own:
 
 - The routes that create or change durable authority ask for the caller's
   own password in the body, as `current_password`, and answer 400 without it:
-  creating an account, changing a role or a permission list, provider
-  settings, registering or changing a peer, enrolling a second factor,
-  changing a username, and an administrator resetting someone's second
-  factor.
+  creating an account, changing a role, a permission change that grants
+  `manage_users` or `manage_system`, provider settings, registering or
+  changing a peer, enrolling a second factor, changing a username, and an
+  administrator resetting someone's second factor.
 - Sign-in attempts are bounded per address (429), a request over the input
   bound is refused before it is scanned, stored or billed (413), and a second
   message on a conversation that is still answering is refused (409).
@@ -132,9 +138,9 @@ Since v0.1.x, for a script or a client of your own:
 
 An older version cannot run on data a newer version has booted on. The
 rehearsal tried it, because it is what anyone would try first: check out
-v0.1.0, rebuild, same data directory. It boots and reports healthy, and
-accounts with only a password sign in - which is what makes it look like it
-worked. The Owner's sign-in fails with a 500 at the authenticator step, and
+v0.1.0, rebuild, same data directory. It boots and reports healthy, and the
+password-only accounts it tried sign in - which is what makes it look like
+it worked. The Owner's sign-in fails with a 500 at the authenticator step, and
 so would any other account with a second factor: the old code hands the
 encrypted seed to the authenticator library as if it were the seed. The saved
 provider key is read as its ciphertext and would be sent to the provider as
@@ -144,7 +150,7 @@ The way back is the copy:
 
     docker compose stop
     sudo rm -rf backend/data
-    sudo cp -a ../data-before-update-<date> backend/data
+    sudo cp -a ../data-before-update-<the time you took it> backend/data
     git checkout v0.1.0            # the version the copy was taken on
     docker compose up -d --build
 
@@ -325,21 +331,25 @@ takes both. Copy archives off the machine.
 ### Restoring a backup
 
     docker compose stop
-    sudo mv backend/data ../data-set-aside
+    aside=../data-set-aside-$(date +%Y%m%d-%H%M%S)
+    sudo mv backend/data "$aside"
     mkdir backend/data
-    sudo tar -xzf ../data-set-aside/backups/az_backup_<timestamp>.tar.gz -C backend/data
+    sudo tar -xzf "$aside"/backups/az_backup_<timestamp>.tar.gz -C backend/data
     docker compose up -d
 
 An archive unpacks straight into an empty `backend/data/`. The old directory
 is set aside rather than deleted: it holds the other archives, and it is the
-way back if this archive turns out not to be the one you wanted. Boot with
+way back if this archive turns out not to be the one you wanted. Its name
+carries the time for the reason the update's copy does: `mv` into a
+directory that already exists nests, as `cp -a` does. Boot with
 the `JWT_SECRET_KEY` the archive was taken under, or read the next section
 first.
 
 An archive taken on an older version restores into a newer one. The first
 boot treats it as an update and brings it up the same way - rehearsed
 2026-09-29 with a v0.1.0 archive: both encryption sweeps ran, the index
-came back whole, every account signed in, and every document answered.
+came back whole, the Owner signed in with the same authenticator and both
+members with their passwords, and every document answered.
 
 One thing will look wrong and is not: the Backup tab names the archive
 BEFORE the one you restored as the last backup. The snapshot is taken before
@@ -403,18 +413,20 @@ Prometheus user. The token itself is never part of the download.
 - GET /api/health/detailed (Owner) - disk, DB latency, provider health;
   fires configured alerts on disk pressure and Ollama outages.
 
-**The alerts fire when that endpoint is read, and nothing reads it on a
-timer.** `ALERT_WEBHOOK_URL` and the SMTP settings deliver a disk or Ollama
-alert at the moment an Owner has the Monitoring tab open, not while the
-machine sits unwatched. Rehearsed 2026-09-29: a webhook configured, Ollama
-stopped, five minutes with nobody signed in - nothing was sent; the Owner
-opened the tab once and the alert arrived within the second. Until the
+**The alerts fire only when that endpoint is read, and nothing on the
+server reads it on a timer.** The Monitoring tab reads it when it loads and
+every 30 seconds while it stays open, so `ALERT_WEBHOOK_URL` and the SMTP
+settings deliver a disk or Ollama alert while an Owner has that tab open,
+and not while the machine sits unwatched. Rehearsed 2026-09-29: a webhook
+configured, Ollama stopped, five minutes with nobody signed in - nothing was
+sent; one Owner request to the route - the request the tab makes - and the
+alert arrived within the second. Until the
 instance checks itself (see ROADMAP.md), an unattended box is watched by
 whatever you point at the routes that need no session, and each says a
 different amount:
 
 - `/api/backup-status` answers 503 when the backup job's heartbeat or the
-  restore drill's is missing, stale or failed (Backups, below) - so it
+  restore drill's is missing, stale or failed (Backups, above) - so it
   answers 503 from the first day until both are being written.
 - `/api/health/ready` answers 503 when the database is down, and only then.
 - `/api/health` answers 200 whatever it finds and puts `"status":
