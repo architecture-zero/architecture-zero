@@ -186,9 +186,9 @@ There is no SDK - the platform's own seams are the developer surface:
   entry plus a key, not an adapter.
 
 Commercial modules exist for the enterprise edges (data connectors with
-permission-aware sync, SSO) and install into these same seams - see
-[MODULES.md](MODULES.md) for the honest map of what exists beyond the
-core and how modules graduate into it.
+permission-aware sync, SSO), built on this same core in a separate
+product - see [MODULES.md](MODULES.md) for the honest map of what exists
+beyond the core and how modules graduate into it.
 
 ## Repository layout
 
