@@ -37,11 +37,12 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   (falling back to a default is the silent-discard shape this codebase has
   spent its review history removing), and it should say which variable, what
   value and what the default is. `runtime_config._env_num` does that for the
-  three it owns. Roughly two dozen more are parsed with a bare `int(os.getenv(
-  ...))` across alerting, jobs, jwt_auth, peers, providers, rag_config and
-  main, and they still fail as an unattributed `ValueError` from inside an
-  import chain. Mechanical, but a ten-module edit wants its own change rather
-  than riding a release.
+  seven it owns (the four request bounds joined it 2026-09-21). Dozens more -
+  about fifty, counted 2026-09-30 - are parsed with a bare `int(os.getenv(...))`
+  or `float(os.getenv(...))` across most backend modules and the routers, and
+  they still fail as an unattributed `ValueError` from inside an import chain.
+  Mechanical, but an edit that wide wants its own change rather than riding a
+  release.
 - **Question-set fingerprinting for evaluation banding** - the trust panel
   bands runs sharing a writer, a corpus fingerprint, a judge-instrument era
   and an exam SHAPE, where shape is `n_rest`: a count of non-honesty rows.

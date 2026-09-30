@@ -258,7 +258,7 @@ holding - both arrive without a commit. Findings that cannot be fixed are
 not silently muted: every entry in the pip-audit ignore list carries its
 reasoning, what the ignore rests on, and what would retire it.
 
-## Known limitations at v0.1.1
+## Known limitations (main, reviewed 2026-09-30)
 
 Stated here rather than discovered later. Each is tracked in
 [ROADMAP.md](ROADMAP.md).
