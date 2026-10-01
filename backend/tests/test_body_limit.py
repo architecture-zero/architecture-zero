@@ -487,20 +487,31 @@ def test_the_installed_ceiling_has_no_figure_it_ignored():
 # so a signed-in account of any role could send it the full figure, and the
 # route refused that account only after the body was in.
 
-def _account(role, permissions=None, active=True):
-    """A session token for a fresh account of this shape, minted directly: the
-    login route's throttle and password policy are not what these tests are
-    about. Needs the app's database, so its callers take the client fixture."""
+@pytest.fixture
+def account(client):
+    """Mints a session token for a fresh account of a given shape, directly:
+    the login route's throttle and password policy are not what these tests
+    are about. Every account it made is deactivated at teardown - the suite
+    shares one database, and an active admin left behind is a second operator
+    to every later test (a self-assignment refusal counts them)."""
     import uuid
     from app.jwt_auth import create_access_token, unusable_password_hash
     from app.users import create_user, deactivate_user, update_user_permissions
-    name = f"door-{role}-{uuid.uuid4().hex[:8]}"
-    uid = create_user(name, unusable_password_hash(), role=role)
-    if permissions is not None:
-        update_user_permissions(uid, permissions)
-    if not active:
+    made = []
+
+    def make(role, permissions=None, active=True):
+        name = f"door-{role}-{uuid.uuid4().hex[:8]}"
+        uid = create_user(name, unusable_password_hash(), role=role)
+        made.append(uid)
+        if permissions is not None:
+            update_user_permissions(uid, permissions)
+        if not active:
+            deactivate_user(uid)
+        return "Bearer " + create_access_token(uid, name, role)
+
+    yield make
+    for uid in made:
         deactivate_user(uid)
-    return "Bearer " + create_access_token(uid, name, role)
 
 
 def _route_answer(path, authorization):
@@ -525,11 +536,11 @@ def _route_answer(path, authorization):
     return r.status_code, r.json()["detail"]
 
 
-def test_a_signed_in_account_without_the_permission_is_refused_on_the_headers(client):
+def test_a_signed_in_account_without_the_permission_is_refused_on_the_headers(account):
     """The finding, pinned: a member's token is a credential, and was enough
     for the full figure. Now the door answers the route's 403, nothing read."""
     import json
-    member = _account("member")
+    member = account("member")
     for path in _installed().kwargs["per_path"]:
         with patch("app.body_limit.increment") as count, patch("app.body_limit.log") as record:
             seen = _through_the_installed_ceiling(
@@ -542,7 +553,7 @@ def test_a_signed_in_account_without_the_permission_is_refused_on_the_headers(cl
         assert [c.kwargs for c in refused] == [{"path": path, "status": 403}]
 
 
-def test_each_door_answers_what_its_route_answers(client, admin_headers):
+def test_each_door_answers_what_its_route_answers(account, admin_headers):
     """For every shape of caller the door's answer IS its route's: admitted
     where the route admits, the route's 403 word for word where it forbids,
     401 where it does not know the caller. The route's answer comes from its
@@ -551,12 +562,12 @@ def test_each_door_answers_what_its_route_answers(client, admin_headers):
     from app import auth
     callers = {
         "the Owner": admin_headers["Authorization"],
-        "an Admin": _account("admin"),
-        "a Member": _account("member"),
-        "a Guest": _account("guest"),
-        "a Member granted manage_kb": _account("member", ["chat", "manage_kb"]),
-        "an Admin whose list leaves it out": _account("admin", ["chat", "view_history"]),
-        "a deactivated Admin": _account("admin", active=False),
+        "an Admin": account("admin"),
+        "a Member": account("member"),
+        "a Guest": account("guest"),
+        "a Member granted manage_kb": account("member", ["chat", "manage_kb"]),
+        "an Admin whose list leaves it out": account("admin", ["chat", "view_history"]),
+        "a deactivated Admin": account("admin", active=False),
         "no header": "",
         "a token this instance never signed": "Bearer not-a-real-token",
         "another scheme": "Basic abc",
