@@ -118,9 +118,11 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   update, which today is a step the operator has to remember. Still ahead: the
   boot taking that copy itself before its first one-way change, and refusing
   the change if the copy cannot be written.
-- **Stop that stops the model** - a client disconnect cancels the streaming
-  response without closing its synchronous generator, so the provider stream
-  keeps running until garbage collection finalises it. Found 2026-09-28 while
-  releasing the one-turn guard's slot on disconnect (which is done). The fix:
-  check for the disconnect between chunks, or stream from an async generator
-  the framework does close, and close the provider stream when it fires.
+- ~~**Stop that stops the model**~~ - SHIPPED 2026-10-01
+  (`backend/app/closing_stream.py`): a client disconnect cancelled the
+  streaming response without closing its synchronous generator, so the
+  provider stream kept running until garbage collection finalised it. The
+  chat route's `ClosingStreamingResponse` now closes the generator once the
+  response is over and the provider stream sits in `closing()`, so the close
+  reaches the connection; the tests drop a real connection mid-answer and
+  fail on the old route.

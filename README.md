@@ -258,7 +258,7 @@ holding - both arrive without a commit. Findings that cannot be fixed are
 not silently muted: every entry in the pip-audit ignore list carries its
 reasoning, what the ignore rests on, and what would retire it.
 
-## Known limitations (main, reviewed 2026-09-30)
+## Known limitations (main, reviewed 2026-10-01)
 
 Stated here rather than discovered later. Each is tracked in
 [ROADMAP.md](ROADMAP.md).
@@ -277,13 +277,15 @@ Stated here rather than discovered later. Each is tracked in
   on a conversation that is still answering is refused with 409) keeps its
   slots in the same process for the same reason: a second replica would make
   it per-replica.
-- **Stop ends the stream, not the generation.** Pressing Stop closes the
-  connection and the client stops reading, but the web framework cancels the
-  streaming response on a disconnect without closing its synchronous
-  generator, so the model keeps generating until the abandoned generator is
-  collected - on a hosted model, those are paid tokens. (The one-turn guard's
-  slot is released on the disconnect itself, by a background task the
-  framework does run.)
+- ~~**Stop ends the stream, not the generation.**~~ Closed 2026-10-01: the
+  web framework cancels a streaming response on a disconnect without closing
+  its synchronous generator, which had left the model generating - on a hosted
+  model, paid tokens - until the abandoned generator was collected. The chat
+  route now answers with `ClosingStreamingResponse`
+  (`backend/app/closing_stream.py`), which closes the generator as soon as the
+  response is over, and holds the provider stream in `closing()`, so the close
+  reaches the provider's connection. Its tests drop a real connection
+  mid-answer (`backend/tests/test_stream_close.py`).
 - **`/metrics` needs `METRICS_TOKEN` for a scraper.** A user session expires
   faster than a scrape interval matters, so set the static token if you want
   Prometheus to pull. Unset, the endpoint is still reachable with a signed-in
