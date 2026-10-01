@@ -40,14 +40,18 @@ Three releases, because no single one reaches every exit (found by the build's
 defensive read, 2026-09-28): guarded_stream's finally frees the slot when the
 stream ran to [DONE] or raised; chat() frees it on any raise before the response
 exists; and the response's BackgroundTask frees it when the client went away.
-That third one matters: Starlette 0.41 iterates a sync generator in a worker
+That third one mattered: Starlette 0.41 iterates a sync generator in a worker
 thread and, on http.disconnect, cancels the task group WITHOUT closing the
-generator, so its finally runs only when the garbage collector finalises it -
+generator, so its finally ran only when the garbage collector finalised it -
 after a Stop in the client, the next message on that conversation would have
 been refused until then, or until the TTL. StreamingResponse awaits its
 background task after the task group exits on the normal AND the disconnect
 path (responses.py, __call__), and a token-checked release is a no-op when the
-finally already ran. The TTL remains the last bound.
+finally already ran. Since 2026-10-01 the route's ClosingStreamingResponse
+(app/closing_stream.py) also closes the generator when the response is over,
+so guarded_stream's finally runs on a disconnect too, together with the close
+of the model's stream; the background task stays as the second release. The
+TTL remains the last bound.
 """
 import os
 import secrets

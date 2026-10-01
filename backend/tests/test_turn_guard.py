@@ -217,24 +217,25 @@ def test_a_stream_that_fails_frees_the_slot_for_the_next_turn(client):
 def test_the_response_carries_a_token_checked_release_for_the_disconnect_path(client, monkeypatch):
     """Starlette 0.41 does not close a sync generator when the client
     disconnects mid-stream (the task group is cancelled, the generator is
-    left to the garbage collector), so guarded_stream's finally alone would
-    leave the slot held after a Stop until GC or the TTL. The route therefore
-    also hands StreamingResponse a BackgroundTask that releases with the turn's
-    own token: Starlette awaits it after the task group exits on the normal AND
-    the disconnect path. This pins that wiring and that the task, taken alone
-    on a held slot, frees it (TestClient cannot drop a socket)."""
+    left to the garbage collector). Since 2026-10-01 the route's
+    ClosingStreamingResponse closes it, which runs guarded_stream's finally
+    (tests/test_stream_close.py drops a real connection); the route also still
+    hands the response a BackgroundTask that releases with the turn's own
+    token, which Starlette awaits after the task group exits on the normal AND
+    the disconnect path - a second release, a no-op when the first ran. This
+    pins that wiring and that the task, taken alone on a held slot, frees it."""
     import anyio
     from starlette.background import BackgroundTask
     import app.routers.chat as chat_mod
     captured = {}
-    real = chat_mod.StreamingResponse
+    real = chat_mod.ClosingStreamingResponse
 
     class Capturing(real):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             captured["resp"] = self
 
-    monkeypatch.setattr(chat_mod, "StreamingResponse", Capturing)
+    monkeypatch.setattr(chat_mod, "ClosingStreamingResponse", Capturing)
     session = "tg-background"
     p1, p2, p3 = _patched(_plain_stream)
     with p1, p2, p3:

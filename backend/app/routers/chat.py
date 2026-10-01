@@ -22,14 +22,15 @@ import asyncio
 import logging
 import pathlib
 
+from contextlib import closing
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
 from typing import Literal
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from app.agent import get_active_tools, execute_tool
 from app.audit import log_audit_entry
+from app.closing_stream import ClosingStreamingResponse
 from app.config import get_config, get_system_prompt
 from app.database import query_similar, list_departments, HELP_DEPARTMENT
 from app.history import (save_message, load_history, clear_session,
@@ -475,8 +476,9 @@ def _chat_gates(request: ChatRequest, req: Request, current_user: dict | None) -
 async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | None,
                        _t0: float, _turn_caller: str, _turn_token: str):
     """The answer path, exactly as it sat inside chat() before 2026-09-28 (the
-    split is explained at chat()). Returns the StreamingResponse, whose
-    generator and background task free the turn slot on every exit."""
+    split is explained at chat()). Returns the ClosingStreamingResponse, whose
+    generator and background task free the turn slot on every exit, and whose
+    close on a disconnect closes the model's stream (2026-10-01)."""
     # Rerank receipt: retrieve() fills this when it runs; every audit lane
     # reads it with .get() so a turn with no retrieval records NULLs.
     _rr_stats: dict = {}
@@ -828,19 +830,24 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
                 round_tool_calls: list[dict] = []
                 _oflt = _output_filter()
                 _pii_rounds.append(_oflt)
-                for event in stream_chat_events(msgs, request.model, tools=tools or None,
+                # closing(): when the client leaves mid-answer the response
+                # closes this generator (app/closing_stream.py), and the
+                # provider's stream is closed with it here - explicitly, not
+                # whenever the interpreter gets round to it.
+                with closing(stream_chat_events(msgs, request.model, tools=tools or None,
                                                 system_prompt=system_core,
-                                                max_tokens=response_tokens):
-                    if ttft_ms is None:
-                        ttft_ms = int((time.monotonic() - _t0) * 1000)
-                    if event.get("type") == "text":
-                        token = _oflt.push(event.get("text", ""))
-                        if token:
-                            full_response.append(token)
-                            assistant_text.append(token)
-                            yield f"data: {json.dumps({'token': token})}\n\n"
-                    elif event.get("type") == "tool_call":
-                        round_tool_calls.append(event)
+                                                max_tokens=response_tokens)) as events:
+                    for event in events:
+                        if ttft_ms is None:
+                            ttft_ms = int((time.monotonic() - _t0) * 1000)
+                        if event.get("type") == "text":
+                            token = _oflt.push(event.get("text", ""))
+                            if token:
+                                full_response.append(token)
+                                assistant_text.append(token)
+                                yield f"data: {json.dumps({'token': token})}\n\n"
+                        elif event.get("type") == "tool_call":
+                            round_tool_calls.append(event)
                 tail = _oflt.flush()
                 if tail:
                     full_response.append(tail)
@@ -897,21 +904,22 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
                 retry_text: list[str] = []
                 _rflt = _output_filter()
                 _pii_rounds.append(_rflt)
-                for event in stream_chat_events(msgs, request.model,
+                with closing(stream_chat_events(msgs, request.model,
                                                 tools=tools or None,
                                                 system_prompt=system_core,
-                                                max_tokens=response_tokens):
-                    # Only reachable if round 1 yielded NOTHING at all, in
-                    # which case this genuinely is the first token the user
-                    # ever saw - so it is the honest TTFT for this answer.
-                    if ttft_ms is None:
-                        ttft_ms = int((time.monotonic() - _t0) * 1000)
-                    if event.get("type") == "text":
-                        token = _rflt.push(event.get("text", ""))
-                        if token:
-                            full_response.append(token)
-                            retry_text.append(token)
-                            yield f"data: {json.dumps({'token': token})}\n\n"
+                                                max_tokens=response_tokens)) as events:
+                    for event in events:
+                        # Only reachable if round 1 yielded NOTHING at all, in
+                        # which case this genuinely is the first token the user
+                        # ever saw - so it is the honest TTFT for this answer.
+                        if ttft_ms is None:
+                            ttft_ms = int((time.monotonic() - _t0) * 1000)
+                        if event.get("type") == "text":
+                            token = _rflt.push(event.get("text", ""))
+                            if token:
+                                full_response.append(token)
+                                retry_text.append(token)
+                                yield f"data: {json.dumps({'token': token})}\n\n"
                 tail = _rflt.flush()
                 if tail:
                     full_response.append(tail)
@@ -980,12 +988,15 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
                       error_id=error_id, error=str(e))
             yield f"data: {json.dumps({'error': 'The assistant failed to complete this answer.', 'error_id': error_id})}\n\n"
 
-    # Two releases for the two ways a stream ends: the generator's finally when
-    # it ran to the end or raised, and the response's background task when the
-    # client went away - Starlette 0.41 cancels the task group on a disconnect
-    # WITHOUT closing a sync generator, so without this a Stop left the slot
-    # held until GC or the TTL. Token-checked, so the second is a no-op.
-    return StreamingResponse(
+    # When the client goes away mid-answer (Stop, a closed tab), Starlette 0.41
+    # cancels the response WITHOUT closing this sync generator, so the model's
+    # stream stayed open - and on a vendor model kept billing - until the
+    # garbage collector finalised it. ClosingStreamingResponse closes the
+    # generator as soon as the response is over, which closes the provider's
+    # stream (the closing() blocks in generate) and runs guarded_stream's
+    # finally. The background task is the slot's second release, token-checked
+    # so whichever runs second is a no-op.
+    return ClosingStreamingResponse(
         turn_guard.guarded_stream(generate(), _turn_caller, request.session_id, _turn_token),
         media_type="text/event-stream",
         background=BackgroundTask(turn_guard.release, _turn_caller, request.session_id, _turn_token))
