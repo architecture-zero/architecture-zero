@@ -474,13 +474,13 @@ def door_guard(guards: dict):
     require_permission(scope). The check is asked before a byte of the body
     is read, and asks what the route will: a credential first (no credential,
     no account lookup), then the door's guard, whose refusal - the route's
-    own 401 or 403 - is raised through. A door with no guard named here
-    admits nobody."""
+    own 401 or 403 - is raised through, and whose answer is the account it
+    admitted: a guard that returns nothing admits nobody, and so does a door
+    with no guard named here."""
     def check(authorization: str, path: str) -> bool:
         from app.auth import presents_a_credential
         guard = guards.get(path)
         if guard is None or not presents_a_credential(authorization):
             return False
-        guard(authorization)
-        return True
+        return bool(guard(authorization))
     return check

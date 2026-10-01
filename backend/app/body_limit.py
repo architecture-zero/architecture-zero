@@ -43,8 +43,9 @@ auth middleware admits everyone, "who may send 50 MB" was anyone at all. It
 is decided here instead: `wider_for` is asked, with the request's
 Authorization header and its path, before a byte is read. It answers True,
 or refuses with the route's own refusal - an HTTPException, answered here as
-raised - and a check that returns anything else, or raises anything else,
-grants nothing (401).
+raised. A check that returns anything else grants nothing (401), and one that
+fails grants nothing either (503, logged by its exception's class: a 401
+would read to a client as a lost session).
 
 Until 2026-10-01 the question was only whether the caller presented a
 credential - WHO, never what they may do - so any signed-in account of any
@@ -139,8 +140,12 @@ class BodySizeLimit:
                 return None
         except HTTPException as refused:
             return refused.status_code, refused.detail
-        except Exception:
-            pass
+        except Exception as failed:
+            # The check itself failed (the account store down, say). Still a
+            # refusal - but not a 401, which a client reads as a lost session.
+            log("document_door_check_failed", path=path[:200],
+                error=type(failed).__name__)
+            return 503, "The credential check is unavailable. Try again shortly."
         return 401, "Not authenticated"
 
     def is_door(self, path: str) -> bool:

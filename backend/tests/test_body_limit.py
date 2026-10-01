@@ -612,7 +612,43 @@ def test_the_door_guard_asks_for_a_credential_before_its_guard(admin_headers):
     with pytest.raises(HTTPException) as refused:
         check(admin_headers["Authorization"], "/doc")
     assert refused.value.status_code == 403 and called == [admin_headers["Authorization"]]
-    assert door_guard({"/doc": lambda authorization: None})(admin_headers["Authorization"], "/doc") is True
+    # The guard's answer is the account it admitted: one that returns nothing
+    # (a guard that refuses by returning rather than raising) admits nobody.
+    admits = door_guard({"/doc": lambda authorization: {"id": 1}})
+    assert admits(admin_headers["Authorization"], "/doc") is True
+    for nothing in (None, False, {}):
+        quiet = door_guard({"/doc": lambda authorization, n=nothing: n})
+        assert quiet(admin_headers["Authorization"], "/doc") is False, nothing
+
+
+def test_a_check_that_fails_is_a_503_not_a_lost_session():
+    """The check itself failing (the account store down, say) grants nothing,
+    on the headers - but as 503: a 401 reads to a client as a lost session.
+    The log names the exception's class, never its message."""
+    import json
+    sent = []
+
+    def broken(authorization, path):
+        raise RuntimeError("database is locked: secret-ish detail")
+
+    async def inner(scope, receive, send):
+        raise AssertionError("the route was reached")
+
+    async def receive():
+        raise AssertionError("the body was read")
+
+    async def send(message):
+        sent.append(message)
+
+    with patch("app.body_limit.log") as record:
+        mw = BodySizeLimit(inner, default_limit=100, per_path={"/doc": 5000}, wider_for=broken)
+        asyncio.run(mw({"type": "http", "path": "/doc",
+                        "headers": [(b"authorization", b"Bearer x")]}, receive, send))
+    assert sent[0]["status"] == 503
+    assert "unavailable" in json.loads(sent[1]["body"])["detail"]
+    failed = [c.kwargs for c in record.call_args_list if c.args[0] == "document_door_check_failed"]
+    assert failed == [{"path": "/doc", "error": "RuntimeError"}]
+    assert "secret-ish" not in repr(record.call_args_list)
 
 
 def test_the_door_reads_the_account_once():
