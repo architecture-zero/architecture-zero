@@ -18,14 +18,18 @@ on:
   workflow_dispatch:       # and on demand, from the Actions tab
 
 jobs:
+  # Runner image pinned to ubuntu-26.04 on 2026-10-01, after the suite passed on
+  # the new image. ubuntu-latest moves to 26.04 between 2026-10-19 and
+  # 2026-11-19 (actions/runner-images#14748); pinning removes the weeks in
+  # which runs land on either image.
   residue:
     name: private-residue guard
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # A tree only gains residue through a diff, so the daily run has nothing
     # to add here. Same reasoning for gitleaks and the frontend job below.
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # This template is derived from private deployments. Nothing from that
       # lineage - names, hosts, workspace paths - may appear in the tree. The
       # patterns live in .github/residue-denylist.txt (excluded from its own
@@ -63,10 +67,10 @@ jobs:
 
   gitleaks:
     name: gitleaks (secret scanning)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       # The gitleaks CLI directly, not gitleaks-action: the action requires a
@@ -83,9 +87,9 @@ jobs:
   # ignored below says why, what the ignore rests on, and what retires it.
   pip-audit:
     name: pip-audit (dependency CVEs)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pypa/gh-action-pip-audit@v1.1.0
         with:
           # requirements-dev.txt opens with `-r requirements.txt`, so this one
@@ -146,10 +150,10 @@ jobs:
   # source.
   bandit:
     name: bandit (Python SAST)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - run: pip install bandit
@@ -165,9 +169,9 @@ jobs:
   # is the point - it is what makes a gap in either of them visible.
   trivy:
     name: trivy (repository vuln, secret and misconfig scan)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
@@ -182,11 +186,11 @@ jobs:
 
   tests:
     name: test suite
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # 3.11 matches the runtime image.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -221,11 +225,11 @@ jobs:
 
   frontend:
     name: frontend (type-check, tests, build)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: npm
@@ -250,9 +254,9 @@ jobs:
     # Main-branch pushes only: proves the Dockerfile (including the baked
     # reranker layers) without spending build minutes on every PR round.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build backend image
         run: docker build --build-arg GIT_SHA=${{ github.sha }} ./backend
       # The frontend image is the one operators actually run - the placeholder
