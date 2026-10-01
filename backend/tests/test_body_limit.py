@@ -323,7 +323,7 @@ def test_a_wider_ceiling_is_only_for_a_caller_with_a_credential():
     been read and parsed - so the wider figure was anyone's."""
     asked = []
 
-    def admits(authorization):
+    def admits(authorization, path):
         asked.append(authorization)
         return authorization == "Bearer good"
 
@@ -342,7 +342,7 @@ def test_a_wider_ceiling_is_only_for_a_caller_with_a_credential():
 
 
 def test_a_check_that_raises_grants_nothing():
-    def broken(authorization):
+    def broken(authorization, path):
         raise RuntimeError("the check itself failed")
 
     inst = BodySizeLimit(lambda *a: None, default_limit=100, per_path={"/doc": 5000},
@@ -350,10 +350,17 @@ def test_a_check_that_raises_grants_nothing():
     assert inst.limit_for("/doc", "Bearer anything") == 100
 
 
+def test_only_true_admits():
+    """A check that returns the account it found, or anything else that is
+    merely truthy, has not said yes."""
+    for answer in ({"id": 1}, "yes", 1, None):
+        inst = BodySizeLimit(lambda *a: None, default_limit=100, per_path={"/doc": 5000},
+                             wider_for=lambda authorization, path, a=answer: a)
+        assert inst.limit_for("/doc", "Bearer anything") == 100, answer
+
+
 def test_the_installed_ceiling_asks_for_a_credential(admin_headers):
-    from app.auth import presents_a_credential
     m = _installed()
-    assert m.kwargs["wider_for"] is presents_a_credential
     inst = BodySizeLimit(lambda *a: None, **m.kwargs)
     assert m.kwargs["per_path"], "no door to check"
     for path, figure in m.kwargs["per_path"].items():
@@ -384,7 +391,7 @@ def test_a_document_door_answers_a_caller_with_no_credential_on_the_headers(pres
             assert json.loads(seen["sent"][1]["body"]) == {"detail": "Not authenticated"}
             assert [c.args[0] for c in count.call_args_list] == ["document_door_refused_total"]
             refused = [c for c in record.call_args_list if c.args[0] == "document_door_refused"]
-            assert [c.kwargs for c in refused] == [{"path": path}]
+            assert [c.kwargs for c in refused] == [{"path": path, "status": 401}]
 
 
 def test_a_path_with_no_figure_of_its_own_asks_nobody_who_they_are():
@@ -447,7 +454,7 @@ def test_a_default_switched_off_does_not_hand_a_door_to_everyone():
     door's figure. Nothing is wider than no ceiling: the door's own figure
     holds for every caller."""
     inst = BodySizeLimit(lambda *a: None, default_limit=0, per_path={"/doc": 5000},
-                         wider_for=lambda authorization: False)
+                         wider_for=lambda authorization, path: False)
     assert inst.limit_for("/doc", "") == 5000
     assert inst.limit_for("/doc", "Bearer anything") == 5000
     assert inst.limit_for("/other", "") == 0
@@ -473,3 +480,155 @@ def test_the_installed_ceiling_has_no_figure_it_ignored():
     m = _installed()
     inst = BodySizeLimit(lambda *a: None, **m.kwargs)
     assert set(inst.per_path) == set(m.kwargs["per_path"])
+
+
+# -- the door asks its route's own question (2026-10-01) ----------------------
+# Until then a door asked only for a credential - who, never what they may do -
+# so a signed-in account of any role could send it the full figure, and the
+# route refused that account only after the body was in.
+
+def _account(role, permissions=None, active=True):
+    """A session token for a fresh account of this shape, minted directly: the
+    login route's throttle and password policy are not what these tests are
+    about. Needs the app's database, so its callers take the client fixture."""
+    import uuid
+    from app.jwt_auth import create_access_token, unusable_password_hash
+    from app.users import create_user, deactivate_user, update_user_permissions
+    name = f"door-{role}-{uuid.uuid4().hex[:8]}"
+    uid = create_user(name, unusable_password_hash(), role=role)
+    if permissions is not None:
+        update_user_permissions(uid, permissions)
+    if not active:
+        deactivate_user(uid)
+    return "Bearer " + create_access_token(uid, name, role)
+
+
+def _route_answer(path, authorization):
+    """What the door's ROUTE answers this caller: the dependencies the route
+    declares, taken from the live app and mounted alone on a bare app - no
+    middleware, no body - so the answer is the route's guard and nothing
+    else. A change to the route's guard changes this answer with it."""
+    from fastapi import Depends, FastAPI
+    from fastapi.testclient import TestClient
+    from app.main import app
+    route = next(r for r in app.routes
+                 if getattr(r, "path", None) == path and "POST" in getattr(r, "methods", ()))
+    assert route.dependant.dependencies, f"{path} declares no guard"
+    probe = FastAPI()
+
+    @probe.post("/probe", dependencies=[Depends(d.call) for d in route.dependant.dependencies])
+    def _probe():
+        return {"detail": "admitted"}
+
+    with TestClient(probe) as c:
+        r = c.post("/probe", headers={"Authorization": authorization} if authorization else {})
+    return r.status_code, r.json()["detail"]
+
+
+def test_a_signed_in_account_without_the_permission_is_refused_on_the_headers(client):
+    """The finding, pinned: a member's token is a credential, and was enough
+    for the full figure. Now the door answers the route's 403, nothing read."""
+    import json
+    member = _account("member")
+    for path in _installed().kwargs["per_path"]:
+        with patch("app.body_limit.increment") as count, patch("app.body_limit.log") as record:
+            seen = _through_the_installed_ceiling(
+                path, {"Authorization": member, "Content-Length": str(3 * _MB)}, [b"x" * _MB] * 3)
+        assert seen["reached"] is None and "raised" not in seen, path       # never read
+        assert seen["sent"][0]["status"] == 403, path
+        assert json.loads(seen["sent"][1]["body"]) == {"detail": "Permission required: manage_kb"}
+        assert [c.args[0] for c in count.call_args_list] == ["document_door_refused_total"]
+        refused = [c for c in record.call_args_list if c.args[0] == "document_door_refused"]
+        assert [c.kwargs for c in refused] == [{"path": path, "status": 403}]
+
+
+def test_each_door_answers_what_its_route_answers(client, admin_headers):
+    """For every shape of caller the door's answer IS its route's: admitted
+    where the route admits, the route's 403 word for word where it forbids,
+    401 where it does not know the caller. The route's answer comes from its
+    own declared guard, so the two cannot drift apart unnoticed."""
+    import json
+    from app import auth
+    callers = {
+        "the Owner": admin_headers["Authorization"],
+        "an Admin": _account("admin"),
+        "a Member": _account("member"),
+        "a Guest": _account("guest"),
+        "a Member granted manage_kb": _account("member", ["chat", "manage_kb"]),
+        "an Admin whose list leaves it out": _account("admin", ["chat", "view_history"]),
+        "a deactivated Admin": _account("admin", active=False),
+        "no header": "",
+        "a token this instance never signed": "Bearer not-a-real-token",
+        "another scheme": "Basic abc",
+        "the watcher's service key": "Bearer watcher-key-for-this-test",
+    }
+    answers = set()
+    with patch.object(auth, "WATCHER_API_KEY", "watcher-key-for-this-test"):
+        for path in _installed().kwargs["per_path"]:
+            for who, authorization in callers.items():
+                status, detail = _route_answer(path, authorization)
+                answers.add(status)
+                headers = {"Content-Length": str(3 * _MB)}
+                if authorization:
+                    headers["Authorization"] = authorization
+                seen = _through_the_installed_ceiling(path, headers, [b"x" * _MB] * 3)
+                if status == 200:
+                    assert seen["reached"] == 3 * _MB and seen["sent"] == [], (path, who)
+                    continue
+                assert seen["reached"] is None, (path, who)
+                assert seen["sent"][0]["status"] == status, (path, who, status)
+                if status == 403:
+                    assert json.loads(seen["sent"][1]["body"])["detail"] == detail, (path, who)
+    assert answers == {200, 401, 403}       # every kind of answer was exercised
+
+
+def test_the_door_reads_the_account_once():
+    """The check may read the caller's account, so an admitted request asks
+    it once, not once to refuse and again to size."""
+    asked = []
+    pulled = []
+
+    def check(authorization, path):
+        asked.append(path)
+        return True
+
+    async def inner(scope, receive, send):
+        pulled.append((await receive())["body"])
+
+    async def receive():
+        return {"type": "http.request", "body": b"x" * 500, "more_body": False}
+
+    async def send(message):
+        pass
+
+    mw = BodySizeLimit(inner, default_limit=100, per_path={"/doc": 5000}, wider_for=check)
+    asyncio.run(mw({"type": "http", "path": "/doc",
+                    "headers": [(b"authorization", b"Bearer x"),
+                                (b"content-length", b"500")]}, receive, send))
+    assert asked == ["/doc"] and pulled == [b"x" * 500]
+
+
+def test_a_refusal_raised_by_the_check_is_answered_as_raised():
+    """The route's own refusal - its status and its detail - is what the caller
+    reads, so a client that treats 401 as a lost session and 403 as a missing
+    permission behaves the same at the door as at the route."""
+    import json
+    sent = []
+
+    def forbids(authorization, path):
+        raise HTTPException(status_code=403, detail="Permission required: something")
+
+    async def inner(scope, receive, send):
+        raise AssertionError("the route was reached")
+
+    async def receive():
+        raise AssertionError("the body was read")
+
+    async def send(message):
+        sent.append(message)
+
+    mw = BodySizeLimit(inner, default_limit=100, per_path={"/doc": 5000}, wider_for=forbids)
+    asyncio.run(mw({"type": "http", "path": "/doc",
+                    "headers": [(b"authorization", b"Bearer x")]}, receive, send))
+    assert sent[0]["status"] == 403
+    assert json.loads(sent[1]["body"]) == {"detail": "Permission required: something"}

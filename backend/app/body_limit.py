@@ -1,13 +1,14 @@
 """A request-body ceiling that runs BEFORE any parser (2026-09-21; the upload
-door and the credential check joined it 2026-09-28).
+door and the credential check joined it 2026-09-28; the door asks its route's
+own question since 2026-10-01).
 
 FastAPI reads and parses the whole body before a handler's first line runs,
 so every bound inside a handler - the chat route's character cap included -
 is a bound on what reaches the PROVIDER, never on what reaches json.loads.
 The middleware-excluded routes (chat, login, refresh, setup, the MFA
-completion) take a body from anyone, and the shipped compose publishes the
-backend port directly, so the proxy's client_max_body_size only ever covered
-one of the two doors. This covers both.
+completion) take a body from anyone, and a proxy's client_max_body_size
+bounds only what comes through the proxy - never a request made to the
+backend's own port, wherever a deployment publishes it. This bounds both.
 
 A Content-Length over the ceiling is refused with a plain 413 before a byte
 of the body is read. A body that arrives without one (chunked) is counted as
@@ -33,18 +34,28 @@ a 50 MB limit. A None override still means "no ceiling here", and nothing
 shipped uses it - a route is exempt only if something BEFORE its parser
 bounds what it takes in.
 
-A WIDER FIGURE IS FOR A CALLER WITH A CREDENTIAL. A path whose own figure is
-wider than the default is a DOOR: it exists to take a document, and every
-door's route asks who is calling. It asks from a dependency, though, and
-FastAPI resolves a dependency only after it has read and parsed the body -
-so on an instance that runs with auth off, where the auth middleware admits
-everyone, "who may send 50 MB" was anyone at all. It is decided here
-instead: `wider_for` is asked, with the request's Authorization header, and
-a caller who presents nothing is answered 401 on the headers, before a byte
-is read. The route would have said the same, after the body was in. (Holding
-that caller to the default figure instead was the first version, and it let
-them IN: behind a proxy that streams the doors, 300 stalled uploads were 300
-requests held inside the app.) A check that raises grants nothing.
+A WIDER FIGURE IS FOR A CALLER THE DOOR'S OWN ROUTE ADMITS. A path whose own
+figure is wider than the default is a DOOR: it exists to take a document, and
+every door's route asks who is calling and what they may do. It asks from a
+dependency, though, and FastAPI resolves a dependency only after it has read
+and parsed the body - so on an instance that runs with auth off, where the
+auth middleware admits everyone, "who may send 50 MB" was anyone at all. It
+is decided here instead: `wider_for` is asked, with the request's
+Authorization header and its path, before a byte is read. It answers True,
+or refuses with the route's own refusal - an HTTPException, answered here as
+raised - and a check that returns anything else, or raises anything else,
+grants nothing (401).
+
+Until 2026-10-01 the question was only whether the caller presented a
+credential - WHO, never what they may do - so any signed-in account of any
+role could send a door its full figure and be refused by the route only
+afterwards, with the body in. Now the door asks the permission its route
+asks for: a caller with nothing to present meets 401 here, one whose account
+lacks the permission meets the route's 403, on the headers either way. The
+route would have said the same, after the body was in. (Holding a refused
+caller to the default figure instead was the first version, and it let them
+IN: behind a proxy that streams the doors, 300 stalled uploads were 300
+requests held inside the app.)
 
 WHAT ZERO MEANS. A default of 0 switches the default ceiling OFF, by the
 operator's choice; the paths with a figure of their own keep it, for every
@@ -96,8 +107,9 @@ async def _answer(send, status: int, detail: str) -> None:
 class BodySizeLimit:
     """ASGI middleware. `per_path` overrides the default ceiling for exact
     paths; a None override means "no ceiling here" (something before the
-    route's parser bounds what it takes in). `wider_for(authorization)` says
-    whether this caller may use a path whose figure is WIDER than the default."""
+    route's parser bounds what it takes in). `wider_for(authorization, path)`
+    says whether this caller may use a path whose figure is WIDER than the
+    default: True, or the door's own refusal raised as an HTTPException."""
 
     def __init__(self, app, default_limit: int, per_path: dict | None = None,
                  wider_for=None):
@@ -117,13 +129,19 @@ class BodySizeLimit:
                    for path, figure in self.per_path.items()},
             ignored=ignored, credential_check=wider_for is not None)
 
-    def _admits(self, authorization: str) -> bool:
+    def _refusal(self, authorization: str, path: str) -> tuple[int, object] | None:
+        """None when this caller may use the door at `path`; otherwise the
+        status and detail to answer with. Only True admits."""
         if self.wider_for is None:
-            return True
+            return None
         try:
-            return bool(self.wider_for(authorization))
+            if self.wider_for(authorization, path) is True:
+                return None
+        except HTTPException as refused:
+            return refused.status_code, refused.detail
         except Exception:
-            return False
+            pass
+        return 401, "Not authenticated"
 
     def is_door(self, path: str) -> bool:
         """A path whose own figure is wider than the default. With the default
@@ -134,12 +152,12 @@ class BodySizeLimit:
         return own is None or own > self.default_limit
 
     def limit_for(self, path: str, authorization: str = "") -> int | None:
-        """The ceiling this caller would meet on this path."""
-        if path not in self.per_path:
+        """The ceiling this caller would meet on this path. A caller a door
+        refuses meets no figure at all - it is answered on the headers - so
+        the door's figure is never theirs."""
+        if self.is_door(path) and self._refusal(authorization, path):
             return self.default_limit
-        if self.is_door(path) and not self._admits(authorization):
-            return self.default_limit
-        return self.per_path[path]
+        return self.per_path.get(path, self.default_limit)
 
     async def __call__(self, scope, receive, send):
         if scope.get("type") != "http":
@@ -155,12 +173,16 @@ class BodySizeLimit:
                     declared = None
             elif name == b"authorization" and not authorization:
                 authorization = value.decode("latin-1")
-        if self.is_door(path) and not self._admits(authorization):
-            increment("document_door_refused_total")
-            log("document_door_refused", path=path[:200])
-            await _answer(send, 401, "Not authenticated")
-            return
-        limit = self.limit_for(path, authorization)
+        if self.is_door(path):
+            # Asked ONCE: the check may read the caller's account.
+            refused = self._refusal(authorization, path)
+            if refused:
+                status, detail = refused
+                increment("document_door_refused_total")
+                log("document_door_refused", path=path[:200], status=status)
+                await _answer(send, status, detail)
+                return
+        limit = self.per_path.get(path, self.default_limit)
         if not _bounds(limit):
             return await self.app(scope, receive, send)
 

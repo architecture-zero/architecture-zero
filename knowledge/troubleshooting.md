@@ -233,10 +233,12 @@ the client inside Linux.
 ## Uploads rejected: "File too large" or "Unsupported file type"
 
 The upload cap defaults to 50 MB (MAX_UPLOAD_MB). A file far over the cap is
-refused before it is read, with "Request body too large" (above). An upload
-answered "Not authenticated" carried no credential: the two routes that take
-a document ask for one before they read anything, whatever ENABLE_AUTH is
-set to. Supported types: md,
+refused before it is read, with "Request body too large" (above). The two
+routes that take a document ask who is calling, and whether their account
+holds manage_kb, before they read anything, whatever ENABLE_AUTH is set to:
+an upload answered "Not authenticated" carried no session, and one answered
+"Permission required: manage_kb" came from an account without that
+permission (the Owner and the Admin preset hold it). Supported types: md,
 txt, pdf, docx, py, js, ts, json, yaml. "No text could be extracted" on a
 PDF usually means a scanned/image-only PDF - run OCR first, the platform
 ingests text, not images.

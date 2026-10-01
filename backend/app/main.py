@@ -14,8 +14,9 @@ import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.auth import AuthMiddleware, presents_a_credential
+from app.auth import AuthMiddleware
 from app.body_limit import BodySizeLimit
+from app.jwt_auth import door_guard
 from app.audit import purge_old_entries
 from app.config import init_config_db
 from app.db import init_db as _create_schema
@@ -66,12 +67,16 @@ app.add_middleware(
         "/api/ingest/upload": (int(os.getenv("MAX_UPLOAD_MB", "50")) + 1) * 1024 * 1024,
         "/api/ingest": int(os.getenv("MAX_UPLOAD_MB", "50")) * 1024 * 1024,   # the JSON text-ingest door
     },
-    # A path with a wider figure is a door for a caller who has shown a
-    # credential - asked whatever ENABLE_AUTH says, because with auth off the
-    # middleware outside admits everyone and the doors above answer 401 only
-    # after their body has been read and parsed. No credential: 401 here, on
-    # the headers, with nothing read.
-    wider_for=presents_a_credential,
+    # A path with a wider figure is a door, and a door asks its route's own
+    # question on the headers, with nothing read - whatever ENABLE_AUTH says,
+    # because with auth off the middleware outside admits everyone and the
+    # routes answer only after their body has been read and parsed. Each door
+    # names the permission its route requires (routers/kb.py); no credential
+    # is 401 here, an account without the permission the route's 403.
+    wider_for=door_guard({
+        "/api/ingest/upload": "manage_kb",
+        "/api/ingest": "manage_kb",
+    }),
 )
 app.add_middleware(AuthMiddleware)
 app.add_middleware(

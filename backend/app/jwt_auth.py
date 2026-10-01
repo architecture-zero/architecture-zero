@@ -408,6 +408,17 @@ def authenticate_user(username: str, password: str) -> dict | None:
     return user
 
 
+def user_from_token(token: str) -> dict:
+    """The active account a session token names, or the 401 that says why
+    not. get_current_user's decision, callable where no dependency runs."""
+    payload = decode_access_token(token)
+    user_id = int(payload.get("sub", 0))
+    user = get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    return user
+
+
 async def get_current_user(credentials=Depends(oauth2_scheme)) -> dict:
     """The enforcing dependency: raises 401 on missing or invalid
     credentials. Used route-level on every non-public route (a wiring test
@@ -415,12 +426,7 @@ async def get_current_user(credentials=Depends(oauth2_scheme)) -> dict:
     middleware layer is ever disabled."""
     if not credentials:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    payload = decode_access_token(credentials.credentials)
-    user_id = int(payload.get("sub", 0))
-    user = get_user_by_id(user_id)
-    if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
-    return user
+    return user_from_token(credentials.credentials)
 
 
 async def require_owner(current_user: dict = Depends(get_current_user)) -> dict:
@@ -431,16 +437,40 @@ async def require_owner(current_user: dict = Depends(get_current_user)) -> dict:
     return current_user
 
 
+def check_permission(user: dict, scope: str) -> dict:
+    """The Owner (full bypass) or an account whose resolved permissions
+    include the scope; anyone else, 403. require_permission's decision."""
+    if is_owner(user):
+        return user
+    if scope not in effective_permissions(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Permission required: {scope}",
+        )
+    return user
+
+
 def require_permission(scope: str):
     """Dependency factory: passes for the Owner (full bypass) or any user
     whose resolved permissions include the scope."""
     async def _check(current_user: dict = Depends(get_current_user)) -> dict:
-        if is_owner(current_user):
-            return current_user
-        if scope not in effective_permissions(current_user):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Permission required: {scope}",
-            )
-        return current_user
+        return check_permission(current_user, scope)
     return _check
+
+
+def door_guard(scopes: dict[str, str]):
+    """The body ceiling's check for its document doors (app/body_limit.py):
+    `scopes` names, for each door's path, the permission its route asks with
+    require_permission. The check is asked with the request's Authorization
+    header before a byte of the body is read, and asks what the route will:
+    a credential first (no credential, no account lookup), then the account
+    the token names and that permission - raising the route's own 401 or
+    403. A door with no permission named here admits nobody."""
+    def check(authorization: str, path: str) -> bool:
+        from app.auth import presents_a_credential
+        scope = scopes.get(path)
+        if scope is None or not presents_a_credential(authorization):
+            return False
+        check_permission(user_from_token(authorization.removeprefix("Bearer ").strip()), scope)
+        return True
+    return check

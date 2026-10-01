@@ -128,8 +128,9 @@ def presents_a_credential(authorization: str) -> bool:
     auth off the middleware below admits everyone, and the routes that take
     a document answer 401 from a dependency - which FastAPI resolves only
     AFTER it has read and parsed the body. So "who may send 50 MB" cannot be
-    left to the route. It says nothing about what the caller may DO: the
-    route's own guard still decides that, after the body is in."""
+    left to the route. This is only the first half: it says nothing about
+    what the caller may DO, and the door's check (jwt_auth.door_guard) asks
+    that next, with the permission the door's route requires."""
     if len(authorization) > MAX_CREDENTIAL_CHARS or not authorization.startswith("Bearer "):
         return False
     token = authorization.removeprefix("Bearer ").strip()
