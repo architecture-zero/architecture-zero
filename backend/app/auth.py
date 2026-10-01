@@ -97,7 +97,7 @@ EXCLUDED_PATHS = {
 
 # Exempt by pattern - none on this surface (the hub carries its radio routes
 # here). Kept so the middleware's predicate reads the same on every surface.
-EXCLUDED_PATTERNS: tuple = ()
+EXCLUDED_PATTERNS = ()
 
 
 def is_excluded(path: str) -> bool:
