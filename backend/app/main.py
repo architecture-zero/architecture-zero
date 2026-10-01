@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.auth import AuthMiddleware
 from app.body_limit import BodySizeLimit
-from app.jwt_auth import door_guard
+from app.jwt_auth import door_guard, permission_guard
 from app.audit import purge_old_entries
 from app.config import init_config_db
 from app.db import init_db as _create_schema
@@ -71,11 +71,12 @@ app.add_middleware(
     # question on the headers, with nothing read - whatever ENABLE_AUTH says,
     # because with auth off the middleware outside admits everyone and the
     # routes answer only after their body has been read and parsed. Each door
-    # names the permission its route requires (routers/kb.py); no credential
-    # is 401 here, an account without the permission the route's 403.
+    # names its route's guard (routers/kb.py: require_permission("manage_kb"));
+    # no credential is 401 here, an account without the permission the
+    # route's 403.
     wider_for=door_guard({
-        "/api/ingest/upload": "manage_kb",
-        "/api/ingest": "manage_kb",
+        "/api/ingest/upload": permission_guard("manage_kb"),
+        "/api/ingest": permission_guard("manage_kb"),
     }),
 )
 app.add_middleware(AuthMiddleware)

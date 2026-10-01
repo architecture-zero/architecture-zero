@@ -458,19 +458,29 @@ def require_permission(scope: str):
     return _check
 
 
-def door_guard(scopes: dict[str, str]):
-    """The body ceiling's check for its document doors (app/body_limit.py):
-    `scopes` names, for each door's path, the permission its route asks with
-    require_permission. The check is asked with the request's Authorization
-    header before a byte of the body is read, and asks what the route will:
-    a credential first (no credential, no account lookup), then the account
-    the token names and that permission - raising the route's own 401 or
-    403. A door with no permission named here admits nobody."""
+def permission_guard(scope: str):
+    """require_permission(scope)'s question, asked of a raw Authorization
+    header: the account, or the route's own 401 / 403 raised."""
+    def guard(authorization: str) -> dict:
+        return check_permission(
+            user_from_token(authorization.removeprefix("Bearer ").strip()), scope)
+    return guard
+
+
+def door_guard(guards: dict):
+    """The body ceiling's check for its document doors (app/body_limit.py).
+    `guards` names, for each door's path, its route's guard as a function of
+    the Authorization header - permission_guard(scope) for a route that asks
+    require_permission(scope). The check is asked before a byte of the body
+    is read, and asks what the route will: a credential first (no credential,
+    no account lookup), then the door's guard, whose refusal - the route's
+    own 401 or 403 - is raised through. A door with no guard named here
+    admits nobody."""
     def check(authorization: str, path: str) -> bool:
         from app.auth import presents_a_credential
-        scope = scopes.get(path)
-        if scope is None or not presents_a_credential(authorization):
+        guard = guards.get(path)
+        if guard is None or not presents_a_credential(authorization):
             return False
-        check_permission(user_from_token(authorization.removeprefix("Bearer ").strip()), scope)
+        guard(authorization)
         return True
     return check

@@ -582,6 +582,28 @@ def test_each_door_answers_what_its_route_answers(client, admin_headers):
     assert answers == {200, 401, 403}       # every kind of answer was exercised
 
 
+def test_the_door_guard_asks_for_a_credential_before_its_guard(admin_headers):
+    """No credential, no account lookup: the guard is called only for a
+    header that carries one, and a door with no guard named admits nobody."""
+    from app.jwt_auth import door_guard
+    called = []
+
+    def guard(authorization):
+        called.append(authorization)
+        raise HTTPException(status_code=403, detail="Permission required: x")
+
+    check = door_guard({"/doc": guard})
+    for nothing in ("", "Basic abc", "Bearer not-a-real-token"):
+        assert check(nothing, "/doc") is False
+    assert called == []
+    assert check(admin_headers["Authorization"], "/elsewhere") is False
+    assert called == []
+    with pytest.raises(HTTPException) as refused:
+        check(admin_headers["Authorization"], "/doc")
+    assert refused.value.status_code == 403 and called == [admin_headers["Authorization"]]
+    assert door_guard({"/doc": lambda authorization: None})(admin_headers["Authorization"], "/doc") is True
+
+
 def test_the_door_reads_the_account_once():
     """The check may read the caller's account, so an admitted request asks
     it once, not once to refuse and again to size."""
