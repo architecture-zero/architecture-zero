@@ -224,7 +224,7 @@ instead, which is both unaffected and better isolated than running the same
 code directly on your machine:
 
     cd frontend
-    docker run --rm -v "$PWD:/app" -v /app/node_modules -w /app node:20-alpine \
+    docker run --rm -v "$PWD:/app" -v /app/node_modules -w /app node:24-alpine \
       sh -c "npm ci && npm run build"
 
 Deployment is not affected at all: `docker compose up --build` already builds

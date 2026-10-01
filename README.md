@@ -220,11 +220,11 @@ whose OS refuses to load unsigned native modules (see below):
 
 ```
 cd frontend
-docker run --rm -v "$PWD:/app" -v /app/node_modules -w /app node:20-alpine \
+docker run --rm -v "$PWD:/app" -v /app/node_modules -w /app node:24-alpine \
   sh -c "npm ci && npm run type-check && npm test && npm run build"
 ```
 
-Or on the host, if you have Node 20+ and your OS allows it:
+Or on the host, if you have Node 24+ and your OS allows it:
 
 ```
 cd frontend && npm install
