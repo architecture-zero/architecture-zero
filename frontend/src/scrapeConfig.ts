@@ -17,6 +17,11 @@
 // The credential rides in a FILE (credentials_file), never inline and never
 // in this download: prometheus.yml is often committed or shared, and a
 // one-line token file can be readable by the Prometheus user alone.
+//
+// The target moved from the backend port to the client port on 2026-10-01:
+// the shipped compose publishes the backend on loopback only now, and the
+// client's nginx proxies /metrics to it (frontend/nginx.conf), so the client
+// port is the one a Prometheus on another machine can reach.
 export const SCRAPE_CONFIG_YAML = `# Prometheus scrape config for Architecture Zero
 # MERGE this file into prometheus.yml. It declares scrape_configs itself, so
 # pasting it UNDER an existing scrape_configs key gives you the key twice and
@@ -32,13 +37,14 @@ export const SCRAPE_CONFIG_YAML = `# Prometheus scrape config for Architecture Z
 # download. A user login will not work here, because its access token expires
 # in 30 minutes and Prometheus cannot refresh one.
 #
-# The target is the BACKEND port (8000 in the shipped compose), not the client
-# port: nginx only proxies /api/, so /metrics on the client port returns the
-# HTML page with a 200 and Prometheus would scrape markup.
+# The target is the CLIENT port (5173 in the shipped compose): its nginx
+# proxies /metrics to the backend, whose own port is published on loopback
+# only. If you front the client with a TLS proxy of your own, target that
+# instead and add scheme: https.
 scrape_configs:
   - job_name: 'architecture-zero'
     static_configs:
-      - targets: ['YOUR_HOST:8000']
+      - targets: ['YOUR_HOST:5173']
     metrics_path: /metrics
     scrape_interval: 30s
     authorization:

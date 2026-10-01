@@ -16,8 +16,16 @@ services:
       KNOWLEDGE_DIR: /knowledge
       DOCS_DIR: /app/docs
       EVAL_SEED_PATH: /app/eval-questions.json
+    # Loopback only (2026-10-01). The frontend's nginx reaches this service over
+    # the compose network (frontend/api-proxy.inc -> backend:8000) for /api/ and
+    # /metrics, so nothing in the stack needs the host port; it stays for your
+    # own curl on this machine (the runbook's health check and first-run setup).
+    # Published on every interface it let anyone who could reach the box skip
+    # the proxy, and the backend's server bounded no header until the same day
+    # (backend/Dockerfile). To reach the API from elsewhere, go through the
+    # frontend's port or a proxy of your own in front of it.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       # The one persistent volume: SQLite DBs, the chroma index, ingest state,
       # backups. Everything else is read-only views of the repo.

@@ -107,9 +107,13 @@ def is_excluded(path: str) -> bool:
 
 
 
-# The longest Authorization header the credential check will look at. A token
-# this instance signs is a few hundred characters, and the check runs before
-# any authentication - it must not be handed megabytes to decode.
+# The longest Authorization header anything here will decode. A token this
+# instance signs is a few hundred characters, and every reader of the header
+# runs before authentication - the credential check below, the middleware, and
+# decode_access_token (app/jwt_auth.py), which the route guards and the chat
+# route call. None of them may be handed megabytes to decode (2026-10-01: until
+# then only the credential check was bounded, and the backend's own port took a
+# 50 MB header whole - Dockerfile, the --http h11 note).
 MAX_CREDENTIAL_CHARS = 4096
 
 
@@ -169,7 +173,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
+        if len(auth_header) > MAX_CREDENTIAL_CHARS or not auth_header.startswith("Bearer "):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Missing or invalid Authorization header"},

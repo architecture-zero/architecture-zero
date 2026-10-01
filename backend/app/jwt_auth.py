@@ -270,6 +270,16 @@ def create_refresh_token(user_id: int) -> tuple[str, str]:
 
 
 def decode_access_token(token: str) -> dict:
+    # Bounded before the decode, like the middleware (app/auth.py,
+    # MAX_CREDENTIAL_CHARS): the route guards and the chat route hand this the
+    # header's token as it arrived.
+    from app.auth import MAX_CREDENTIAL_CHARS
+    if len(token) > MAX_CREDENTIAL_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
     except JWTError:

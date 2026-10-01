@@ -26,4 +26,13 @@ COPY ./eval-questions.json ./eval-questions.json
 ARG GIT_SHA=unknown
 ENV GIT_SHA=$GIT_SHA
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --http h11 (2026-10-01): the server bounds the request head itself. Under
+# the parser uvicorn[standard] installs and prefers (httptools) this port took
+# a 50 MB Authorization header whole and handed it to the app. h11 refuses a
+# head still incomplete past --h11-max-incomplete-event-size; 64 KiB sits above
+# the largest head the shipped nginx forwards (about 32 KiB with its defaults)
+# and far below what hurts. Measured: a 60 KB head passed sent whole or in 2 KB
+# pieces, 200 KB and 2 MB were refused before the app saw a byte. Both parsers
+# advertise the same ASGI spec version, so streaming and the client-gone path
+# are unchanged. tests/test_header_bounds.py runs these exact flags.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--http", "h11", "--h11-max-incomplete-event-size", "65536"]

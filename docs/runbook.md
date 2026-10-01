@@ -24,6 +24,9 @@ override was added; the README carries the same note).
    and never consults that flag.
 3. `docker compose up -d --build` (the first build downloads and bakes the
    reranker models into the image).
+   The backend's port is published on loopback only, so the `localhost:8000`
+   commands below run on the box itself; from another machine, the same paths
+   answer through the frontend's port (`http://<host>:5173/api/health`).
 4. Open http://localhost:8000/api/health - expect status healthy (or
    degraded if the CHAT endpoint is not up yet, which a cloud-only deployment
    can ignore). It says nothing about the embedder: that is a separate

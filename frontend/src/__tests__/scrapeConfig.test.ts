@@ -48,7 +48,7 @@ describe('downloaded Prometheus scrape config', () => {
       'scrape_configs:',
       "  - job_name: 'architecture-zero'",
       '    static_configs:',
-      "      - targets: ['YOUR_HOST:8000']",
+      "      - targets: ['YOUR_HOST:5173']",
       '    metrics_path: /metrics',
       '    scrape_interval: 30s',
       '    authorization:',
@@ -57,9 +57,14 @@ describe('downloaded Prometheus scrape config', () => {
     ])
   })
 
-  it('targets the backend port YOUR_HOST:8000, never the :80 or :443 edge', () => {
+  it('targets the client port YOUR_HOST:5173, never the loopback-only backend port or an unpublished edge', () => {
+    // Since 2026-10-01 the shipped compose publishes the backend on loopback
+    // only and the client's nginx proxies /metrics (frontend/nginx.conf), so
+    // :8000 is unreachable from a Prometheus on another machine; :80 and :443
+    // are not published by the shipped compose at all.
     const targets = lines.filter((l) => l.trimStart().startsWith('- targets:'))
-    expect(targets).toEqual(["      - targets: ['YOUR_HOST:8000']"])
+    expect(targets).toEqual(["      - targets: ['YOUR_HOST:5173']"])
+    expect(SCRAPE_CONFIG_YAML).not.toContain(":8000']")
     expect(SCRAPE_CONFIG_YAML).not.toContain(":80']")
     expect(SCRAPE_CONFIG_YAML).not.toContain(":443']")
   })
