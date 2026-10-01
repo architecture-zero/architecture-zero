@@ -18,7 +18,7 @@ on:
   workflow_dispatch:       # and on demand, from the Actions tab
 
 jobs:
-  # Runner image pinned to ubuntu-26.04 on 2026-10-01, after the suite passed on
+  # Runner image pinned to ubuntu-26.04 on 2026-09-30, after the suite passed on
   # the new image. ubuntu-latest moves to 26.04 between 2026-10-19 and
   # 2026-11-19 (actions/runner-images#14748); pinning removes the weeks in
   # which runs land on either image.
