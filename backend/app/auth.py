@@ -95,6 +95,17 @@ EXCLUDED_PATHS = {
     "/metrics",
 }
 
+# Exempt by pattern - none on this surface (the hub carries its radio routes
+# here). Kept so the middleware's predicate reads the same on every surface.
+EXCLUDED_PATTERNS: tuple = ()
+
+
+def is_excluded(path: str) -> bool:
+    """The middleware's allowlist as ONE predicate (2026-09-30): an exact path or
+    an exact pattern. Called with the router's path, never request.url.path."""
+    return path in EXCLUDED_PATHS or any(p.fullmatch(path) for p in EXCLUDED_PATTERNS)
+
+
 
 # The longest Authorization header the credential check will look at. A token
 # this instance signs is a few hundred characters, and the check runs before
@@ -136,9 +147,14 @@ def presents_a_credential(authorization: str) -> bool:
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        # The ROUTER's path, read once (2026-09-30). request.url.path is rebuilt
+        # from the Host header - "Host: x/api/health?" made it read /api/health
+        # while the router served the real path - and it prepends root_path
+        # besides. Every decision below reads the string the router matches on.
+        path = request.scope.get("path", "")
         # Peer KB gate - enforced regardless of ENABLE_AUTH, so a dev
         # instance with auth off still cannot leak its KB to an unkeyed peer.
-        if ECO_EXPOSE_KB and request.url.path == "/api/query-kb":
+        if ECO_EXPOSE_KB and path == "/api/query-kb":
             peer_key = request.headers.get("X-Peer-Key", "")
             scope = PEER_KEY_SCOPES.get(peer_key) if peer_key else None
             if scope:
@@ -149,7 +165,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if not ENABLE_AUTH:
             return await call_next(request)
 
-        if request.url.path in EXCLUDED_PATHS:
+        if is_excluded(path):
             return await call_next(request)
 
         auth_header = request.headers.get("Authorization", "")
