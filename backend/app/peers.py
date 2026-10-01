@@ -22,6 +22,18 @@ _PEER_API_KEY       = os.getenv("PEER_API_KEY", "")
 _CB_THRESHOLD       = int(os.getenv("PEER_CIRCUIT_BREAKER_THRESHOLD", "3"))
 _CB_BACKOFF_SECONDS = int(os.getenv("PEER_CIRCUIT_BREAKER_BACKOFF", "300"))
 
+# The most a peer's answer may weigh, in bytes, and it is read no further
+# (since 2026-09-30). Until then a response was read whole into memory with no
+# ceiling, and the timeout
+# is per socket read, not for the whole answer - so a registered peer could
+# hand this instance a body of any size, slowly. Eight pieces come to about
+# 12 KB; a megabyte is a ceiling, not a figure to tune toward. 0 switches it off.
+PEER_MAX_RESPONSE_BYTES = int(os.getenv("PEER_MAX_RESPONSE_BYTES", str(1024 * 1024)))
+
+
+class PeerResponseTooLarge(Exception):
+    """A peer's answer went past PEER_MAX_RESPONSE_BYTES and was not read on."""
+
 # A peer URL is an operator-supplied address the SERVER then fetches - the
 # textbook SSRF shape. Without this the box is a proxy into anything it can
 # reach: the cloud metadata service (169.254.169.254 hands out IAM
@@ -150,8 +162,28 @@ class _PinnedHostAdapter(_req.adapters.HTTPAdapter):
         return super().send(request, **kwargs)
 
 
+def _read_bounded(resp, max_bytes: int, deadline: float) -> None:
+    """Read a streamed response's body up to `max_bytes` and no later than
+    `deadline` (time.monotonic), then hand it to the response so `.json()`
+    and `.text` read what was taken. Past either bound the read stops and
+    raises: the body is a peer's, and this side decides how much of it to hold
+    and how long to wait for all of it - the socket timeout alone is per
+    read, and a peer that sends a byte a second never trips it."""
+    body = bytearray()
+    for chunk in resp.iter_content(chunk_size=65536):
+        body.extend(chunk)
+        if max_bytes > 0 and len(body) > max_bytes:
+            raise PeerResponseTooLarge(
+                f"peer answered with more than {max_bytes} bytes - not read further")
+        if time.monotonic() > deadline:
+            raise _req.exceptions.Timeout("peer did not finish answering in time")
+    resp._content = bytes(body)
+    resp._content_consumed = True
+
+
 def _pinned_request(method: str, url: str, ip: str | None, *, timeout: float,
-                    headers: dict | None = None, params: dict | None = None):
+                    headers: dict | None = None, params: dict | None = None,
+                    max_bytes: int | None = None):
     """Send `method url` over a connection to `ip` - the address
     resolve_peer_url validated for its hostname - with no second DNS lookup
     anywhere: the URL sent down the socket carries the IP literal, the Host
@@ -161,7 +193,12 @@ def _pinned_request(method: str, url: str, ip: str | None, *, timeout: float,
     followed: a hop to a NAME would be a second, unpinned resolution. Refuses
     to run without an address - a request this module did not pin is a
     request this module does not make. The caller closes the response with
-    _release (the Session behind it owns the pooled connection)."""
+    _release (the Session behind it owns the pooled connection).
+
+    The body is read HERE, bounded (since 2026-09-30): at most `max_bytes`
+    (PEER_MAX_RESPONSE_BYTES by default)
+    and within twice the timeout in all. Past either the request fails like
+    any other, and the caller's breaker learns it."""
     if not ip:
         raise PeerURLRefused("refusing an unpinned peer request (no validated address)")
     parsed = urlparse(url)
@@ -176,10 +213,19 @@ def _pinned_request(method: str, url: str, ip: str | None, *, timeout: float,
     adapter = _PinnedHostAdapter(host)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
+    cap = PEER_MAX_RESPONSE_BYTES if max_bytes is None else max_bytes
+    deadline = time.monotonic() + max(float(timeout), 1.0) * 2
+    resp = None
     try:
         resp = session.request(method, pinned, headers=hdrs, params=params,
-                               timeout=timeout, allow_redirects=False)
+                               timeout=timeout, allow_redirects=False, stream=True)
+        _read_bounded(resp, cap, deadline)
     except Exception:
+        if resp is not None:
+            try:
+                resp.close()
+            except Exception:
+                pass
         session.close()
         raise
     setattr(resp, "_pinned_session", session)

@@ -136,11 +136,11 @@ async def optional_user(req: Request) -> dict | None:
 
 
 class Message(BaseModel):
-    # user or assistant ONLY (build 7's residue (d), 2026-09-30). History is the
+    # user or assistant ONLY (since 2026-09-30). History is the
     # caller's own text: a caller-chosen "system" role reached the system prompt
     # on the Anthropic lane, and any role but "user" slipped the guest turn
-    # count, which counts user turns. Every client and the Teams bot send only
-    # these two, and the server stores only these two.
+    # count, which counts user turns. Every client sends only these two, and
+    # the server stores only these two.
     role: Literal["user", "assistant"]
     content: str
 
@@ -636,36 +636,21 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
         else:
             logger.warning("use_peers=True but no enabled peers found in config")
 
-    # Score-filter peer chunks then merge into prompt context
+    # The peer boundary (app/peer_boundary.py, since 2026-09-30): what is not a
+    # piece goes before any field of it is
+    # read, then the score filter (a score that cannot raise - one that was
+    # not a number used to fail the whole answer), then the injection scan over
+    # each piece's text AND name, bounded (it read text of any size, and never
+    # the name). A HIGH finding drops the piece from THIS answer and is logged
+    # loudly (the peer corpus is not ours to quarantine); a milder one rides
+    # along tagged on a copy, and format_peer_context labels it.
+    from app import peer_boundary
     pre_filter = len(peer_chunks)
-    peer_chunks = [c for c in peer_chunks if c.get("score", 0.0) >= rag_threshold]
+    peer_chunks = peer_boundary.admit(peer_chunks, rag_threshold)
     if pre_filter:
         logger.info("Peer chunks after score filter: %d/%d (threshold=%.2f)", len(peer_chunks), pre_filter, rag_threshold)
-    # Injection gate on the peer boundary: peer chunks arrive at CHAT time
-    # and never pass the add_document choke point, so they get the same scan
-    # here. A chunk with a HIGH finding is dropped from THIS answer
-    # (transient quarantine - the peer corpus is not ours to hold) and logged
-    # loudly; milder findings ride along tagged, and format_peer_context
-    # labels them.
     if peer_chunks:
-        from app import corpus_scan
-        if corpus_scan.INJECTION_SCAN_MODE != "off":
-            kept_peer: list[dict] = []
-            for c in peer_chunks:
-                findings = corpus_scan.scan(c.get("text", ""))
-                if corpus_scan.has_high(findings) and corpus_scan.INJECTION_SCAN_MODE == "quarantine":
-                    log("peer_chunk_blocked", peer=c.get("peer", "?"),
-                        source=c.get("source", "?"),
-                        types=corpus_scan.finding_types(findings))
-                    continue
-                if findings:
-                    c["injection_flagged"] = True
-                    log("injection_detected", source=c.get("source", "?"),
-                        trust="external", peer=c.get("peer", "?"),
-                        types=corpus_scan.finding_types(findings),
-                        quarantined=False, mode=corpus_scan.INJECTION_SCAN_MODE)
-                kept_peer.append(c)
-            peer_chunks = kept_peer
+        peer_chunks = peer_boundary.scan_pieces(peer_chunks, on_event=log)
     if peer_chunks:
         # Peer chunks are EXTERNAL-tier: known systems, but the content
         # crosses an HTTP boundary and is never scanned at ingest here. Frame

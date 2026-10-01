@@ -98,7 +98,7 @@ def _resolve_model(model: str) -> tuple[str, str]:
     prefix inside a tagged local name must never send it off the box. Until
     2026-09-30 "mistral:7b" went to api.mistral.ai as model "7b", and
     "deepseek-r1:7b" to DeepSeek, wherever that vendor was keyed - the prompt
-    and its retrieved passages with it (build 11's audit, U112). Names without
+    and its retrieved passages with it (fixed 2026-09-30). Names without
     a colon route by the Anthropic / registry prefixes; Ollama is the
     fallback."""
     if ":" in model:

@@ -208,3 +208,38 @@ def test_credentials_in_a_peer_url_are_refused(monkeypatch):
     _resolver(monkeypatch, {"peer.example.com": [PUBLIC]})
     with pytest.raises(peers.PeerURLRefused):
         peers.validate_peer_url("https://user:pw@peer.example.com")
+
+
+# What a peer's answer may weigh, and how long it may take in all (since
+# 2026-09-30). The socket timeout is per read; the deadline is for the whole
+# answer.
+def test_an_answer_past_the_byte_ceiling_is_not_read_further(monkeypatch, recorders):
+    _resolver(monkeypatch, {"peer.example.com": [PUBLIC]})
+    monkeypatch.setattr(peers, "PEER_MAX_RESPONSE_BYTES", 4096)
+    _capture_sends(monkeypatch, route=lambda req: _response(payload={"results": [
+        {"text": "x" * 20000, "source": "s.md", "score": 0.9}]}))
+    assert peers.query_peer_kb(PEER, "q") == []
+    successes, failures = recorders
+    assert successes == [] and len(failures) == 1
+    assert "4096 bytes" in failures[0][1]
+
+
+def test_an_answer_under_the_ceiling_is_read_whole(monkeypatch, recorders):
+    _resolver(monkeypatch, {"peer.example.com": [PUBLIC]})
+    _capture_sends(monkeypatch)
+    assert len(peers.query_peer_kb(PEER, "q")) == 1
+    monkeypatch.setattr(peers, "PEER_MAX_RESPONSE_BYTES", 0)        # switched off
+    assert len(peers.query_peer_kb(PEER, "q")) == 1
+
+
+def test_an_answer_that_does_not_finish_in_time_is_not_waited_for(monkeypatch, recorders):
+    _resolver(monkeypatch, {"peer.example.com": [PUBLIC]})
+    _capture_sends(monkeypatch)
+    # the query starts at 1000, the deadline is set at 1000 (so 1010 for a
+    # 5-second timeout), and by the time the first of the body is read it is 1011
+    clock = [1000.0, 1000.0, 1011.0]
+    monkeypatch.setattr(peers.time, "monotonic",
+                        lambda: clock.pop(0) if len(clock) > 1 else clock[0])
+    assert peers.query_peer_kb(PEER, "q", timeout=5) == []
+    successes, failures = recorders
+    assert successes == [] and len(failures) == 1 and "time" in failures[0][1]

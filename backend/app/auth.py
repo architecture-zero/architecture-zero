@@ -161,9 +161,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         token = auth_header.removeprefix("Bearer ").strip()
 
-        # Constant-time, as the credential check above already was (build 7's
-        # residue (e), 2026-09-30): this compared with ==, which returns at the
-        # first differing byte.
+        # Constant-time, as the credential check above already was (since
+        # 2026-09-30): this compared with ==, which returns at the first
+        # differing byte.
         if WATCHER_API_KEY and hmac.compare_digest(token.encode("utf-8"),
                                                    WATCHER_API_KEY.encode("utf-8")):
             request.state.user_id = 0

@@ -48,7 +48,7 @@ def test_unknown_model_falls_back_to_ollama():
 
 
 def test_a_tagged_local_name_never_routes_to_a_vendor():
-    # Build 11's audit, U112 (2026-09-30): real Ollama tags whose names read as
+    # Fixed 2026-09-30: real Ollama tags whose names read as
     # a vendor's - by the namespace head ("mistral:7b") or by a routing prefix
     # ("deepseek-r1:7b", "gpt-oss:20b", "mistral-nemo:12b") - went to that
     # vendor's API wherever it was keyed, prompt and retrieved passages included.
@@ -68,7 +68,7 @@ def test_an_explicit_vendor_namespace_still_routes_with_the_vendors_own_id():
 
 def test_every_picker_entry_dispatches_to_the_group_it_is_listed_under(
         client, admin_headers, monkeypatch):
-    # The invariant U112 broke: a model the picker shows under "Local" must be
+    # The invariant the old resolver broke: a model the picker shows under "Local" must be
     # dispatched to Ollama, and a vendor's entry to that vendor.
     import app.routers.settings as s
     tags = ["qwen3:8b", "mistral:7b", "deepseek-r1:7b", "gpt-oss:20b",

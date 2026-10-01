@@ -1,4 +1,4 @@
-"""Build 7's residue, (d) and (e) (2026-09-30).
+"""Chat history roles and the watcher key compare (2026-09-30).
 
 (d) A chat history message is user or assistant, nothing else. History is the
 caller's own text: a caller-chosen "system" role reached the system prompt on

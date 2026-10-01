@@ -156,13 +156,16 @@ def test_a_signed_in_caller_still_chooses_when_selection_is_allowed(client, admi
 def test_role_strings_count_toward_the_bound(client, guest_open):
     """Every string the body carries to the provider counts, the role field
     included - a body whose payload rides in `role` with empty content must
-    not pass a bound stated in characters."""
+    not pass a bound stated in characters. Since 2026-09-30 such a body is
+    refused before the bound is read: a history role is user or assistant, and
+    anything else is a 422 (it was this bound's 413 until then). Either way
+    nothing reaches the model."""
     history = [{"role": "r" * 700, "content": ""}, {"role": "s" * 700, "content": ""}]
     with patch("app.routers.chat.GUEST_MAX_INPUT_CHARS", 1000), \
          patch("app.routers.chat.get_config", side_effect=_cfg()), \
          patch("app.routers.chat.stream_chat_events") as stream:
         r = client.post("/api/chat", json={"prompt": "hi", "history": history})
-    assert r.status_code == 413
+    assert r.status_code == 422
     stream.assert_not_called()
 
 
