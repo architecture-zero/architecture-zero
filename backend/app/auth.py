@@ -161,7 +161,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         token = auth_header.removeprefix("Bearer ").strip()
 
-        if WATCHER_API_KEY and token == WATCHER_API_KEY:
+        # Constant-time, as the credential check above already was (build 7's
+        # residue (e), 2026-09-30): this compared with ==, which returns at the
+        # first differing byte.
+        if WATCHER_API_KEY and hmac.compare_digest(token.encode("utf-8"),
+                                                   WATCHER_API_KEY.encode("utf-8")):
             request.state.user_id = 0
             request.state.role = "service"
             return await call_next(request)

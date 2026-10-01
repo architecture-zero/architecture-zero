@@ -24,6 +24,7 @@ import pathlib
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from typing import Literal
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
@@ -135,7 +136,12 @@ async def optional_user(req: Request) -> dict | None:
 
 
 class Message(BaseModel):
-    role: str
+    # user or assistant ONLY (build 7's residue (d), 2026-09-30). History is the
+    # caller's own text: a caller-chosen "system" role reached the system prompt
+    # on the Anthropic lane, and any role but "user" slipped the guest turn
+    # count, which counts user turns. Every client and the Teams bot send only
+    # these two, and the server stores only these two.
+    role: Literal["user", "assistant"]
     content: str
 
 
