@@ -47,6 +47,49 @@ def test_unknown_model_falls_back_to_ollama():
     assert _resolve_model("some-local-model") == ("ollama", "some-local-model")
 
 
+def test_a_tagged_local_name_never_routes_to_a_vendor():
+    # Build 11's audit, U112 (2026-09-30): real Ollama tags whose names read as
+    # a vendor's - by the namespace head ("mistral:7b") or by a routing prefix
+    # ("deepseek-r1:7b", "gpt-oss:20b", "mistral-nemo:12b") - went to that
+    # vendor's API wherever it was keyed, prompt and retrieved passages included.
+    for tag in ("mistral:7b", "mistral:latest", "deepseek-r1:7b",
+                "deepseek-coder-v2:16b", "gpt-oss:20b", "mistral-nemo:12b",
+                "mistral-small3.2:24b"):
+        assert _resolve_model(tag) == ("ollama", tag), tag
+
+
+def test_an_explicit_vendor_namespace_still_routes_with_the_vendors_own_id():
+    assert _resolve_model("mistral:mistral-large-latest") == \
+        ("mistral", "mistral-large-latest")
+    assert _resolve_model("deepseek:deepseek-chat") == ("deepseek", "deepseek-chat")
+    assert _resolve_model("gemini:gemini-3.6-flash") == ("gemini", "gemini-3.6-flash")
+    assert _resolve_model("groq:qwen/qwen3-32b") == ("groq", "qwen/qwen3-32b")
+
+
+def test_every_picker_entry_dispatches_to_the_group_it_is_listed_under(
+        client, admin_headers, monkeypatch):
+    # The invariant U112 broke: a model the picker shows under "Local" must be
+    # dispatched to Ollama, and a vendor's entry to that vendor.
+    import app.routers.settings as s
+    tags = ["qwen3:8b", "mistral:7b", "deepseek-r1:7b", "gpt-oss:20b",
+            "mistral-nemo:12b"]
+    fake = MagicMock()
+    fake.json.return_value = {"models": [{"name": t} for t in tags]}
+    monkeypatch.setattr(s, "_ollama_get", lambda *a, **k: fake)
+    monkeypatch.setattr(s, "offered_providers",
+                        lambda: {"ollama", "openai", "mistral", "deepseek", "gemini"})
+    s._compat_models_cache.clear()
+    with patch("app.routers.settings.requests.get", side_effect=Exception("offline")):
+        r = client.get("/api/models", headers=admin_headers)
+    s._compat_models_cache.clear()
+    assert r.status_code == 200
+    groups = {g["provider"]: g["models"] for g in r.json()["groups"]}
+    assert sorted(m["value"] for m in groups["ollama"]) == sorted(tags)
+    for provider, models in groups.items():
+        for m in models:
+            assert _resolve_model(m["value"])[0] == provider, (provider, m["value"])
+
+
 # -- Per-provider base + key --------------------------------------------------
 
 def test_compat_base_defaults_are_the_registry_entries():

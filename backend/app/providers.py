@@ -88,14 +88,28 @@ OPENAI_COMPAT: dict[str, dict] = {
 def _resolve_model(model: str) -> tuple[str, str]:
     """Resolve a picker model id to (provider, bare_model_id).
 
-    An explicit "provider:model" namespace wins, but ONLY when the left side
-    is a known provider name - Ollama tags ("qwen3:8b") contain colons and
-    must pass through untouched. Then Anthropic / registry prefixes; Ollama is
-    the fallback."""
+    A COLON marks an Ollama tag ("qwen3:8b", "mistral:7b", "deepseek-r1:7b",
+    "gpt-oss:20b") unless the name is an explicit "provider:model" namespace:
+    "anthropic:" and "ollama:" always, a registry provider's name only when
+    the rest is one of THAT provider's own ids - it starts with the provider's
+    routing prefixes, or anything for a provider with none (groq). The picker
+    lists local models by their Ollama tag and every vendor id bare or
+    groq-namespaced, and no vendor id carries a colon, so a vendor's name or
+    prefix inside a tagged local name must never send it off the box. Until
+    2026-09-30 "mistral:7b" went to api.mistral.ai as model "7b", and
+    "deepseek-r1:7b" to DeepSeek, wherever that vendor was keyed - the prompt
+    and its retrieved passages with it (build 11's audit, U112). Names without
+    a colon route by the Anthropic / registry prefixes; Ollama is the
+    fallback."""
     if ":" in model:
         head, tail = model.split(":", 1)
-        if head in ("anthropic", "ollama") or head in OPENAI_COMPAT:
+        if head in ("anthropic", "ollama"):
             return head, tail
+        entry = OPENAI_COMPAT.get(head)
+        if entry is not None and (not entry["prefixes"]
+                                  or tail.startswith(entry["prefixes"])):
+            return head, tail
+        return "ollama", model
     if model.startswith("claude-"):
         return "anthropic", model
     for name, entry in OPENAI_COMPAT.items():
