@@ -4,8 +4,9 @@ The chat route's character bound runs inside the handler, after FastAPI has
 read and parsed the whole body, so it bounds what reaches the provider and
 nothing else. The routes a caller reaches before signing in (chat, login,
 refresh, setup, MFA completion) would otherwise hand a 60 MB body to
-json.loads - and the shipped compose publishes the backend port directly, so
-the proxy's own ceiling only ever covered one door. These pin the ceiling at
+json.loads - and wherever a deployment publishes the backend's own port (the
+shipped compose did on every interface until 2026-10-01; it binds loopback now)
+the proxy's own ceiling covers only one door. These pin the ceiling at
 the app, the document doors' own figures, and the chunked path.
 """
 import asyncio

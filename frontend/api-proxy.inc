@@ -1,7 +1,8 @@
-# Shared by the two /api locations in nginx.conf - the general one and the
-# exact-match upload one. Everything about reaching the backend lives here, so
-# the two blocks differ only in what they do with the request BODY (how large
-# it may be, and whether it is buffered first) and cannot drift apart.
+# Shared by the locations in nginx.conf that reach the backend - the general
+# /api one, the exact-match upload one, and /metrics (since 2026-10-01).
+# Everything about reaching the backend lives here, so the blocks differ only in
+# what they do with the request BODY (how large it may be, and whether it is
+# buffered first) and cannot drift apart.
 # Included, not duplicated.
 #
 # proxy_pass through a VARIABLE on purpose: with a literal upstream, nginx

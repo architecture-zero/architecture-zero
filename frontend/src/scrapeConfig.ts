@@ -6,9 +6,9 @@
 // THREE things were wrong with the file this used to hand out, and each one
 // alone made it useless. Port 80 is not published by the shipped compose
 // (8000 is the backend, 5173 the client), so the scrape got connection
-// refused. Pointing it at the client port instead returns HTTP 200 and an
-// HTML page - the SPA fallback answers any unmatched path, and nginx only
-// proxies /api/, so Prometheus would have parsed index.html as metrics.
+// refused. Pointing it at the client port instead returned HTTP 200 and an
+// HTML page - the SPA fallback answered any unmatched path, and nginx then
+// proxied only /api/, so Prometheus would have parsed index.html as metrics.
 // And /metrics is authenticated, so even the right host and port answered
 // 401 unless a credential rides along - which no scraper could hold,
 // because the only credential this platform issued was a 30-minute access
