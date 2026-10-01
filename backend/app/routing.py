@@ -140,10 +140,23 @@ _STATUS_TOPIC_RE = re.compile(
 )
 
 
+# The longest message is_followup will read: the longest follow-up phrase
+# with its punctuation is under thirty characters.
+FOLLOWUP_MAX_CHARS = 64
+
+
 def is_followup(query: str) -> bool:
     """True when the WHOLE message is a bare deictic/continuation follow-up
     that only resolves against the previous turn."""
-    return bool(_FOLLOWUP_RE.match(query or ""))
+    q = (query or "").strip()
+    # A follow-up is a few words, and a long message never is one. The
+    # pattern's two whitespace runs around its punctuation went quadratic on
+    # a long run of spaces (1.09 s at 24,000 characters; the chat bound lets a
+    # signed-in caller send 200,000), so the length is checked first
+    # (2026-09-30).
+    if len(q) > FOLLOWUP_MAX_CHARS:
+        return False
+    return bool(_FOLLOWUP_RE.match(q))
 
 
 def is_status_topic(topic: str) -> bool:
