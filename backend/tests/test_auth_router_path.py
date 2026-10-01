@@ -45,3 +45,22 @@ def test_an_exempt_path_is_still_exempt_and_a_plain_request_still_refused(monkey
 def test_the_predicate_is_one_function():
     assert auth.is_excluded("/api/health")
     assert not auth.is_excluded("/api/secret")
+
+
+def test_a_typed_token_is_not_a_session(monkeypatch):
+    """An MFA challenge or a sign-in handoff shares the signing secret but is not
+    a session; the middleware refuses it (2026-09-30) - it used to let one past,
+    leaving each route's own dependency to refuse it."""
+    from datetime import datetime, timedelta, timezone
+    from jose import jwt
+    c = _mini(monkeypatch)
+    exp = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    def bearer(claims):
+        tok = jwt.encode({"sub": "1", "role": "admin", "exp": exp, **claims},
+                         auth.SECRET_KEY, algorithm=auth.ALGORITHM)
+        return {"Authorization": "Bearer " + tok}
+
+    for typed in ("mfa", "sso_handoff", "anything"):
+        assert c.get("/api/secret", headers=bearer({"type": typed})).status_code == 401, typed
+    assert c.get("/api/secret", headers=bearer({})).status_code == 200

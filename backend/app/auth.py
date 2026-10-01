@@ -95,8 +95,8 @@ EXCLUDED_PATHS = {
     "/metrics",
 }
 
-# Exempt by pattern - none on this surface (the hub carries its radio routes
-# here). Kept so the middleware's predicate reads the same on every surface.
+# Exempt by pattern - none here. Kept so the middleware's predicate reads the
+# same in every deployment that adds one.
 EXCLUDED_PATTERNS = ()
 
 
@@ -188,6 +188,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         try:
             payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            # Typed tokens (an MFA challenge, a sign-in handoff) share this
+            # secret but are NOT sessions: this let one past the middleware,
+            # leaving each route's own dependency to refuse it. Access tokens
+            # carry no "type" claim. (2026-09-30.)
+            if payload.get("type") is not None:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Invalid token type"},
+                )
             request.state.user_id = int(payload.get("sub", 0))
             request.state.role = payload.get("role", "member")
         except JWTError:
