@@ -298,8 +298,11 @@ def test_mfa_setup_needs_the_callers_password_on_enrollment_and_rekey(client, ad
         row = get_user_by_id(uid)
         assert row["mfa_secret"] == seed and row["mfa_enabled"]
 
+        # The password passes; since 2026-10-02 the re-key also takes the
+        # current code (test_mfa_code_bound.py pins that refusal).
         r = client.post("/api/auth/mfa/setup", headers=me,
-                        json={"rekey": True, "current_password": "MfaDoorP1"})
+                        json={"rekey": True, "current_password": "MfaDoorP1",
+                              "mfa_code": pyotp.TOTP(seed).now()})
         assert r.status_code == 200, r.text
         assert get_user_by_id(uid)["mfa_secret"] != seed
     finally:

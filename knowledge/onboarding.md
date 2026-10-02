@@ -81,7 +81,15 @@ MFA setup (POST /api/auth/mfa/setup, with your current password in the body
 as `current_password` - a session alone may not replace an authentication
 factor) to get a QR code, scan it with any TOTP authenticator app, then
 confirm one code (POST /api/auth/mfa/enable) to activate. Re-enrolling an
-account that already has MFA takes the same password plus `rekey: true`. Only AFTER every account that needs password login has
+account that already has MFA takes the same password plus `rekey: true` and a
+current code from the authenticator being replaced (`mfa_code`) - a session
+and a password alone may not swap in a new authenticator. Someone who has
+lost their authenticator cannot re-key it themselves: an admin resets it
+(POST /api/admin/users/{id}/mfa-reset, with the admin's own password; an
+admin may reset their own), and they enroll fresh. Wrong codes are capped
+per account (five per fifteen minutes by default, TOTP_MAX_FAILURES and
+TOTP_FAILURE_WINDOW), and only a right code clears the count - a correct
+password does not. Only AFTER every account that needs password login has
 enrolled should the operator set REQUIRE_MFA=true in the host environment
 and restart. With enforcement on, a password login for an account with no
 enrolled authenticator is refused outright - so flipping the flag before

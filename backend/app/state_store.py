@@ -32,7 +32,8 @@ Contract:
 - `put_if_absent` is the single-use primitive (a burned one-time token): an
   INSERT that either lands or does not, decided by the primary key.
 - Values are small JSON documents. Keys are namespaced by the caller
-  (`rate:`, `auth:`, `setup:`, `mfa:`, `guest_budget:`, `sso_jti:`).
+  (`rate:`, `auth:`, `setup:`, `mfa:`, `totp_fail:`, `guest_budget:`,
+  `sso_jti:`).
 """
 import json
 import random

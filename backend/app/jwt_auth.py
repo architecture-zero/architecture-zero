@@ -176,6 +176,52 @@ def require_step_up(current_user: dict, current_password: str, action: str) -> N
     log("auth_step_up", user_id=current_user["id"], action=action, how="password")
 
 
+def require_totp_step_up(current_user: dict, code: str, action: str) -> None:
+    """The caller's CURRENT authenticator code, or 400. Two doors take it:
+    the re-key (2026-10-02 - after the password, so a session plus the
+    password may no longer swap in a new authenticator without the old
+    one), and, on a surface that has the door, resetting your own password
+    (the "forgot it but still signed in" recovery survives because a token
+    thief does not hold the authenticator). An account with no second
+    factor cannot take this door and is told the other one.
+
+    Wrong codes count twice: against the account lock, as every step-up
+    failure does, and in security's per-account code bound - the one a
+    correct password cannot clear (on the re-key, the password step-up just
+    before this one has cleared the lock's counter)."""
+    import pyotp  # function-local, like every other pyotp use in this app
+    from app.logger import log
+    from app.security import (check_totp_failures, record_totp_failure,
+                              clear_totp_failures)
+    from app.users import reset_failed_attempts
+    if not current_user.get("mfa_enabled"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"To {action} you need two-factor enrolled on your account and a "
+                   f"current authenticator code. Enroll first, or use "
+                   f"PATCH /api/auth/me/password with your current password.")
+    if current_user.get("mfa_secret_unreadable") or not current_user.get("mfa_secret"):
+        # Truthful refusal, not pyotp.TOTP(None) -> 500: the seed exists and
+        # cannot be read (a restore under a rotated JWT_SECRET_KEY - T9).
+        raise HTTPException(
+            status_code=400,
+            detail="Two-factor is enabled on this account but its stored seed cannot "
+                   "be read with this instance's JWT_SECRET_KEY, so the code cannot be "
+                   "checked. Re-key the seed column (rekey_at_rest.py) first.")
+    _lockout_check(current_user)
+    if not (code or "").strip():
+        raise HTTPException(status_code=400,
+                            detail=f"A current authenticator code is required to {action}")
+    check_totp_failures(current_user["id"])
+    if not pyotp.TOTP(current_user["mfa_secret"]).verify(code.strip(), valid_window=1):
+        record_totp_failure(current_user["id"])
+        _count_step_up_failure(current_user, action, "totp")
+        raise HTTPException(status_code=400, detail="Invalid authenticator code")
+    clear_totp_failures(current_user["id"])
+    reset_failed_attempts(current_user["id"])
+    log("auth_step_up", user_id=current_user["id"], action=action, how="totp")
+
+
 # -- T9: the stranded second factor (upstream 2026-09-06, fleet port ----------
 # 2026-09-10). The MFA seed is Fernet-encrypted under a key derived from
 # JWT_SECRET_KEY (crypto_at_rest). A database restored under a DIFFERENT

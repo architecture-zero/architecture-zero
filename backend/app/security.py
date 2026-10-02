@@ -330,6 +330,65 @@ def burn_mfa_challenge(jti: str) -> None:
                        MFA_CHALLENGE_TTL, default=_fresh_challenge())
 
 
+# ── Wrong authenticator codes, per ACCOUNT (2026-10-02) ──────────────────────
+# Every door that checks an account's CURRENT code - the sign-in challenge
+# (/mfa/complete) and the code step-up (the re-key, and resetting your own
+# password where a surface has that door) - counts a wrong code here, and only
+# a RIGHT code clears it.
+#
+# The account lock (failed_attempts/locked_until) cannot be this bound on its
+# own: a correct password clears it at every password step-up door, so whoever
+# holds a session AND the password could guess a few codes, pass one step-up,
+# and guess again, at whatever rate the per-IP throttle allows from as many
+# addresses as they have. That did not matter while the password alone
+# re-keyed the authenticator; it matters the moment a code is the second proof
+# on the re-key. One bound for every door, because a code learned at one is
+# good at the others for its 30 to 90 seconds.
+#
+# A fixed window from the first wrong code (the expiry is set when the row is
+# created and kept after), so the cap is TOTP_MAX_FAILURES per window - the
+# same five per fifteen minutes the account lock allows a password guesser.
+TOTP_MAX_FAILURES   = int(os.getenv("TOTP_MAX_FAILURES",   "5"))
+TOTP_FAILURE_WINDOW = int(os.getenv("TOTP_FAILURE_WINDOW", "900"))  # seconds
+
+
+def _totp_key(user_id: int) -> str:
+    return f"totp_fail:{user_id}"
+
+
+def check_totp_failures(user_id: int) -> None:
+    """Refuse a code check on an account at its cap of wrong codes, before the
+    code is read - so the refusal holds against a right code too."""
+    doc = state_store.get(_totp_key(user_id))
+    if doc and int(doc.get("n", 0)) >= TOTP_MAX_FAILURES:
+        remaining = max(1, int((doc.get("since", 0) + TOTP_FAILURE_WINDOW
+                                - time.time()) // 60) + 1)
+        raise HTTPException(
+            status_code=429,
+            detail=(f"Too many wrong authenticator codes on this account. "
+                    f"Try again in {remaining} minute(s)."))
+
+
+def record_totp_failure(user_id: int) -> int:
+    """Count a wrong code against the account. Returns the new count. The
+    count reaching the cap is logged once - someone guessing codes is the
+    signal an operator wants, whichever door they used."""
+    doc = state_store.update(_totp_key(user_id),
+                             lambda d: d.__setitem__("n", int(d.get("n", 0)) + 1),
+                             TOTP_FAILURE_WINDOW,
+                             default={"n": 0, "since": time.time()})
+    if doc["n"] == TOTP_MAX_FAILURES:
+        from app.logger import log
+        log("auth_totp_cap_reached", user_id=user_id, failures=doc["n"],
+            window_seconds=TOTP_FAILURE_WINDOW)
+    return doc["n"]
+
+
+def clear_totp_failures(user_id: int) -> None:
+    """A right code: the only thing that refunds code guesses."""
+    state_store.delete(_totp_key(user_id))
+
+
 
 # ── Daily global guest budget (public-demo wallet backstop) ───────────────────
 # Per-IP rate limits don't stop distributed traffic / a busy day; this caps total guest

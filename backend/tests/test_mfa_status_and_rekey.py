@@ -108,8 +108,11 @@ def test_setup_rekeys_only_with_explicit_flag(client, probe):
     secret = pyotp.random_base32()
     _force_mfa(probe["id"], True, secret)
 
+    # Since 2026-10-02 the re-key also takes the current code
+    # (test_mfa_code_bound.py pins the refusals).
     r = client.post("/api/auth/mfa/setup",
-                    json={"rekey": True, "current_password": _USER["password"]},
+                    json={"rekey": True, "current_password": _USER["password"],
+                          "mfa_code": pyotp.TOTP(secret).now()},
                     headers=probe["headers"])
     assert r.status_code == 200, r.text
     row = get_user_by_id(probe["id"])

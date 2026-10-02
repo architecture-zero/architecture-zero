@@ -60,6 +60,14 @@ Particularly interesting, because these are where the interesting failures live:
   same bcrypt round a real one does, so account existence is not readable
   from response timing. A way to read existence anyway, or to make those
   routes cost the server more than the bound allows, is in scope.
+- **Guessing an authenticator code.** Since 2026-10-02 re-keying an enrolled
+  authenticator takes the current code as well as the password, wrong codes
+  are capped per account at every door that checks one (`TOTP_MAX_FAILURES`
+  per `TOTP_FAILURE_WINDOW`; only a right code clears the count, a correct
+  password does not), and `POST /api/auth/mfa/enable` verifies a pending
+  code only - on an enrolled account it answers 409 without reading the
+  code. A way to test codes against an account's live seed past that cap is
+  in scope.
 - **A replayed refresh token.** Rotation revokes the token it spends; a
   revoked refresh token presented again is treated as a stolen copy and every
   session in that family is revoked, with the same 401 a garbage token gets.

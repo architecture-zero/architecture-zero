@@ -33,6 +33,7 @@ from app.jwt_auth import (authenticate_user, create_access_token,
                           verify_password, get_current_user, validate_password,
                           create_mfa_challenge_token, decode_mfa_challenge_token,
                           refuse_if_mfa_seed_stranded, require_step_up,
+                          require_totp_step_up,
                           MAX_LOGIN_ATTEMPTS, LOCKOUT_DURATION_MINUTES)
 from app.logger import log, log_error
 from app.metrics import increment
@@ -40,6 +41,8 @@ from app.permissions import effective_permissions
 from app.security import (check_setup_rate_limit, check_auth_rate_limit,
                           check_mfa_challenge,
                           record_mfa_failure, burn_mfa_challenge,
+                          check_totp_failures, record_totp_failure,
+                          clear_totp_failures,
                           client_ip_from_request, verify_setup_claim_code,
                           burn_setup_claim_code)
 from app.users import (create_user, owner_exists, store_refresh_token,
@@ -224,6 +227,12 @@ def mfa_complete(request: MFACompleteRequest, req: Request):
          The lockout check below is a copy of login's and not a new policy: two
          different lockout rules on one account is how one of them ends up being
          the weaker one nobody remembers.
+
+    And since 2026-10-02 the per-account CODE bound (security.py): a correct
+    password clears failed_attempts at every step-up door, so a holder of a
+    session and the password could keep the lock from ever landing; wrong
+    codes now also count where only a right code clears them, shared with
+    the re-key door's code step-up.
     """
     from datetime import datetime, timezone, timedelta
     import pyotp
@@ -250,9 +259,11 @@ def mfa_complete(request: MFACompleteRequest, req: Request):
             raise HTTPException(status_code=429, detail=f"Account locked. Try again in {remaining} minute(s).")
         unlock_user(user["id"])
 
+    check_totp_failures(user["id"])
     totp = pyotp.TOTP(user["mfa_secret"])
     if not totp.verify(request.code, valid_window=1):
         record_mfa_failure(jti)
+        record_totp_failure(user["id"])
         increment("auth_failures_total")
         attempts = increment_failed_attempts(user["id"])
         if attempts >= MAX_LOGIN_ATTEMPTS:
@@ -263,6 +274,7 @@ def mfa_complete(request: MFACompleteRequest, req: Request):
         raise HTTPException(status_code=401, detail="Invalid authenticator code")
 
     burn_mfa_challenge(jti)
+    clear_totp_failures(user["id"])
     reset_failed_attempts(user["id"])
     access_token = create_access_token(user["id"], user["username"], user["role"])
     raw_refresh, expires_at = create_refresh_token(user["id"])
@@ -279,6 +291,9 @@ def mfa_complete(request: MFACompleteRequest, req: Request):
 class MFASetupRequest(BaseModel):
     rekey: bool = False
     current_password: str = ""
+    # The current authenticator code - the re-key's second proof (2026-10-02).
+    # Optional at the schema so a missing value is the route's string 400.
+    mfa_code: str = ""
 
 
 @router.post("/api/auth/mfa/setup")
@@ -297,6 +312,14 @@ def mfa_setup(request: MFASetupRequest | None = None,
     every other step-up door: 400 with a string detail, failures share
     login's lockout.
 
+    And on a re-key, the CURRENT code too (2026-10-02): with the password
+    alone, whoever held a session and the password could swap in their own
+    authenticator. Enrollment on an account with no factor has no code to
+    ask for, so it stays the password alone. The cost, accepted on the
+    record: a member who lost the authenticator cannot re-key it themselves
+    - an admin resets it (POST /api/admin/users/<id>/mfa-reset, an admin's
+    own account included, logged), then the member enrolls fresh.
+
     Re-key guard (2026-09-05, readiness-audit port): calling this while MFA
     is ENABLED replaces the secret and flips mfa_enabled off - so any holder
     of a live access token could strip an account's second factor with one
@@ -314,6 +337,8 @@ def mfa_setup(request: MFASetupRequest | None = None,
                 detail="MFA is already enabled for this account. Pass rekey=true "
                        "to deliberately re-enroll; that replaces the secret and "
                        "disables MFA until the new code verifies.")
+        require_totp_step_up(current_user, request.mfa_code,
+                             "re-key your authenticator")
         log("auth_mfa_rekey_started", user_id=current_user["id"],
             username=current_user["username"])
     secret = pyotp.random_base32()
@@ -336,9 +361,26 @@ class MFAEnableRequest(BaseModel):
 
 @router.post("/api/auth/mfa/enable")
 def mfa_enable(request: MFAEnableRequest, current_user: dict = Depends(get_current_user)):
-    """Verify TOTP code against pending secret and activate MFA."""
+    """Verify TOTP code against pending secret and activate MFA.
+
+    A PENDING secret only (2026-10-02). On an enrolled account the stored
+    secret is the LIVE one, and this route used to verify the code against
+    it - 200 for a right code, 401 for a wrong one, no counter, no throttle:
+    an unbounded oracle for the current code, open to a session alone, which
+    every door that accepts a current code inherited. An enrolled account is
+    now answered 409 before any code is read, the same for every code. A
+    re-key flips mfa_enabled off until the new code verifies, so the re-key
+    still finishes here.
+    """
     import pyotp
     user = get_user_by_id(current_user["id"])
+    if user and user.get("mfa_enabled"):
+        raise HTTPException(
+            status_code=409,
+            detail="MFA is already enabled for this account; there is no pending "
+                   "authenticator to verify. To replace it, re-key: POST "
+                   "/api/auth/mfa/setup with rekey=true, your password and a "
+                   "current code.")
     if not user or not user.get("mfa_secret"):
         raise HTTPException(status_code=400, detail="Call /api/auth/mfa/setup first")
     totp = pyotp.TOTP(user["mfa_secret"])

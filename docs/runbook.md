@@ -394,7 +394,11 @@ an account whose seed is truly lost, an Owner can reset its MFA
 (POST /api/admin/users/{id}/mfa-reset) and the person enrolls again. On a
 deployment with `REQUIRE_MFA=true` that reset account cannot sign in to
 re-enroll (login refuses accounts with no TOTP), so use the re-key, or set
-`REQUIRE_MFA=false` for the re-enrollment.
+`REQUIRE_MFA=false` for the re-enrollment. The same reset is the path for a
+person who lost a working authenticator: since 2026-10-02 the self-service
+re-key (POST /api/auth/mfa/setup with `rekey: true`) also takes a current
+code from the authenticator being replaced, so without the device it cannot
+be done from the account itself.
 GET /api/auth/me reports `mfa_secret_unreadable` for the signed-in account,
 and the admin roster carries the same field per user.
 
