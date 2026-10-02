@@ -690,25 +690,37 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
                     "Please ask something related to the available content."
                 )
             save_message(request.session_id, "assistant", refusal, request.model, user_id=uid)
-            if ENABLE_AUDIT_LOG:
-                log_audit_entry(
-                    user_id=current_user.get("id") if current_user else None,
-                    username=current_user.get("username") if current_user else None,
-                    session_id=request.session_id,
-                    prompt=request.prompt,
-                    response_length=len(refusal),
-                    model=request.model,
-                    use_rag=use_rag,
-                    sources=rag_sources,
-                    duration_ms=int((time.monotonic() - _t0) * 1000),
-                    # No-model lane: a canned string, no provider call.
-                    # Retrieval DID run on this lane, so the rerank receipt
-                    # is real.
-                    answer_lane="rag_refusal",
-                    rerank_ms=_rr_stats.get("rerank_ms"),
-                    rerank_pool=_rr_stats.get("rerank_pool"),
-                    rerank_provider=_rr_stats.get("rerank_provider"),
-                )
+            # PAST THIS POINT THE REFUSAL IS STORED - the model lane's rule
+            # below, which this lane lacked. This lane runs before the
+            # generator's try, so an audit write that raised here escaped the
+            # generator after the headers had gone: the client read a broken
+            # stream as "Could not reach the backend", kept the stored refusal
+            # off its count of stored rows, and the next Regenerate deleted the
+            # refusal and left the question to be stored twice. Bookkeeping
+            # failures are logged and swallowed; the turn succeeded.
+            try:
+                if ENABLE_AUDIT_LOG:
+                    log_audit_entry(
+                        user_id=current_user.get("id") if current_user else None,
+                        username=current_user.get("username") if current_user else None,
+                        session_id=request.session_id,
+                        prompt=request.prompt,
+                        response_length=len(refusal),
+                        model=request.model,
+                        use_rag=use_rag,
+                        sources=rag_sources,
+                        duration_ms=int((time.monotonic() - _t0) * 1000),
+                        # No-model lane: a canned string, no provider call.
+                        # Retrieval DID run on this lane, so the rerank receipt
+                        # is real.
+                        answer_lane="rag_refusal",
+                        rerank_ms=_rr_stats.get("rerank_ms"),
+                        rerank_pool=_rr_stats.get("rerank_pool"),
+                        rerank_provider=_rr_stats.get("rerank_provider"),
+                    )
+            except Exception as bookkeeping_error:
+                log_error("chat_bookkeeping_error", session_id=request.session_id,
+                          error=str(bookkeeping_error))
             yield f"data: {json.dumps({'token': refusal})}\n\n"
             yield "data: [DONE]\n\n"
             return

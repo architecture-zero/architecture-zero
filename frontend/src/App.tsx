@@ -503,6 +503,13 @@ interface AuthUser {
 
 const GUEST_TURN_LIMIT = 10
 
+// The two refusals the server makes before anything is stored or billed, as
+// the line under the transcript says them. The 413's own `detail` is preferred
+// - it names the figure and the way out - and this is the fallback for a 413
+// that carries none (a proxy in front of the app answers with an HTML page).
+const TURN_NOTICE = 'Still answering your last message on this conversation. Wait for it to finish, then send again.'
+const TOO_LARGE_NOTICE = 'That message was too large to send. Shorten it, or start a new chat.'
+
 type View = 'loading' | 'login' | 'chat' | 'admin'
 
 export default function App() {
@@ -525,10 +532,11 @@ export default function App() {
 
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
-  // The one-line notice under the transcript when the server refused a turn
-  // because this conversation is still answering (409, one turn at a time).
-  // Cleared on the next send; never an error bubble, because nothing was
-  // written and nothing was billed.
+  // The one-line notice under the transcript when the server refused a turn:
+  // this conversation is still answering (409, one turn at a time), or the
+  // request was too large to send (413, the size bound). Cleared on the next
+  // send and on leaving the conversation (abandonStream); never an error
+  // bubble, because nothing was written and nothing was billed.
   const [turnNotice, setTurnNotice] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   // TRUE for the whole stream, not just until the first token. `loading` flips
@@ -587,6 +595,13 @@ export default function App() {
   // silence, which is what an abandoned stream deserves.
   const streamSeq = useRef(0)
   const activeStream = useRef<number | null>(null)
+  // The newest ticket a leaving path has abandoned. Unlike activeStream, a
+  // stream that simply FINISHES does not move it - which is what a check made
+  // inside a state updater needs. React may run an updater after the stream's
+  // own finally has retired its ticket (any render that lands late), and a
+  // check on activeStream there dropped the stream's writes: measured, the
+  // whole answer's text and both of the turn's "this row is stored" flags.
+  const abandonedThrough = useRef(0)
   // sessionId as a ref so a running stream reads the CURRENT conversation
   // rather than the one captured in its closure.
   const sessionIdRef = useRef(sessionId)
@@ -611,11 +626,16 @@ export default function App() {
   // token. The change that added abandonStream() to sign-out to stop a stream
   // leaking across accounts is what broke sign-out on the privileged surface.
   const abandonStream = () => {
+    abandonedThrough.current = streamSeq.current
     activeStream.current = null
     abortRef.current?.abort()
     abortRef.current = null
     setStreaming(false)
     setLoading(false)
+    // The refusal line belongs to the conversation being left. Every caller
+    // of this is a leaving path, and "still answering your last message on
+    // this conversation" under a different conversation is a false statement.
+    setTurnNotice(null)
   }
 
   // Everything that belongs to ONE identity and must not survive into the next
@@ -1086,6 +1106,11 @@ export default function App() {
     const myConversation = sessionId
     const mine = () => activeStream.current === myStream
       && sessionIdRef.current === myConversation
+    // The check for INSIDE a state updater, which React may run after this
+    // stream's finally has retired its ticket: only leaving the conversation
+    // makes a stream's writes stale, and every leaving path abandons it (see
+    // abandonedThrough). mine() stays the check at the moment of writing.
+    const live = () => myStream > abandonedThrough.current
     setStreaming(true)
     // The index of THIS stream's assistant bubble, captured when it is created.
     // Every write below used to target `next[next.length - 1]` - whatever
@@ -1137,24 +1162,44 @@ export default function App() {
         signal: controller.signal,
       })
 
+      // The two refusals made before anything is stored or billed. Each is a
+      // state, not an error: take back the ephemeral user bubble this send
+      // added, put the draft back in the box, say why under the transcript. No
+      // retry loop - the user sends again. mine() for the same reason every
+      // other branch has it.
+      const takeBack = (notice: string) => {
+        if (!mine()) return
+        setMessages(prev => {
+          const last = prev[prev.length - 1]
+          return last && last.role === 'user' && last.ephemeral && last.content === prompt
+            ? prev.slice(0, -1) : prev
+        })
+        setInput(prompt)
+        setTurnNotice(notice)
+        setLoading(false)
+        // The draft came back without a keystroke, so onInput never sized the
+        // box for it - and a 413's draft is by definition a long one.
+        setTimeout(() => {
+          const box = textareaRef.current
+          if (box) { box.style.height = 'auto'; box.style.height = Math.min(box.scrollHeight, 180) + 'px' }
+        }, 0)
+      }
       if (res.status === 409) {
         // ONE TURN AT A TIME: another turn on this conversation is still
         // answering (a second tab, a resend, a tap that beat the Stop swap).
-        // Nothing was written or billed, so this is a state, not an error:
-        // take back the ephemeral user bubble this send added, put the draft
-        // back in the box, say so under the transcript. No retry loop - the
-        // user sends again when the other answer is done. mine() for the same
-        // reason every other branch has it.
-        if (mine()) {
-          setMessages(prev => {
-            const last = prev[prev.length - 1]
-            return last && last.role === 'user' && last.ephemeral && last.content === prompt
-              ? prev.slice(0, -1) : prev
-          })
-          setInput(prompt)
-          setTurnNotice('Still answering your last message on this conversation. Wait for it to finish, then send again.')
-          setLoading(false)
-        }
+        takeBack(TURN_NOTICE)
+        return
+      }
+      if (res.status === 413) {
+        // THE SIZE BOUND: this request carried more than one turn may - the
+        // message plus the conversation sent back with it - or its body
+        // crossed the byte ceiling, and it was refused before anything was
+        // scanned or stored. The server's own sentence is the notice: it names
+        // the figure and the way out (shorten the message, or start a new
+        // chat). Before this branch the generic one below showed it as an
+        // assistant bubble and the draft was gone.
+        const refusal = await res.json().catch(() => ({}))
+        takeBack(typeof refusal.detail === 'string' && refusal.detail ? refusal.detail : TOO_LARGE_NOTICE)
         return
       }
       if (!res.ok) {
@@ -1181,7 +1226,7 @@ export default function App() {
       // this is the only point at which the client can know it. Clear the flag
       // on the most recent user bubble; from here it counts as a stored row.
       setMessages(prev => {
-        if (!mine()) return prev
+        if (!live()) return prev
         const next = [...prev]
         for (let i = next.length - 1; i >= 0; i--) {
           if (next[i].role === 'user') {
@@ -1278,27 +1323,36 @@ export default function App() {
             }
 
             if (!assistantStarted && (data.sources || data.tool_call || data.token)) {
-              setMessages(prev => {
-                slot = prev.length            // this stream's own bubble, for good
-                // EPHEMERAL UNTIL THE STREAM COMPLETES CLEANLY. The assistant
-                // row is written after the generator finishes, so until then no
-                // row exists: an abort cancels the generator before the write,
-                // and a mid-stream provider failure escapes to a handler that
-                // has no save and no finally. This bubble was the single
-                // largest hole in the stored-row model - it is unstored on
-                // every abort and every provider death, and it was never
-                // flagged, because the flag was being set on notice bubbles
-                // rather than on bubbles with no row.
-                return [...prev, { role: 'assistant', content: '', toolCalls: [], sources: [], ephemeral: true, help: helpMode }]
-              })
-              setLoading(false)
               assistantStarted = true
+              // mine(), like every other write. The bubble's creation was the
+              // one write without it: a stream whose FIRST event arrived after
+              // the visitor had left appended an empty assistant bubble to the
+              // conversation they went to, and cleared that conversation's
+              // loading state. Left unset, `slot` keeps every later write of an
+              // abandoned stream out as well.
+              if (mine()) {
+                setMessages(prev => {
+                  if (!live()) return prev
+                  slot = prev.length            // this stream's own bubble, for good
+                  // EPHEMERAL UNTIL THE STREAM COMPLETES CLEANLY. The assistant
+                  // row is written after the generator finishes, so until then
+                  // no row exists: an abort cancels the generator before the
+                  // write, and a mid-stream provider failure escapes to a
+                  // handler that has no save and no finally. This bubble was
+                  // the single largest hole in the stored-row model - it is
+                  // unstored on every abort and every provider death, and it
+                  // was never flagged, because the flag was being set on notice
+                  // bubbles rather than on bubbles with no row.
+                  return [...prev, { role: 'assistant', content: '', toolCalls: [], sources: [], ephemeral: true, help: helpMode }]
+                })
+                setLoading(false)
+              }
             }
 
             if (data.sources) {
               sources = data.sources
               setMessages(prev => {
-                if (!mine()) return prev
+                if (!live()) return prev
                 const next = [...prev]
                 if (slot < 0 || slot >= next.length) return prev
                 // Spread, do not rebuild. A literal drops `ephemeral` and
@@ -1312,7 +1366,7 @@ export default function App() {
             if (data.tool_call) {
               toolCalls = [...toolCalls, data.tool_call]
               setMessages(prev => {
-                if (!mine()) return prev
+                if (!live()) return prev
                 const next = [...prev]
                 if (slot < 0 || slot >= next.length) return prev
                 // Spread, do not rebuild. A literal drops `ephemeral` and
@@ -1323,13 +1377,14 @@ export default function App() {
               })
             }
 
-            if (data.context_warning) setContextWarning(true)
-            if (data.context_summarized) setContextSummarized(true)
+            // The banner belongs to this stream's conversation, so mine() too.
+            if (data.context_warning && mine()) setContextWarning(true)
+            if (data.context_summarized && mine()) setContextSummarized(true)
 
             if (data.token) {
               assistantMsg += data.token
               setMessages(prev => {
-                if (!mine()) return prev
+                if (!live()) return prev
                 const next = [...prev]
                 if (slot < 0 || slot >= next.length) return prev
                 // Spread, do not rebuild. A literal drops `ephemeral` and
@@ -1379,7 +1434,10 @@ export default function App() {
             return next
           })
         }
-        setLoading(false)
+        // mine() here too: an abandoned stream's abort lands after the visitor
+        // may have sent in the next conversation, and clearing `loading` there
+        // dropped the new answer's thinking dots while it was still pending.
+        if (mine()) setLoading(false)
         return
       }
       // mine() for the same reason the branch above has it: an abandoned

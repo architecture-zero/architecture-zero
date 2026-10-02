@@ -47,7 +47,9 @@ conversation the client sends back with it, because that is what reaches the
 model provider. Guests are bounded by GUEST_MAX_INPUT_CHARS (24,000 by
 default), signed-in users by CHAT_MAX_INPUT_CHARS (200,000). Shorten the
 message or start a new chat; an operator raises the bound in the host
-environment, and 0 removes it.
+environment, and 0 removes it. Nothing was stored or sent to the model, so
+the web client shows this line under the conversation and puts your message
+back in the box.
 
 ## "This conversation is too long to send (N messages; the limit is M)"
 

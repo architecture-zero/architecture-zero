@@ -45,16 +45,42 @@ const tok = (t: string) => `data: ${JSON.stringify({ token: t })}\n\n`
 const errEvent = (m: string) => `data: ${JSON.stringify({ error: m })}\n\n`
 const DONE = 'data: [DONE]\n\n'
 
+/** A stream that stays open until the test pushes to it or closes it, and that
+ *  fails the way a real fetch body does when the request is aborted - which a
+ *  mocked fetch otherwise ignores, so Stop would have nothing to stop. */
+function openStream() {
+  const enc = new TextEncoder()
+  let controller: ReadableStreamDefaultController<Uint8Array>
+  const stream = new ReadableStream<Uint8Array>({ start(c) { controller = c } })
+  return {
+    respond: (init?: RequestInit) => {
+      init?.signal?.addEventListener('abort', () => {
+        const aborted = new Error('The user aborted a request.')
+        aborted.name = 'AbortError'
+        try { controller.error(aborted) } catch { /* already closed */ }
+      })
+      return new Response(stream, { status: 200 })
+    },
+    push: (e: string) => controller.enqueue(enc.encode(e)),
+    close: () => controller.close(),
+  }
+}
+
 interface Harness {
   trimCounts: number[]
   chatBodies: Record<string, unknown>[]
-  setChat: (r: () => Response | Promise<Response>) => void
+  // Every DELETE that is not a trim: what a control removed outright.
+  deletes: string[]
+  setChat: (r: (init?: RequestInit) => Response | Promise<Response>) => void
+  setSessions: (s: Array<{ session: string; first_message: string }>) => void
 }
 
 function installFetch(): Harness {
   const trimCounts: number[] = []
   const chatBodies: Record<string, unknown>[] = []
-  let chatResponder: () => Response | Promise<Response> = () =>
+  const deletes: string[] = []
+  let sessions: Array<{ session: string; first_message: string }> = []
+  let chatResponder: (init?: RequestInit) => Response | Promise<Response> = () =>
     new Response(sseStream([tok('hi'), DONE]).stream, { status: 200 })
 
   const json = (body: unknown, status = 200) =>
@@ -80,21 +106,29 @@ function installFetch(): Harness {
     if (url.includes('/api/models')) return json({ groups: [] })
     if (url.includes('/api/status')) return json({})
     if (url.includes('/api/analytics')) return json({})
-    if (url.includes('/api/sessions/mine')) return json({ sessions: [] })
+    if (url.includes('/api/sessions/mine')) return json({ sessions })
     if (url.includes('/tail')) {
       // THE OBSERVABLE. Record what the client believes is stored.
       trimCounts.push(Number(new URL(url, 'http://t').searchParams.get('count')))
       return json({ status: 'ok', deleted: 0, requested: 0 })
     }
+    if (url.includes('/api/history/') && method === 'DELETE') {
+      deletes.push(url)
+      return json({ status: 'ok' })
+    }
     if (url.includes('/api/history/')) return json({ messages: [] })
     if (url.includes('/api/chat')) {
       chatBodies.push(JSON.parse(String(init?.body ?? '{}')))
-      return chatResponder()
+      return chatResponder(init)
     }
     return json({})
   }) as unknown as typeof fetch
 
-  return { trimCounts, chatBodies, setChat: (r) => { chatResponder = r } }
+  return {
+    trimCounts, chatBodies, deletes,
+    setChat: (r) => { chatResponder = r },
+    setSessions: (s) => { sessions = s },
+  }
 }
 
 async function signedInApp() {
@@ -191,6 +225,26 @@ describe('the stored-row invariant', () => {
   })
 })
 
+describe('when React renders late', () => {
+  it('a stream that ends before React renders still lands every write', async () => {
+    await signedInApp()
+    h.setChat(() => new Response(sseStream([tok('AAA'), tok('BBB'), DONE]).stream, { status: 200 }))
+    // Everything inside act() renders only when act() ends - here, after the
+    // whole stream has run and its finally has retired its ticket. That is the
+    // state the writes' updaters meet whenever React renders late, and a check
+    // on the live ticket inside them dropped the answer's text and both of the
+    // turn's "this row is stored" flags.
+    await act(async () => {
+      await ask('question late')
+      await new Promise(r => setTimeout(r, 50))
+    })
+
+    expect(screen.getByText(/AAABBB/)).toBeInTheDocument()
+    await clickRegenerate()
+    await waitFor(() => expect(h.trimCounts).toEqual([2]))
+  })
+})
+
 describe('what reaches the model', () => {
   it('never posts an unstored bubble back as conversation', async () => {
     await signedInApp()
@@ -235,5 +289,176 @@ describe('one turn at a time', () => {
     expect(screen.queryByText(/the server returned/i)).toBeNull()
     // And the composer is live again: Send, not Stop.
     await waitFor(() => expect(screen.getByTitle('Send message')).toBeInTheDocument())
+  })
+})
+
+describe('the size refusal (413)', () => {
+  it('leaves no bubble, restores the draft and shows the server sentence once', async () => {
+    await signedInApp()
+    h.setChat(() => new Response(
+      JSON.stringify({ detail: 'Message too long: this request carries 200,001 characters and the limit is 200,000 (your message plus the conversation so far). Shorten the message or start a new chat.' }),
+      { status: 413, headers: { 'Content-Type': 'application/json' } }))
+    await ask('question six')
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/Message too long/i))
+
+    const box = screen.getByPlaceholderText(/Message/i) as HTMLTextAreaElement
+    expect(box.value).toBe('question six')
+    expect(screen.queryByText('question six', { ignore: 'textarea, script, style' })).toBeNull()
+    // Once: under the transcript, never also as an assistant bubble - which
+    // is how the generic refusal branch showed it before, draft gone.
+    expect(screen.getAllByText(/Message too long/i)).toHaveLength(1)
+    await waitFor(() => expect(screen.getByTitle('Send message')).toBeInTheDocument())
+  })
+
+  it('says what happened when the 413 carries no sentence (a proxy page)', async () => {
+    await signedInApp()
+    h.setChat(() => new Response('<html><body><h1>413 Request Entity Too Large</h1></body></html>',
+      { status: 413, headers: { 'Content-Type': 'text/html' } }))
+    await ask('question seven')
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/too large to send/i))
+    expect((screen.getByPlaceholderText(/Message/i) as HTMLTextAreaElement).value).toBe('question seven')
+  })
+
+  it('the refusal line belongs to its conversation - leaving it clears the line', async () => {
+    await signedInApp()
+    h.setChat(() => new Response(JSON.stringify({ detail: 'busy' }),
+      { status: 409, headers: { 'Content-Type': 'application/json' } }))
+    await ask('question eight')
+    await waitFor(() => expect(screen.getByRole('status')).toBeInTheDocument())
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /New Chat/i })) })
+
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+})
+
+describe('Stop is Stop for the whole answer', () => {
+  it('stays Stop after the first token, and a second send cannot start', async () => {
+    await signedInApp()
+    const s = openStream()
+    h.setChat(init => s.respond(init))
+    await ask('a long one')
+    await act(async () => { s.push(tok('FIRSTWORDS')) })
+    await waitFor(() => expect(screen.getByText(/FIRSTWORDS/)).toBeInTheDocument())
+
+    // `loading` clears at the first token; were it the only guard, Stop would
+    // turn back into Send here and the answer could not be stopped.
+    expect(screen.getByTitle('Stop generation')).toBeInTheDocument()
+    // Typing is allowed mid-answer; sending is not.
+    await ask('second question')
+    expect(h.chatBodies).toHaveLength(1)
+
+    await act(async () => { s.push(tok(' and the rest')); s.push(DONE); s.close() })
+    await waitFor(() => expect(screen.getByTitle('Send message')).toBeInTheDocument())
+  })
+
+  it('Stop after tokens keeps the partial answer, says it was not saved, and Regenerate trims ONE row', async () => {
+    await signedInApp()
+    const s = openStream()
+    h.setChat(init => s.respond(init))
+    await ask('question nine')
+    await act(async () => { s.push(tok('PARTIALKEPT')) })
+    await waitFor(() => expect(screen.getByText(/PARTIALKEPT/)).toBeInTheDocument())
+
+    await act(async () => { fireEvent.click(screen.getByTitle('Stop generation')) })
+    await waitFor(() => expect(screen.getByText(/was not saved/i)).toBeInTheDocument())
+    expect(screen.getByText(/PARTIALKEPT/)).toBeInTheDocument()
+
+    h.setChat(() => new Response(sseStream([tok('again'), DONE]).stream, { status: 200 }))
+    await clickRegenerate()
+    // The user row was stored (the response was OK); the stopped answer was
+    // not - counting it is what would delete the previous turn's answer.
+    await waitFor(() => expect(h.trimCounts).toEqual([1]))
+  })
+
+  it('Stop before the first token says so, and Regenerate trims ONE row', async () => {
+    await signedInApp()
+    const s = openStream()
+    h.setChat(init => s.respond(init))
+    await ask('question ten')
+    await waitFor(() => expect(screen.getByTitle('Stop generation')).toBeInTheDocument())
+
+    await act(async () => { fireEvent.click(screen.getByTitle('Stop generation')) })
+    await waitFor(() => expect(screen.getByText(/Stopped before the answer started/i)).toBeInTheDocument())
+
+    h.setChat(() => new Response(sseStream([tok('again'), DONE]).stream, { status: 200 }))
+    await clickRegenerate()
+    await waitFor(() => expect(h.trimCounts).toEqual([1]))
+  })
+})
+
+describe('leaving a conversation mid-answer', () => {
+  it('a chunk already in flight lands nowhere once the conversation is left', async () => {
+    h.setSessions([{ session: 'older-session', first_message: 'The older chat' }])
+    await signedInApp()
+    // A body that ignores the abort: the chunk that was already on its way
+    // when the user left. The stream ticket, not the abort, is what keeps it
+    // out of the conversation they went to.
+    const { stream, push } = sseStream([], { hang: true })
+    h.setChat(() => new Response(stream, { status: 200 }))
+    await ask('question eleven')
+    await act(async () => { push(tok('EARLYTOKEN')) })
+    await waitFor(() => expect(screen.getByText(/EARLYTOKEN/)).toBeInTheDocument())
+
+    await act(async () => { fireEvent.click(screen.getByText('The older chat')) })
+    await act(async () => { push(tok('LATETOKEN')) })
+
+    expect(screen.queryByText(/LATETOKEN/)).toBeNull()
+    expect(screen.queryByText(/EARLYTOKEN/)).toBeNull()
+    // Leaving released the composer; the abandoned stream holds nothing.
+    await waitFor(() => expect(screen.getByTitle('Send message')).toBeInTheDocument())
+  })
+
+  it('a stream whose FIRST chunk arrives after the visitor left writes nothing', async () => {
+    h.setSessions([{ session: 'older-session', first_message: 'The older chat' }])
+    await signedInApp()
+    const { stream, push } = sseStream([], { hang: true })
+    h.setChat(() => new Response(stream, { status: 200 }))
+    await ask('question fourteen')
+    await waitFor(() => expect(screen.getByTitle('Stop generation')).toBeInTheDocument())
+
+    await act(async () => { fireEvent.click(screen.getByText('The older chat')) })
+    await act(async () => {
+      push(`data: ${JSON.stringify({ context_warning: true })}\n\n`)
+      push(tok('LATEFIRST'))
+    })
+
+    // The bubble's creation was the one write without the ticket check: it
+    // appended an empty assistant bubble - with a Regenerate under it - to
+    // the conversation the visitor went to. The context banner likewise.
+    expect(screen.queryByText(/LATEFIRST/)).toBeNull()
+    expect(screen.queryByRole('button', { name: /regenerate/i })).toBeNull()
+    expect(screen.queryByText(/getting long/i)).toBeNull()
+    await waitFor(() => expect(screen.getByTitle('Send message')).toBeInTheDocument())
+  })
+
+  it('the abandoned stream writes no Stopped notice into the next conversation', async () => {
+    h.setSessions([{ session: 'older-session', first_message: 'The older chat' }])
+    await signedInApp()
+    const s = openStream()
+    h.setChat(init => s.respond(init))
+    await ask('question twelve')
+    await act(async () => { s.push(tok('EARLYTOKEN')) })
+    await waitFor(() => expect(screen.getByText(/EARLYTOKEN/)).toBeInTheDocument())
+
+    await act(async () => { fireEvent.click(screen.getByText('The older chat')) })
+
+    // The abort reaches the reader as an AbortError; the branch that says
+    // "Stopped" must see that the stream is no longer the conversation's.
+    await waitFor(() => expect(screen.getByTitle('Send message')).toBeInTheDocument())
+    expect(screen.queryByText(/Stopped/i)).toBeNull()
+    expect(screen.queryByText(/was not saved/i)).toBeNull()
+  })
+
+  it('New Chat starts a conversation and deletes none', async () => {
+    await signedInApp()
+    await ask('question thirteen')
+    await waitFor(() => expect(screen.getByText('hi')).toBeInTheDocument())
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /New Chat/i })) })
+
+    // The old conversation is left, not erased: History is how you get back.
+    expect(h.deletes).toEqual([])
+    expect(screen.queryByText('question thirteen', { ignore: 'textarea, script, style' })).toBeNull()
   })
 })
