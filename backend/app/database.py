@@ -375,6 +375,25 @@ def _hybrid_rank(docs: list, distances: list, metadatas: list, query: str, n_res
     Recency-weighted: the ORDER (which candidates survive into the reranker's
     pool) decays with entry_date age; the returned similarity score does not,
     so the rag threshold keeps its meaning."""
+    # A GHOST is an id the index returned and the store no longer holds: no
+    # text, no metadata. A serving process answers with ghosts after a SECOND
+    # process deleted pieces under it (a re-seed or a re-ingest run beside the
+    # server) and until it restarts - reproduced 2026-09-28 on a throwaway
+    # store. The tokenizer reads a missing text as empty, but the result built
+    # below read the missing metadata and raised: a failed search for every
+    # question near a ghost. Dropped here (2026-10-02), so the window costs a
+    # thinner answer and not an error; a live piece whose metadata is missing
+    # reads as having none.
+    rows = list(zip(docs, distances, metadatas))
+    live = [(d, dist, m if isinstance(m, dict) else {})
+            for d, dist, m in rows if isinstance(d, str) and d]
+    if len(live) != len(rows):
+        log.warning("retrieval dropped %d result(s) with no document - the index "
+                    "holds ids the store does not; restart to reload it",
+                    len(rows) - len(live))
+    docs = [x[0] for x in live]
+    distances = [x[1] for x in live]
+    metadatas = [x[2] for x in live]
     if not docs:
         return []
 

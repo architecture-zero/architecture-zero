@@ -11,6 +11,10 @@ is not a number - raise inside the answer.
 The policy is unchanged: a piece with a HIGH finding is dropped from THIS answer
 and logged loudly (the peer's corpus is not ours to quarantine); a milder
 finding rides along tagged, and format_peer_context says so in its label.
+
+Since 2026-10-02 the lane's last step is the RANK (`select`): the instance's
+own cross-encoder keeps its top_k across every peer's pieces together, where
+before every piece over the threshold reached the prompt.
 """
 import os
 import re
@@ -23,6 +27,10 @@ PIECE_MAX_CHARS = int(os.getenv("PEER_PIECE_MAX_CHARS", "4000"))
 # SOURCE_NAME_MAX: a piece's name reaches the prompt in its label, the reader
 # in the citation and the log in every event, and nothing bounded it.
 SOURCE_NAME_MAX = 512
+# POOL_MAX: how many pieces one answer's pool may hold, whatever the peers sent
+# (with the rank, 2026-10-02): the rank reads every piece in the pool, and
+# nothing else bounded how many.
+POOL_MAX = 64
 
 _NOT_IN_A_NAME = ("Cc", "Zl", "Zp")
 
@@ -122,6 +130,45 @@ def admit(pieces, threshold: float) -> list[dict]:
     that is not a piece goes first (before any field of it is read), then the
     score filter, which reads a score that cannot raise."""
     return [c for c in (pieces or []) if is_piece(c) and score_of(c) >= threshold]
+
+
+def select(query: str, pieces, threshold: float, rank, on_event=None,
+           report: dict | None = None) -> list[dict]:
+    """The peer lane as the chat route runs it: admit (what is not a piece,
+    then the score filter), the scan, then `rank(query, pool)` - the
+    instance's own cross-encoder rerank, which keeps its top_k across every
+    peer's pieces together. ONE function (2026-10-02), so a probe that reads
+    the lane calls the lane and not a copy of it.
+
+    WHY THE RANK: each peer sends its nearest eight pieces and the similarity
+    threshold keeps nearly all of them, so three peers put twenty-four pieces
+    in front of the model whatever the question. Read on a live three-peer
+    deployment 2026-10-02 (six questions, no model call): 24 sent and 24 kept
+    on every question, about 21,000 characters, the threshold removing none.
+    On the first live run of a federated hub (2026-09-16) the model hedged
+    "the context does not contain..." before quoting the very document that
+    answered, and the rank is what that hub took. rerank() falls back to the
+    input order, truncated to top_k, when the encoder is off or fails, so the
+    bound holds either way.
+
+    `report`, when given, is filled with the counts at each step - the route
+    logs them and a probe reads them; nothing else does.
+
+    THE POOL IS BOUNDED (POOL_MAX), before the scan and the
+    rank read it: query_peer_kb keeps what it asked for from each peer, and this
+    is the lane's own bound for a caller that hands it more - every piece kept
+    is scanned, and the rank is a cross-encoder pass over all of them."""
+    sent = pieces if isinstance(pieces, list) else []
+    admitted = admit(sent, threshold)
+    capped = max(0, len(admitted) - POOL_MAX)
+    if capped:
+        admitted = admitted[:POOL_MAX]
+    pool = scan_pieces(admitted, on_event) if admitted else []
+    kept = rank(query, pool) if pool else []
+    if report is not None:
+        report.update({"sent": len(sent), "admitted": len(admitted), "capped": capped,
+                       "scanned": len(pool), "kept": len(kept)})
+    return kept
 
 
 def scan_pieces(pieces, on_event=None) -> list[dict]:

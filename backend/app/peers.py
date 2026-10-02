@@ -34,6 +34,11 @@ PEER_MAX_RESPONSE_BYTES = int(os.getenv("PEER_MAX_RESPONSE_BYTES", str(1024 * 10
 class PeerResponseTooLarge(Exception):
     """A peer's answer went past PEER_MAX_RESPONSE_BYTES and was not read on."""
 
+
+class PeerAnswerMalformed(Exception):
+    """A peer answered 200 with something that is not a list of results. The
+    message is written here and carries no URL."""
+
 # A peer URL is an operator-supplied address the SERVER then fetches - the
 # textbook SSRF shape. Without this the box is a proxy into anything it can
 # reach: the cloud metadata service (169.254.169.254 hands out IAM
@@ -392,7 +397,14 @@ def query_peer_kb(peer: dict, query: str, n_results: int = 8, timeout: int = 10)
         return []
 
     headers = {"X-Peer-Key": _PEER_API_KEY} if _PEER_API_KEY else {}
-    log.info("Querying peer '%s' at %s/api/query-kb (q=%r, n=%d)", name, url, query[:80], n_results)
+    # THE QUESTION STAYS OUT OF EVERY LOG LINE AND FAILURE RECORD HERE
+    # (2026-10-02). It rides in this request's URL as `q`, and a failed
+    # connection's message quotes that URL - so a failure records the KIND of
+    # error and the status where there was one, never the library's own
+    # message. The breaker's last_error is shown on the admin's peer panel;
+    # this line used to log the first 80 characters of every question at INFO
+    # as well.
+    log.info("Querying peer '%s' at %s/api/query-kb (n=%d)", name, url, n_results)
     t0 = time.monotonic()
     resp = None
     try:
@@ -407,27 +419,43 @@ def query_peer_kb(peer: dict, query: str, n_results: int = 8, timeout: int = 10)
                 response=resp)
         resp.raise_for_status()
         chunks = resp.json().get("results", [])
+        if not isinstance(chunks, list):
+            raise PeerAnswerMalformed("peer answered with results that are not a list")
+        # What was asked for, and no more (with the peer-pool rank,
+        # 2026-10-02): `n` is a request the peer is free to ignore, and every
+        # piece kept is scanned and ranked on this side.
+        chunks = chunks[:max(1, int(n_results))]
         latency_ms = int((time.monotonic() - t0) * 1000)
         _record_success(peer_id, latency_ms, len(chunks))
         log.info("Peer '%s' returned %d chunks in %dms", name, len(chunks), latency_ms)
         for chunk in chunks:
-            chunk["peer"] = name
+            if isinstance(chunk, dict):     # what is not a piece, the boundary drops
+                chunk["peer"] = name
         return chunks
     except _req.exceptions.Timeout:
         _record_failure(peer_id, f"timeout after {timeout}s")
         log.warning("Peer '%s' timed out after %ds", name, timeout)
         return []
     except _req.exceptions.ConnectionError as exc:
-        _record_failure(peer_id, f"connection error: {exc}")
-        log.warning("Peer '%s' connection error: %s", name, exc)
+        what = f"connection error: {type(exc).__name__}"
+        _record_failure(peer_id, what)
+        log.warning("Peer '%s' %s", name, what)
         return []
     except _req.exceptions.HTTPError as exc:
-        _record_failure(peer_id, f"HTTP {exc.response.status_code}")
-        log.warning("Peer '%s' HTTP %s: %s", name, exc.response.status_code, exc.response.text[:200])
+        # The status alone: a peer's error body can echo the request it
+        # refused, the question included (a validation error lists its input).
+        status = getattr(exc.response, "status_code", "?")
+        _record_failure(peer_id, f"HTTP {status}")
+        log.warning("Peer '%s' HTTP %s", name, status)
         return []
     except Exception as exc:
-        _record_failure(peer_id, repr(exc))
-        log.exception("Peer '%s' unexpected error: %s", name, exc)
+        # Messages this module wrote itself carry no URL; anything else is
+        # named by its kind.
+        what = (str(exc) if isinstance(exc, (PeerResponseTooLarge, PeerURLRefused,
+                                             PeerAnswerMalformed))
+                else type(exc).__name__)
+        _record_failure(peer_id, what)
+        log.error("Peer '%s' unexpected error: %s", name, what)
         return []
     finally:
         if resp is not None:

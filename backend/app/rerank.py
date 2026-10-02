@@ -544,9 +544,19 @@ def format_peer_context(peer_chunks: list[dict]) -> str:
     boundary at CHAT time (never ingested), so without this they would be
     pasted raw into the user prompt - the one place a poisoned peer reads as
     the user's own words. Same formatter home as format_context so the
-    framing cannot drift."""
+    framing cannot drift.
+
+    THE TIER IS FORCED, never read from the piece (2026-10-02). A peer's JSON
+    is not validated on the way in, and a peer built from this code's
+    serving side sends `trust` and `auto_generated` with every piece - so its
+    curated piece rendered as a bare [source], the operator's own tier, and its
+    generated record as [LIVE SYSTEM RECORD], both of which the data rules rank
+    above EXTERNAL. A piece is external because of where it arrived from, not
+    because of what it says about itself."""
+    from app.rag_config import TRUST_TIER_EXTERNAL
     body = "\n\n---\n\n".join(
-        f"{_chunk_label({**c, 'trust': c.get('trust', 'external')})}\n{c.get('text', '')}"
+        f"{_chunk_label({**c, 'trust': TRUST_TIER_EXTERNAL, 'auto_generated': False})}"
+        f"\n{c.get('text', '')}"
         for c in peer_chunks
     )
     return f"{_DATA_FRAMING}\n\n{body}"

@@ -528,6 +528,7 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
     else:
         use_rag = request.use_rag
     use_rag = use_rag or RAG_ONLY_MODE or help_mode
+    context_results: list[dict] = []
 
     if use_rag:
         increment("rag_requests_total")
@@ -562,40 +563,14 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
         context_results = [r for r in context_results if r.get("score", 0) >= rag_threshold]
         if context_results:
             increment("rag_hits_total")
-            from app.rerank import format_context
-            context = format_context(context_results)
             seen: set[str] = set()
             for r in context_results:
                 s = r["source"]
                 if s not in seen:
                     rag_sources.append(s)
                     seen.add(s)
-            if help_mode:
-                prompt = (
-                    "The person is asking how to use this assistant itself. Answer using ONLY "
-                    "the help pages in the context below, in plain language, naming the exact "
-                    "buttons, menus and steps the pages name. If the pages do not cover the "
-                    "question, say so and suggest asking their administrator. Never invent a "
-                    "setting, a menu or a feature.\n\n"
-                    f"CONTEXT:\n{context}\n\n"
-                    f"QUESTION: {prompt}"
-                )
-            elif RAG_ONLY_MODE:
-                prompt = (
-                    "Answer the question using ONLY the context below. "
-                    "Do not use outside knowledge. If the context does not contain the answer, say so.\n\n"
-                    f"CONTEXT:\n{context}\n\n"
-                    f"QUESTION: {prompt}"
-                )
-            else:
-                prompt = (
-                    "Use the following context to answer the question. "
-                    "Answer from this context - do not offer to read files or fetch additional information.\n\n"
-                    f"CONTEXT:\n{context}\n\n"
-                    f"QUESTION: {prompt}"
-                )
-        elif RAG_ONLY_MODE or help_mode:
-            rag_refused = True
+        # The prompt is assembled, and the RAG-only refusal decided, ONCE,
+        # after the peers have answered (below) - not here.
 
     # Query enabled peer knowledge bases in parallel - returns raw chunks, no
     # AI call
@@ -638,29 +613,80 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
         else:
             logger.warning("use_peers=True but no enabled peers found in config")
 
-    # The peer boundary (app/peer_boundary.py, since 2026-09-30): what is not a
-    # piece goes before any field of it is
-    # read, then the score filter (a score that cannot raise - one that was
-    # not a number used to fail the whole answer), then the injection scan over
-    # each piece's text AND name, bounded (it read text of any size, and never
-    # the name). A HIGH finding drops the piece from THIS answer and is logged
-    # loudly (the peer corpus is not ours to quarantine); a milder one rides
-    # along tagged on a copy, and format_peer_context labels it.
-    from app import peer_boundary
-    pre_filter = len(peer_chunks)
-    peer_chunks = peer_boundary.admit(peer_chunks, rag_threshold)
-    if pre_filter:
-        logger.info("Peer chunks after score filter: %d/%d (threshold=%.2f)", len(peer_chunks), pre_filter, rag_threshold)
+    # The peer lane (app/peer_boundary.select): what is not a piece goes before
+    # any field of it is read, then the score filter (a score that cannot
+    # raise), then the injection scan over each piece's text AND name, bounded
+    # (since 2026-09-30) - a HIGH finding drops the piece from THIS answer and
+    # is logged loudly (the peer corpus is not ours to quarantine), a milder
+    # one rides along tagged on a copy - and then, since 2026-10-02, the RANK:
+    # the same cross-encoder the local lane uses keeps its top_k across every
+    # peer's pieces together. Before the rank, every piece over the threshold
+    # reached the prompt; three peers sending eight each was twenty-four
+    # pieces in front of the model whatever the question (select's docstring
+    # has the measure).
+    # Off the event loop: the rank is a model call.
     if peer_chunks:
-        peer_chunks = peer_boundary.scan_pieces(peer_chunks, on_event=log)
+        from app import peer_boundary
+        from app.rerank import rerank as _rank_peer_pool
+        _lane: dict = {}
+        _sent = peer_chunks
+        peer_chunks = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: peer_boundary.select(request.prompt, _sent, rag_threshold,
+                                               rank=_rank_peer_pool, on_event=log,
+                                               report=_lane))
+        logger.info("Peer lane: %d sent, %d over the threshold (%.2f), %d after the scan, "
+                    "%d kept by the rank", _lane.get("sent", 0), _lane.get("admitted", 0),
+                    rag_threshold, _lane.get("scanned", 0), _lane.get("kept", 0))
+
+    # PROMPT ASSEMBLY, ONCE, AFTER BOTH LANES (2026-10-02). It used to happen
+    # inside the local block,
+    # before the peers were asked: a federated answer had its peer block bolted
+    # on AFTER the question, outside the instruction that governs the context,
+    # and in RAG_ONLY_MODE a question the local corpus held nothing on was
+    # refused before the peers were asked at all - even when a peer held the
+    # whole answer. Now both blocks stand before the question under the one
+    # instruction, so a peer-only answer is held to the same rule as a local
+    # one. A turn with no peer piece builds the same prompt, byte for byte, as
+    # before. The peer block keeps its SUPPLEMENTARY CONTEXT heading: the
+    # data rules in the system prompt (runtime_config._CONTEXT_DATA_RULES) name
+    # it, and an edit to those rules is owed a live injection cohort run.
+    # Peer pieces are EXTERNAL-tier, framed as data-not-instructions by
+    # format_peer_context - pasted raw, a poisoned peer reads as the user's
+    # own words.
+    blocks = ""
+    if context_results:
+        from app.rerank import format_context
+        blocks += f"CONTEXT:\n{format_context(context_results)}\n\n"
     if peer_chunks:
-        # Peer chunks are EXTERNAL-tier: known systems, but the content
-        # crosses an HTTP boundary and is never scanned at ingest here. Frame
-        # it as data-not-instructions - pasted raw, a poisoned peer reads as
-        # the user's own words.
         from app.rerank import format_peer_context
-        peer_context_str = format_peer_context(peer_chunks)
-        prompt += f"\n\nSUPPLEMENTARY CONTEXT (from connected AI sources):\n{peer_context_str}"
+        blocks += ("SUPPLEMENTARY CONTEXT (from connected AI sources):\n"
+                   f"{format_peer_context(peer_chunks)}\n\n")
+    if blocks:
+        if help_mode:
+            prompt = (
+                "The person is asking how to use this assistant itself. Answer using ONLY "
+                "the help pages in the context below, in plain language, naming the exact "
+                "buttons, menus and steps the pages name. If the pages do not cover the "
+                "question, say so and suggest asking their administrator. Never invent a "
+                "setting, a menu or a feature.\n\n"
+                f"{blocks}QUESTION: {prompt}"
+            )
+        elif RAG_ONLY_MODE:
+            prompt = (
+                "Answer the question using ONLY the context below. "
+                "Do not use outside knowledge. If the context does not contain the answer, say so.\n\n"
+                f"{blocks}QUESTION: {prompt}"
+            )
+        else:
+            prompt = (
+                "Use the following context to answer the question. "
+                "Answer from this context - do not offer to read files or fetch additional information.\n\n"
+                f"{blocks}QUESTION: {prompt}"
+            )
+    if use_rag and (RAG_ONLY_MODE or help_mode) and not context_results and not peer_chunks:
+        # Refused only once BOTH lanes came back empty (the help lane never
+        # asks a peer, so its refusal is the local lane's, as it was).
+        rag_refused = True
 
     uid = current_user["id"] if current_user else None
     save_message(request.session_id, "user", request.prompt, request.model, user_id=uid)
