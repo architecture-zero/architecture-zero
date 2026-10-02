@@ -74,11 +74,12 @@ def probe_ollama(ollama_get) -> dict:
         return {"name": "ollama", "ok": False, "latency_ms": None}
 
 
-def probe_backups(backup_state) -> dict:
-    """The backup job's and the restore drill's heartbeats through the given
-    status reader; an alert for each one that is not ok."""
-    states = {"backup": backup_state("backup-status.json"),
-              "drill": backup_state("drill-status.json")}
+def probe_backups(backup_state, kinds=("backup", "drill")) -> dict:
+    """The heartbeats named in `kinds` (each read from <kind>-status.json:
+    by default the backup job's and the restore drill's) through the given
+    status reader; an alert for each one that is not ok. A deployment that
+    runs no drill passes ("backup",)."""
+    states = {kind: backup_state(f"{kind}-status.json") for kind in kinds}
     for kind, st in states.items():
         if not st.get("ok"):
             age = st.get("age_hours")
@@ -112,13 +113,14 @@ def _note(failing: list) -> None:
         _last_logged = now
 
 
-def run_self_check(data_dir: str, ollama_get=None, backup_state=None) -> dict:
+def run_self_check(data_dir: str, ollama_get=None, backup_state=None,
+                   backup_kinds=("backup", "drill")) -> dict:
     """One pass of every probe this deployment watches; the log says what changed."""
     result = {"disk": probe_disk(data_dir)}
     if ollama_get is not None and ollama_enabled():
         result["ollama"] = probe_ollama(ollama_get)
     if backup_state is not None and SELF_CHECK_BACKUP:
-        result["backups"] = probe_backups(backup_state)
+        result["backups"] = probe_backups(backup_state, backup_kinds)
     failing = []
     if not result["disk"].get("ok"):
         failing.append("disk")
@@ -131,7 +133,8 @@ def run_self_check(data_dir: str, ollama_get=None, backup_state=None) -> dict:
     return result
 
 
-async def self_check_loop(data_dir: str, ollama_get=None, backup_state=None) -> None:
+async def self_check_loop(data_dir: str, ollama_get=None, backup_state=None,
+                          backup_kinds=("backup", "drill")) -> None:
     """The timer. Started from the startup hook; the probes run off the event
     loop (a blocking disk or HTTP read must never stall a request)."""
     interval = SELF_CHECK_INTERVAL_SECONDS
@@ -144,6 +147,7 @@ async def self_check_loop(data_dir: str, ollama_get=None, backup_state=None) -> 
     while True:
         await asyncio.sleep(interval)
         try:
-            await asyncio.to_thread(run_self_check, data_dir, ollama_get, backup_state)
+            await asyncio.to_thread(run_self_check, data_dir, ollama_get, backup_state,
+                                    backup_kinds)
         except Exception as e:
             log_error("self_check_crashed", error=str(e)[:300])

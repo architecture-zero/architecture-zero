@@ -79,6 +79,12 @@ def test_fresh_backup_heartbeats_are_quiet(fired):
     assert fired == []
 
 
+def test_a_deployment_with_no_drill_watches_the_backup_alone(fired):
+    states = self_check.probe_backups(_reader(ok=False), ("backup",))
+    assert list(states) == ["backup"]
+    assert fired == ["backup_backup"]
+
+
 def test_one_pass_runs_every_probe_and_names_what_failed(monkeypatch, fired, tmp_path):
     logged = []
     monkeypatch.setattr(self_check, "log", lambda event, **kw: logged.append((event, kw)))
@@ -146,7 +152,7 @@ def test_the_timer_runs_the_pass_with_no_reader(monkeypatch):
     monkeypatch.setattr(self_check, "SELF_CHECK_INTERVAL_SECONDS", 0.01)
     monkeypatch.setattr(self_check, "run_self_check", lambda *a: runs.append(a) or {})
     _drive()
-    assert len(runs) >= 2 and runs[0] == (".", None, None)
+    assert len(runs) >= 2 and runs[0] == (".", None, None, ("backup", "drill"))
 
 
 def test_a_crashing_pass_does_not_stop_the_timer(monkeypatch):
