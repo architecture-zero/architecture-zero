@@ -15,7 +15,6 @@ import os
 import json
 import secrets
 import logging
-import shutil
 import datetime as _dt
 
 import requests
@@ -32,8 +31,7 @@ from app.providers import (OLLAMA_BASE, OPENAI_COMPAT, compat_key_configured,
 from app.redis_client import redis_status
 from app.security import get_security_config
 from app.metrics import get_last_request_at, get_snapshot, prometheus_text
-from app.alerting import (fire as fire_alert, get_config as get_alert_config,
-                          DISK_ALERT_THRESHOLD_PCT)
+from app.alerting import get_config as get_alert_config
 from app import corpus_scan as _corpus_scan
 from app.runtime_config import (_config_or_default, _ollama_get, DEFAULT_MODEL,
                                 RAG_ONLY_MODE, PII_SCAN_MODE, PII_OUTPUT_MODE,
@@ -255,28 +253,16 @@ def public_config():
 # -- Monitoring & Alerting ----------------------------------------------------
 
 _OTEL_ENDPOINT = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
-_INSTANCE_NAME = os.getenv("VITE_INSTANCE_NAME", "Architecture Zero")
 
 @router.get("/api/health/detailed")
 def health_detailed(current_user: dict = Depends(require_owner)):
     import time as _time
+    from app.self_check import probe_disk, probe_ollama, ollama_enabled
     result: dict = {}
 
-    # Disk usage
-    try:
-        usage = shutil.disk_usage(_DATA_DIR)
-        disk_pct = round(usage.used / usage.total * 100, 1)
-        result["disk"] = {
-            "used_gb":  round(usage.used  / 1e9, 2),
-            "total_gb": round(usage.total / 1e9, 2),
-            "pct": disk_pct,
-            "ok": disk_pct < DISK_ALERT_THRESHOLD_PCT,
-        }
-        if disk_pct >= DISK_ALERT_THRESHOLD_PCT:
-            fire_alert("disk_high", f"Disk usage high - {_INSTANCE_NAME}",
-                       f"Disk at {disk_pct}% ({result['disk']['used_gb']} GB used)")
-    except Exception as e:
-        result["disk"] = {"error": str(e)}
+    # Disk usage - the same probe the instance's own timer runs (app/self_check.py),
+    # so what this route shows is what the timer checks.
+    result["disk"] = probe_disk(_DATA_DIR)
 
     # DB response time
     try:
@@ -293,20 +279,11 @@ def health_detailed(current_user: dict = Depends(require_owner)):
 
     # Provider health
     providers = []
-    _enable_ollama    = os.getenv("ENABLE_OLLAMA",    "true").lower()  == "true"
     _enable_openai    = os.getenv("ENABLE_OPENAI",    "false").lower() == "true"
     _enable_anthropic = os.getenv("ENABLE_ANTHROPIC", "false").lower() == "true"
 
-    if _enable_ollama:
-        try:
-            t0 = _time.perf_counter()
-            r = _ollama_get("/api/tags", timeout=3)
-            latency = round((_time.perf_counter() - t0) * 1000, 2)
-            providers.append({"name": "ollama", "ok": r.status_code == 200, "latency_ms": latency})
-        except Exception:
-            providers.append({"name": "ollama", "ok": False, "latency_ms": None})
-            fire_alert("ollama_down", f"Ollama unreachable - {_INSTANCE_NAME}",
-                       "Ollama did not respond within 3s. Chat will fail for Ollama models.")
+    if ollama_enabled():
+        providers.append(probe_ollama(_ollama_get))
     if _enable_openai:
         providers.append({"name": "openai", "ok": bool(os.getenv("OPENAI_API_KEY")), "latency_ms": None})
     if _enable_anthropic:

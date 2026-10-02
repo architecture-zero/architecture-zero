@@ -424,17 +424,21 @@ Prometheus user. The token itself is never part of the download.
 - GET /api/health/detailed (Owner) - disk, DB latency, provider health;
   fires configured alerts on disk pressure and Ollama outages.
 
-**The alerts fire only when that endpoint is read, and nothing on the
-server reads it on a timer.** The Monitoring tab reads it when it loads and
-every 30 seconds while it stays open, so `ALERT_WEBHOOK_URL` and the SMTP
-settings deliver a disk or Ollama alert while an Owner has that tab open,
-and not while the machine sits unwatched. Rehearsed 2026-09-29: a webhook
-configured, Ollama stopped, five minutes with nobody signed in - nothing was
-sent; one Owner request to the route - the request the tab makes - and the
-alert arrived within the second. Until the
-instance checks itself (see ROADMAP.md), an unattended box is watched by
-whatever you point at the routes that need no session, and each says a
-different amount:
+**The instance checks itself (since 2026-10-02).** Every
+`SELF_CHECK_INTERVAL_SECONDS` (default 300; `0` turns it off) a timer inside
+the backend runs the same disk and Ollama probes that route runs, and reads
+the backup job's and the restore drill's heartbeats the way
+`/api/backup-status` does, raising through the same channels and the same
+per-check cooldown (`ALERT_COOLDOWN_SECONDS`, an hour by default). So
+`ALERT_WEBHOOK_URL` or the SMTP settings deliver a disk, Ollama or backup
+alert with nobody signed in. Before the timer the alerts fired only when an
+Owner read the detailed route - the Monitoring tab's load and its 30-second
+refresh - and a 2026-09-29 rehearsal sent nothing for five minutes with
+Ollama stopped. `SELF_CHECK_BACKUP=false` leaves the heartbeats out, for a
+deployment that backs up some other way. The timer lives inside the process
+it watches, so it cannot report that process being down: point an outside
+monitor at the routes that need no session, and each says a different
+amount:
 
 - `/api/backup-status` answers 503 when the backup job's heartbeat or the
   restore drill's is missing, stale or failed (Backups, above) - so it
@@ -443,8 +447,9 @@ different amount:
 - `/api/health` answers 200 whatever it finds and puts `"status":
   "degraded"` in the body when Ollama is unreachable - a monitor has to read
   the body to catch that one.
-- Disk pressure is reported by the detailed route alone. Watch the disk from
-  the host.
+- Disk pressure reaches no route that needs no session: the detailed route
+  shows it, and the self-check's alert raises it. If alerting is off, watch
+  the disk from the host.
 
 ## Running the test suite
 

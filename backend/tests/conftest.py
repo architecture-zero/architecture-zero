@@ -19,6 +19,10 @@ os.environ["REQUIRE_UPPERCASE"] = "false"
 os.environ["ALLOW_GUEST_MODE"] = "true"
 os.environ["ENABLE_AUDIT_LOG"] = "false"
 os.environ["CORS_ORIGIN"] = "*"
+# The instance's self-check timer (app/self_check.py) starts at boot, and the
+# session-scoped client boots the app: off here, so a long suite never runs a
+# probe pass mid-test. test_self_check.py drives the loop itself.
+os.environ["SELF_CHECK_INTERVAL_SECONDS"] = "0"
 # Isolate every data-path derivation (ingest-state file) from the real
 # backend/data dir - the chroma CLIENT is mocked below, but path-based code
 # would otherwise touch real files.

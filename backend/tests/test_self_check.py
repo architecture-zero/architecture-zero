@@ -1,0 +1,186 @@
+"""The instance checks itself (2026-10-02; the upgrade rehearsal's leg 5).
+
+The disk and Ollama alerts were raised inside GET /api/health/detailed and
+nowhere else, so an unwatched box sent nothing: the 2026-09-29 rehearsal
+stopped Ollama, waited five minutes with nobody signed in, and nothing was
+sent until one Owner read of the route. These tests pin the timer that runs
+the same probes - and the backup heartbeats - with no reader at all.
+"""
+import asyncio
+import datetime as dt
+import inspect
+import json
+
+import pytest
+
+from app import self_check
+
+
+@pytest.fixture(autouse=True)
+def _fresh_state(monkeypatch):
+    """The log remembers the last pass's failures; every test starts clean."""
+    monkeypatch.setattr(self_check, "_last_failing", ())
+    monkeypatch.setattr(self_check, "_last_logged", 0.0)
+
+
+@pytest.fixture
+def fired(monkeypatch):
+    calls = []
+    monkeypatch.setattr(self_check, "fire_alert",
+                        lambda key, title, body: calls.append(key))
+    return calls
+
+
+class _Usage:
+    def __init__(self, used, total):
+        self.used, self.total, self.free = used, total, total - used
+
+
+def _down(path, timeout):
+    raise ConnectionError("refused")
+
+
+# -- The probes ----------------------------------------------------------------
+
+def test_disk_over_the_threshold_fires(monkeypatch, fired, tmp_path):
+    monkeypatch.setattr(self_check.shutil, "disk_usage", lambda p: _Usage(90, 100))
+    out = self_check.probe_disk(str(tmp_path))
+    assert out["ok"] is False and out["pct"] == 90.0
+    assert fired == ["disk_high"]
+
+
+def test_disk_under_the_threshold_is_quiet(monkeypatch, fired, tmp_path):
+    monkeypatch.setattr(self_check.shutil, "disk_usage", lambda p: _Usage(10, 100))
+    assert self_check.probe_disk(str(tmp_path))["ok"] is True
+    assert fired == []
+
+
+def test_ollama_down_fires(fired):
+    assert self_check.probe_ollama(_down) == {"name": "ollama", "ok": False,
+                                              "latency_ms": None}
+    assert fired == ["ollama_down"]
+
+
+def test_missing_backup_heartbeats_fire(monkeypatch, fired, tmp_path):
+    """Read by the same function /api/backup-status serves, so the alarm and
+    the public probe cannot disagree: no status files is a 503 there and an
+    alert here."""
+    from app.routers import system
+    monkeypatch.setattr(system, "BACKUP_STATUS_DIR", str(tmp_path))
+    states = self_check.probe_backups()
+    assert not states["backup"]["ok"] and not states["drill"]["ok"]
+    assert sorted(fired) == ["backup_backup", "backup_drill"]
+
+
+def test_fresh_backup_heartbeats_are_quiet(monkeypatch, fired, tmp_path):
+    from app.routers import system
+    monkeypatch.setattr(system, "BACKUP_STATUS_DIR", str(tmp_path))
+    now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
+    for name in ("backup-status.json", "drill-status.json"):
+        (tmp_path / name).write_text(json.dumps({"ok": True, "last_success": now}))
+    states = self_check.probe_backups()
+    assert states["backup"]["ok"] and states["drill"]["ok"]
+    assert fired == []
+
+
+def test_one_pass_runs_every_probe_and_names_what_failed(monkeypatch, fired, tmp_path):
+    from app import runtime_config
+    from app.routers import system
+    logged = []
+    monkeypatch.setattr(self_check, "log", lambda event, **kw: logged.append((event, kw)))
+    monkeypatch.setattr(self_check.shutil, "disk_usage", lambda p: _Usage(95, 100))
+    monkeypatch.setattr(runtime_config, "_ollama_get", _down)
+    monkeypatch.setattr(system, "BACKUP_STATUS_DIR", str(tmp_path))
+    monkeypatch.setenv("ENABLE_OLLAMA", "true")
+    monkeypatch.setattr(self_check, "SELF_CHECK_BACKUP", True)
+    self_check.run_self_check()
+    assert sorted(fired) == ["backup_backup", "backup_drill", "disk_high", "ollama_down"]
+    assert ("self_check_failing", {"checks": ["disk", "ollama", "backup", "drill"]}) in logged
+
+
+def test_backups_can_be_left_out(monkeypatch, fired, tmp_path):
+    from app.routers import system
+    monkeypatch.setattr(self_check.shutil, "disk_usage", lambda p: _Usage(10, 100))
+    monkeypatch.setenv("ENABLE_OLLAMA", "false")
+    monkeypatch.setattr(system, "BACKUP_STATUS_DIR", str(tmp_path))
+    monkeypatch.setattr(self_check, "SELF_CHECK_BACKUP", False)
+    out = self_check.run_self_check()
+    assert "backups" not in out and "ollama" not in out
+    assert fired == []
+
+
+def test_the_log_says_what_changed_not_every_pass(monkeypatch):
+    logged = []
+    monkeypatch.setattr(self_check, "log", lambda event, **kw: logged.append((event, kw)))
+    self_check._note(["disk"])
+    self_check._note(["disk"])          # the same state again: quiet
+    self_check._note([])                # recovered
+    assert logged == [("self_check_failing", {"checks": ["disk"]}),
+                      ("self_check_recovered", {"checks": ["disk"]})]
+
+
+def test_a_check_that_stays_down_is_repeated_each_cooldown(monkeypatch):
+    logged = []
+    monkeypatch.setattr(self_check, "log", lambda event, **kw: logged.append((event, kw)))
+    self_check._note(["ollama"])
+    monkeypatch.setattr(self_check, "_last_logged", 0.0)   # as if a cooldown had passed
+    self_check._note(["ollama"])
+    assert logged[-1] == ("self_check_failing", {"checks": ["ollama"], "reminder": True})
+
+
+# -- The timer -----------------------------------------------------------------
+
+def test_the_timer_runs_the_pass_with_no_reader(monkeypatch):
+    """The rehearsal's failure, inverted: nobody reads any route and the pass
+    runs anyway, one interval after the loop starts and every interval after."""
+    runs = []
+    monkeypatch.setattr(self_check, "SELF_CHECK_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(self_check, "run_self_check", lambda: runs.append(1) or {})
+
+    async def drive():
+        task = asyncio.create_task(self_check.self_check_loop())
+        await asyncio.sleep(0.3)
+        task.cancel()
+
+    asyncio.run(drive())
+    assert len(runs) >= 2
+
+
+def test_a_crashing_pass_does_not_stop_the_timer(monkeypatch):
+    runs = []
+
+    def boom():
+        runs.append(1)
+        raise RuntimeError("probe crashed")
+
+    monkeypatch.setattr(self_check, "SELF_CHECK_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(self_check, "run_self_check", boom)
+
+    async def drive():
+        task = asyncio.create_task(self_check.self_check_loop())
+        await asyncio.sleep(0.3)
+        task.cancel()
+
+    asyncio.run(drive())
+    assert len(runs) >= 2
+
+
+def test_an_interval_of_zero_turns_it_off(monkeypatch):
+    runs = []
+    monkeypatch.setattr(self_check, "SELF_CHECK_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(self_check, "run_self_check", lambda: runs.append(1))
+    asyncio.run(asyncio.wait_for(self_check.self_check_loop(), 1))
+    assert runs == []
+
+
+# -- Wiring: the def is not the guard, the call is -----------------------------
+
+def test_boot_starts_the_timer():
+    from app import main
+    assert "asyncio.create_task(self_check_loop())" in inspect.getsource(main.startup_tasks)
+
+
+def test_the_detailed_route_runs_the_same_probes():
+    from app.routers import system
+    src = inspect.getsource(system.health_detailed)
+    assert "probe_disk(_DATA_DIR)" in src and "probe_ollama(_ollama_get)" in src
