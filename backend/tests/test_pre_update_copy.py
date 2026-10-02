@@ -131,3 +131,64 @@ def test_the_provider_key_sweep_asks_the_same_question():
     src = inspect.getsource(main)
     assert "_moved = _sweep_secrets() if _one_way_ok() else 0" in src
     assert "_encrypt_mfa_seeds_sweep() if one_way_changes_allowed() else 0" in inspect.getsource(dbmod.init_db)
+
+
+# -- The copy does not stay and does not travel (2026-10-02) ------------------
+# It holds the seeds and provider keys as the older version stored them, in
+# plaintext. Kept with no end and carried by every later backup, it undid the
+# encryption at rest for exactly the leaked-archive case that encryption is for
+# (the wrap's drift sweep found it the day the copy shipped).
+
+def _stamp(days_ago: float) -> str:
+    import time
+    return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(time.time() - days_ago * 86400))
+
+
+def test_a_copy_past_the_keep_window_is_deleted_at_boot(fresh_boot, capsys):
+    old = fresh_boot / f"history.db.{_stamp(dbmod.PRE_UPDATE_COPY_KEEP_DAYS + 1)}"
+    new = fresh_boot / f"history.db.{_stamp(1)}"
+    old.write_bytes(b"stand-in")
+    new.write_bytes(b"stand-in")
+    out = dbmod.expire_pre_update_copies()
+    assert out == {"deleted": [old.name], "held": [new.name]}
+    assert not old.exists() and new.exists()
+    said = capsys.readouterr().out
+    assert f"pre-update copy deleted: {old.name}" in said
+    # A copy still held is NAMED at every boot, with what it holds and until when.
+    assert "pre-update copy held: " in said and "in plaintext" in said
+
+
+def test_the_boot_runs_the_expiry():
+    assert "expire_pre_update_copies()" in inspect.getsource(dbmod.init_db)
+
+
+def _backup_home():
+    """The in-app backup route's module: the template keeps it in
+    app.routers.admin, a surface without routers in app.main."""
+    import importlib
+    for name in ("app.routers.admin", "app.main"):
+        try:
+            m = importlib.import_module(name)
+        except ImportError:
+            continue
+        if hasattr(m, "run_backup"):
+            return m
+    raise AssertionError("no module carries run_backup")
+
+
+def test_the_in_app_backup_does_not_carry_the_copy(monkeypatch, tmp_path):
+    import tarfile
+    m = _backup_home()
+    data = tmp_path / "data"
+    (data / "pre-update").mkdir(parents=True)
+    (data / "pre-update" / f"history.db.{_stamp(1)}").write_bytes(b"plaintext stand-in")
+    (data / "notes.txt").write_text("kept", encoding="utf-8")
+    monkeypatch.setattr(m, "_DATA_DIR", str(data))
+    monkeypatch.setattr(m, "_BACKUP_DIR", str(data / "backups"))
+    monkeypatch.setattr(dbmod, "PRE_UPDATE_COPY_DIR", str(data / "pre-update"))
+    m.run_backup(current_user={"id": 1, "username": "owner", "role": "owner"})
+    (archive,) = list((data / "backups").glob("*.tar.gz"))
+    with tarfile.open(archive) as t:
+        names = t.getnames()
+    assert any(n.endswith("notes.txt") for n in names), names      # the control
+    assert not any("pre-update" in n for n in names), names

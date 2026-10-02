@@ -1527,8 +1527,9 @@ function MonitoringTab({ api, headers }: { api: string; headers: () => Record<st
           </div>
           <p className="text-xs text-gray-500">
             Disk alert fires at {health.alerts.disk_threshold_pct}% usage (1h cooldown),
-            checked each time this page reads the server (on load, then every 30s while
-            it is open) - nothing checks while no Owner has it open.
+            checked on a timer from boot (every 5 minutes by default,
+            SELF_CHECK_INTERVAL_SECONDS) and each time this page reads the server;
+            an alert leaves the box only through a configured channel.
             Configure via <span className="font-mono text-gray-400">ALERT_WEBHOOK_URL</span>,{' '}
             <span className="font-mono text-gray-400">ALERT_EMAIL</span>, and{' '}
             <span className="font-mono text-gray-400">DISK_ALERT_THRESHOLD_PCT</span> in .env.

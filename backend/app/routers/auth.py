@@ -334,9 +334,10 @@ def mfa_setup(request: MFASetupRequest | None = None,
         if not (request and request.rekey):
             raise HTTPException(
                 status_code=409,
-                detail="MFA is already enabled for this account. Pass rekey=true "
-                       "to deliberately re-enroll; that replaces the secret and "
-                       "disables MFA until the new code verifies.")
+                detail="MFA is already enabled for this account. To replace the "
+                       "authenticator, re-key: send rekey=true with your password "
+                       "and a current code; that replaces the secret and disables "
+                       "MFA until the new code verifies.")
         require_totp_step_up(current_user, request.mfa_code,
                              "re-key your authenticator")
         log("auth_mfa_rekey_started", user_id=current_user["id"],

@@ -375,6 +375,7 @@ def admin_backup_status(current_user: dict = Depends(require_owner)):
 
 @router.post("/api/admin/backup")
 def run_backup(current_user: dict = Depends(require_owner)):
+    from app.db import is_pre_update_dir
     timestamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     archive_name = f"az_backup_{timestamp}"
     os.makedirs(_BACKUP_DIR, exist_ok=True)
@@ -384,6 +385,10 @@ def run_backup(current_user: dict = Depends(require_owner)):
     try:
         for item in os.listdir(_DATA_DIR):
             if item == "backups":
+                continue
+            # The pre-update copy (app.db, 2026-10-02) holds the old plaintext
+            # secrets for its keep window; an archive must not carry them on.
+            if is_pre_update_dir(os.path.join(_DATA_DIR, item)):
                 continue
             src = os.path.join(_DATA_DIR, item)
             dst = os.path.join(stage_dir, item)

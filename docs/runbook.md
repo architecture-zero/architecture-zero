@@ -172,7 +172,12 @@ first - `backend/data/pre-update/history.db.<UTC time>`, the newest three
 kept (`PRE_UPDATE_COPY_DIR`, `PRE_UPDATE_COPIES_KEPT`) - and its log names it.
 If it cannot write that copy, it does not convert: the log says
 `one-way change HELD`, the rows stay as they were, and both versions can
-still read them. That copy is the database alone. To go back with it, stop,
+still read them. That copy is the database alone, and it holds the
+second-factor seeds and provider keys as the older version stored them - in
+plaintext, the only form that version reads. So it does not stay and does
+not travel: no backup carries `pre-update/`, every boot names each copy it
+still holds, and a boot deletes a copy older than `PRE_UPDATE_COPY_KEEP_DAYS`
+(14). Delete it yourself once the new version is confirmed. To go back with it, stop,
 put it in place of `backend/data/history.db` (and remove `history.db-wal` and
 `history.db-shm` beside it), check out the older version, and start; the
 rest of the data directory is whatever the newer version left.
@@ -376,7 +381,8 @@ the backup records itself, so an archive never contains its own receipt.
 ## Rotating JWT_SECRET_KEY, and restoring under a different one
 
 The MFA TOTP seeds and the provider keys stored through the admin settings
-page are Fernet-encrypted at rest under a key derived from JWT_SECRET_KEY.
+page are Fernet-encrypted at rest under a key derived from JWT_SECRET_KEY
+(except in a pre-update copy, for its keep window - Going back, above).
 Rotating the secret, or restoring a backup into an instance that boots with a
 different secret, makes every one of those rows unreadable at once. The app
 fails CLOSED: an account with two-factor enrolled is refused at sign-in with a

@@ -255,9 +255,76 @@ def _encrypt_mfa_seeds_sweep() -> int:
 # under a live writer, unlike a file copy), and if the copy cannot be written
 # the conversion is HELD - the rows stay plaintext, readable by both versions,
 # and the log says why. Decided once per boot; both sweeps ask.
+#
+# The copy holds the seeds and provider keys as the older version stored them -
+# in plaintext, which is the point: that version reads nothing else. So it does
+# not stay and does not travel (2026-10-02, the wrap's drift sweep: kept with no
+# end and carried by every later backup, it undid the encryption at rest for
+# exactly the leaked-archive case that encryption is for). A copy older than
+# PRE_UPDATE_COPY_KEEP_DAYS is deleted at boot, the boot names each copy it
+# still holds and until when, and no backup carries the directory.
 PRE_UPDATE_COPY_DIR = os.getenv("PRE_UPDATE_COPY_DIR", "")   # default: <db dir>/pre-update
 PRE_UPDATE_COPIES_KEPT = int(os.getenv("PRE_UPDATE_COPIES_KEPT", "3"))
+PRE_UPDATE_COPY_KEEP_DAYS = int(os.getenv("PRE_UPDATE_COPY_KEEP_DAYS", "14"))
 _one_way_allowed: bool | None = None
+
+
+def pre_update_dir() -> str | None:
+    """Where the copies go: PRE_UPDATE_COPY_DIR, else <db dir>/pre-update.
+    None when the database is not a SQLite file."""
+    from sqlalchemy.engine import make_url
+    if not _sqlite:
+        return None
+    src = make_url(DATABASE_URL).database
+    if not src or src == ":memory:":
+        return None
+    return PRE_UPDATE_COPY_DIR or os.path.join(os.path.dirname(os.path.abspath(src)),
+                                               "pre-update")
+
+
+def expire_pre_update_copies(now: float | None = None) -> dict:
+    """At boot: delete the copies past PRE_UPDATE_COPY_KEEP_DAYS and name the
+    ones still held. A copy's age is read from the UTC time in its name, or the
+    file's own time when the name carries none. {"deleted": [...], "held": [...]}."""
+    import calendar
+    import time
+    out = {"deleted": [], "held": []}
+    d = pre_update_dir()
+    if not d or not os.path.isdir(d):
+        return out
+    now = time.time() if now is None else now
+    for name in sorted(os.listdir(d)):
+        path = os.path.join(d, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            taken = calendar.timegm(time.strptime(name.rsplit(".", 1)[-1], "%Y%m%dT%H%M%SZ"))
+        except ValueError:
+            taken = os.path.getmtime(path)
+        if now - taken > PRE_UPDATE_COPY_KEEP_DAYS * 86400:
+            try:
+                os.remove(path)
+                out["deleted"].append(name)
+                print(f"pre-update copy deleted: {name} - older than "
+                      f"PRE_UPDATE_COPY_KEEP_DAYS ({PRE_UPDATE_COPY_KEEP_DAYS})", flush=True)
+            except OSError as e:
+                print(f"pre-update copy: could not delete {path} ({e})", flush=True)
+        else:
+            out["held"].append(name)
+            until = time.strftime("%Y-%m-%d", time.gmtime(taken + PRE_UPDATE_COPY_KEEP_DAYS * 86400))
+            print(f"pre-update copy held: {path} - it keeps second-factor seeds and "
+                  "provider keys as the older version stored them, in plaintext; "
+                  f"deleted at the first boot after {until}, or delete it once this "
+                  "version is confirmed", flush=True)
+    return out
+
+
+def is_pre_update_dir(path: str) -> bool:
+    """True for the directory that holds the pre-update copies - every walker
+    of the data directory (backups, exports) skips it by asking this, so the
+    walkers and the copy's home cannot disagree."""
+    d = pre_update_dir()
+    return bool(d) and os.path.realpath(path) == os.path.realpath(d)
 
 
 def _pending_one_way() -> dict:
@@ -285,8 +352,7 @@ def take_pre_update_copy() -> str | None:
     src = make_url(DATABASE_URL).database
     if not src or src == ":memory:" or not os.path.exists(src):
         return None
-    dest_dir = PRE_UPDATE_COPY_DIR or os.path.join(os.path.dirname(os.path.abspath(src)),
-                                                   "pre-update")
+    dest_dir = pre_update_dir()
     base = os.path.basename(src)
     try:
         os.makedirs(dest_dir, mode=0o700, exist_ok=True)
@@ -333,6 +399,7 @@ def init_db():
     Base.metadata.create_all(engine)
     _rebuild_chat_sessions_unique()
     _run_migrations()
+    expire_pre_update_copies()
     encrypted = _encrypt_mfa_seeds_sweep() if one_way_changes_allowed() else 0
     if encrypted:
         print(f"mfa seed sweep: encrypted {encrypted} plaintext seed(s) at rest",
