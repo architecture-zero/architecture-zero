@@ -111,11 +111,21 @@ def change_role(user_id: int, body: dict, current_user: dict = Depends(require_p
     role = body.get("role")
     if role not in ("owner", "admin", "member"):
         raise HTTPException(status_code=400, detail="role must be 'owner', 'admin', or 'member'")
+    # Your own authority is not yours to edit, in either direction (the forks'
+    # shape, here since 2026-10-01 - the 09-22 review's residue).
+    if user_id == current_user["id"]:
+        raise HTTPException(status_code=403, detail="Cannot change your own role")
+    # An id that names no ACTIVE account is a 404, before anything is written:
+    # get_user_by_id reads active rows only and update_user_role writes by id
+    # alone, so this answered "updated" for a missing id and wrote the role
+    # onto a deactivated account.
+    target = get_user_by_id(user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="No such user")
     # Granting Owner, or changing an existing Owner's role, is Owner-only -
     # an Admin must not be able to create a superuser or demote/lock out the
     # Owner.
-    target = get_user_by_id(user_id)
-    if (role == "owner" or (target and target.get("role") == "owner")) and not is_owner(current_user):
+    if (role == "owner" or target.get("role") == "owner") and not is_owner(current_user):
         raise HTTPException(status_code=403, detail="Only an Owner can grant or change an Owner role")
     # An account with no usable password may not hold a role whose preset
     # carries manage_users or manage_system (upstream's SSO-account rule, ported
@@ -125,15 +135,22 @@ def change_role(user_id: int, body: dict, current_user: dict = Depends(require_p
     if refusal:
         raise HTTPException(status_code=400, detail=refusal)
     # Never demote the last Owner - it would orphan the system and re-open
-    # public setup.
-    if target and target.get("role") == "owner" and role != "owner":
+    # public setup. Unreachable through this route while the self-check holds
+    # (only another Owner may change an Owner's role); kept as the backstop.
+    if target.get("role") == "owner" and role != "owner":
         from app.users import count_active_owners
         if count_active_owners() <= 1:
             raise HTTPException(status_code=400, detail="Cannot demote the last Owner")
+    # Setting the role an account already has changes nothing, so it writes
+    # nothing - it used to reset the explicit list it was not changing (the
+    # 09-22 review). After every guard, so a caller without the authority
+    # still meets its refusal rather than an "unchanged".
+    if target.get("role") == role:
+        return {"status": "unchanged", "permissions_reset": False}
     # The role change resets any explicit permission list to the new role's
     # preset (users.update_user_role); the answer says so, so the caller knows
     # to grant any extra scope again.
-    had_list = bool(target and target.get("permissions"))
+    had_list = bool(target.get("permissions"))
     update_user_role(user_id, role)
     log("auth_change_role", admin_id=current_user["id"], target_user_id=user_id, role=role,
         permissions_reset=had_list)
