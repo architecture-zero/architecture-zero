@@ -815,21 +815,23 @@ export default function App() {
       })
       if (me.ok) resolved = await me.json()
     } catch { /* keep the login payload; the boot path fills it in on reload */ }
-    setCurrentUser(resolved)
-    setIsGuest(false)
     // Signing IN is an identity transition too. A guest can be mid-answer when
     // they click Sign in, and that stream keeps its ticket, keeps owning
     // streaming/loading, and goes on writing into the transcript the new
     // account is about to be shown. Sign-out was fixed for this; the door in
     // the other direction was not.
     abandonStream()
-    // Clear the transcript on the way IN as well as out. The history effect
-    // below replaces messages only `if (data?.messages?.length)`, so signing
-    // into an account whose session is empty left the PREVIOUS account's
-    // conversation rendered - and since send() builds its history array from
-    // messages, that transcript was then posted with the new account's token
-    // and read by the model as context for their questions.
-    setMessages([])
+    // EVERY IDENTITY TRANSITION STARTS FROM NOTHING, in as well as out. The
+    // history effect replaces messages only `if (data?.messages?.length)`, so
+    // signing into an account whose session is empty left the PREVIOUS
+    // account's conversation rendered - and send() posted it as the new
+    // account's history. Clearing only the transcript also left the previous
+    // visitor's unsent draft in the box and their RAG choice in the next
+    // request body, and did not move the identity ticket that a regenerate in
+    // mid-trim checks before it re-sends (the 2026-10-02 defensive read).
+    clearIdentityState()
+    setCurrentUser(resolved)
+    setIsGuest(false)
     setSessionId(getOrCreateSession(resolved.id))
     setView('chat')
   }
@@ -837,11 +839,12 @@ export default function App() {
   const handleGuest = () => {
     // Same reason as handleLogin: continuing as guest leaves whatever
     // conversation was on screen, so any stream still running must be dropped
-    // rather than left writing into the guest's fresh transcript.
+    // rather than left writing into the guest's fresh transcript, and nothing
+    // of the previous visitor rides along.
     abandonStream()
+    clearIdentityState()
     setIsGuest(true)
     setCurrentUser(null)
-    setMessages([])
     setSessionId(crypto.randomUUID())
     setView('chat')
   }
@@ -850,16 +853,22 @@ export default function App() {
     // ABANDON BEFORE THE ROUND-TRIP, not after. The logout POST can hang for
     // the whole fetch timeout on an unreachable backend, and until it returned
     // the outgoing user's answer kept streaming into a screen the next person
-    // was about to use. The token is still in localStorage at this point, so
-    // authHeaders() below is unaffected by doing this first.
+    // was about to use.
     abandonStream()
-    // LEAVE THE CHAT VIEW FIRST, in the same synchronous batch as the state
-    // reset below. clearIdentityState rotates sessionId, and the history effect
-    // keys on [sessionId, view, isGuest] - so rotating while `view` was still
-    // 'chat' and the token was still in localStorage fired an authenticated
-    // fetch for a session id that had existed for microseconds. Harmless (the
-    // response is empty and the effect ignores empty), but it is a request the
-    // product has no reason to make while signing someone out.
+    // THE CREDENTIALS LEAVE STORAGE BEFORE THE SCREEN CHANGES. They used to go
+    // after the POST returned, with the login screen already up: every request
+    // reads its header from storage, so "Continue as guest" in that window
+    // chatted as the outgoing account, and a sign-in in that window had its
+    // fresh tokens removed when the old POST finished (the 2026-10-02
+    // defensive read). The POST still carries the outgoing token - read here,
+    // before it goes.
+    const outgoing = authHeaders()
+    localStorage.removeItem('az_jwt_token')
+    localStorage.removeItem('az_jwt_refresh')
+    // LEAVE THE CHAT VIEW in the same synchronous batch as the state reset
+    // below. clearIdentityState rotates sessionId, and the history effect keys
+    // on [sessionId, view, isGuest] - rotating while `view` was still 'chat'
+    // fired a fetch for a session id that had existed for microseconds.
     setView('login')
     // Signing out has to leave NOTHING on screen or in state for the next
     // person at this machine - see clearIdentityState for what "nothing" turned
@@ -868,10 +877,8 @@ export default function App() {
     setCurrentUser(null)
     setIsGuest(false)
     try {
-      await fetch(`${API}/api/auth/logout`, { method: 'POST', headers: authHeaders() })
+      await fetch(`${API}/api/auth/logout`, { method: 'POST', headers: outgoing })
     } catch { /* ignore */ }
-    localStorage.removeItem('az_jwt_token')
-    localStorage.removeItem('az_jwt_refresh')
   }
 
   // Chat data polling - hooks must be declared before any early returns
@@ -925,16 +932,24 @@ export default function App() {
     // rows it is about to produce do not exist server-side yet, so the server's
     // copy is strictly staler than what is on screen.
     if (activeStream.current !== null) return
+    // A LOAD THAT LANDS LATE IS DROPPED. This read is for ONE session as ONE
+    // identity; when either changes the effect re-runs and this run is
+    // superseded. Without the flag, a read that stalled past a sign-out and the
+    // next sign-in painted the previous account's conversation on the new
+    // account's screen - and send() would post it as their history (found by
+    // the 2026-10-02 defensive read; the same for a conversation switch).
+    let superseded = false
     guardedJson<{ messages?: Array<{ role: 'user' | 'assistant'; content: string }> }>(
       fetch(`${API}/api/history/${sessionId}`, { headers: authHeaders() }), 'Loading chat history')
       .then(data => {
         // Re-check after the await: a send() can start between the request and
         // its response, and the guard above cannot see the future.
-        if (activeStream.current !== null) return
+        if (superseded || activeStream.current !== null) return
         if (data?.messages?.length) {
           setMessages(data.messages.map(m => ({ role: m.role, content: m.content })))
         }
       })
+    return () => { superseded = true }
   }, [sessionId, view, isGuest])
 
   useEffect(() => {
@@ -1531,6 +1546,11 @@ export default function App() {
     // back is the PREVIOUS turn's answer, gone permanently with nothing shown.
     const trimCount = messages.slice(-2).filter(m => !m.ephemeral).length
     const mySession = sessionId
+    // The identity this regenerate belongs to. sessionIdRef alone catches a
+    // conversation switch only after React has committed it, and a password
+    // change (a timer) or a sign-in (a fetch callback) can land before that -
+    // the identity ticket moves synchronously on every transition.
+    const myIdentity = identityGen.current
     // GUESTS SKIP THE TRIM. A guest holds no token, the tail route depends on
     // get_current_user and 401s at route level, and actionError maps any 401 to
     // the sticky, dismiss-less "Session expired" banner - raised at someone who
@@ -1547,12 +1567,15 @@ export default function App() {
     // The trim was a network round-trip and nothing disables the sidebar during
     // it, so the user can be in a different conversation by now. Writing into it
     // would put this conversation's turn in that one - and post it there too.
-    if (sessionIdRef.current !== mySession) {
+    if (sessionIdRef.current !== mySession || identityGen.current !== myIdentity) {
       // SAY IT. The rows the trim removed are already gone and nothing on this
       // path re-sends them, so bailing in silence looked like a no-op while a
       // turn had actually been deleted.
       emitError('You left that conversation while it was regenerating, so the turn was not re-sent.')
-      setLoading(false)
+      // Leaving already released the guard (abandonStream). Clearing it again
+      // here hid the thinking dots of an answer already started in the
+      // conversation the visitor went to - only release it if nothing runs.
+      if (activeStream.current === null) setLoading(false)
       return
     }
 
@@ -1581,6 +1604,7 @@ export default function App() {
     const countToRemove = messages.slice(msgIndex).filter(m => !m.ephemeral).length
     const history = truncated.filter(m => !m.ephemeral).map(m => ({ role: m.role, content: m.content }))
     const mySession = sessionId
+    const myIdentity = identityGen.current   // see regenerate above
 
     // Guests skip the trim - see regenerate above for why.
     if (countToRemove > 0 && !isGuest) {
@@ -1589,13 +1613,13 @@ export default function App() {
       }), 'Trimming history')
       if (trimErr) emitError(trimErr) // proceed - the edit still sends, server history may duplicate
     }
-    if (sessionIdRef.current !== mySession) {
+    if (sessionIdRef.current !== mySession || identityGen.current !== myIdentity) {
       // Wider blast radius than regenerate: countToRemove reaches back to the
       // edited message, and submitEdit has already closed the editor and
       // discarded the draft. Silence here lost an arbitrary number of turns
       // with nothing on screen to say so.
       emitError('You left that conversation while the edit was sending, so it was not re-sent.')
-      setLoading(false)
+      if (activeStream.current === null) setLoading(false)   // see regenerate
       return
     }
 

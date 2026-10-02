@@ -73,13 +73,28 @@ interface Harness {
   deletes: string[]
   setChat: (r: (init?: RequestInit) => Response | Promise<Response>) => void
   setSessions: (s: Array<{ session: string; first_message: string }>) => void
+  // One session's history read, answered by the test (it may hold it open).
+  setHistory: (session: string, r: () => Response | Promise<Response>) => void
+  // The trim's answer, held by the test when it wants a regenerate mid-trim.
+  setTrim: (r: () => Response | Promise<Response>) => void
+  setLogout: (r: () => Response | Promise<Response>) => void
 }
 
-function installFetch(): Harness {
+/** A promise the test resolves by hand - a request held open. */
+function held<T>() {
+  let release!: (v: T) => void
+  const promise = new Promise<T>(r => { release = r })
+  return { promise, release }
+}
+
+function installFetch(opts: { guestMode?: boolean } = {}): Harness {
   const trimCounts: number[] = []
   const chatBodies: Record<string, unknown>[] = []
   const deletes: string[] = []
   let sessions: Array<{ session: string; first_message: string }> = []
+  const histories: Record<string, () => Response | Promise<Response>> = {}
+  let trimResponder: (() => Response | Promise<Response>) | null = null
+  let logoutResponder: (() => Response | Promise<Response>) | null = null
   let chatResponder: (init?: RequestInit) => Response | Promise<Response> = () =>
     new Response(sseStream([tok('hi'), DONE]).stream, { status: 200 })
 
@@ -94,8 +109,12 @@ function installFetch(): Harness {
 
     if (url.includes('/api/auth/config')) {
       return json({ needs_setup: false, auth_mode: 'local',
-                    guest_mode_enabled: false, allow_rag_toggle: true })
+                    guest_mode_enabled: opts.guestMode === true, allow_rag_toggle: true })
     }
+    if (url.includes('/api/auth/login')) {
+      return json({ access_token: 'account-token', refresh_token: 'account-refresh', user: USER })
+    }
+    if (url.includes('/api/auth/logout')) return logoutResponder ? logoutResponder() : json({})
     if (url.includes('/api/auth/me')) return json(USER)
     if (url.includes('/api/config')) {
       return json({ default_model: 'test-model', default_rag_enabled: true,
@@ -110,13 +129,16 @@ function installFetch(): Harness {
     if (url.includes('/tail')) {
       // THE OBSERVABLE. Record what the client believes is stored.
       trimCounts.push(Number(new URL(url, 'http://t').searchParams.get('count')))
-      return json({ status: 'ok', deleted: 0, requested: 0 })
+      return trimResponder ? trimResponder() : json({ status: 'ok', deleted: 0, requested: 0 })
     }
     if (url.includes('/api/history/') && method === 'DELETE') {
       deletes.push(url)
       return json({ status: 'ok' })
     }
-    if (url.includes('/api/history/')) return json({ messages: [] })
+    if (url.includes('/api/history/')) {
+      const session = decodeURIComponent(url.split('/api/history/')[1].split('?')[0])
+      return histories[session] ? histories[session]() : json({ messages: [] })
+    }
     if (url.includes('/api/chat')) {
       chatBodies.push(JSON.parse(String(init?.body ?? '{}')))
       return chatResponder(init)
@@ -128,6 +150,9 @@ function installFetch(): Harness {
     trimCounts, chatBodies, deletes,
     setChat: (r) => { chatResponder = r },
     setSessions: (s) => { sessions = s },
+    setHistory: (session, r) => { histories[session] = r },
+    setTrim: (r) => { trimResponder = r },
+    setLogout: (r) => { logoutResponder = r },
   }
 }
 
@@ -450,6 +475,26 @@ describe('leaving a conversation mid-answer', () => {
     expect(screen.queryByText(/was not saved/i)).toBeNull()
   })
 
+  it('a history read that lands after the conversation changed is dropped', async () => {
+    h.setSessions([{ session: 'older-session', first_message: 'The older chat' }])
+    const slow = held<Response>()
+    h.setHistory('older-session', () => slow.promise)
+    await signedInApp()
+
+    const older = await screen.findByText('The older chat')
+    await act(async () => { fireEvent.click(older) })
+    // Its read is still out when the visitor moves on.
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /New Chat/i })) })
+    await act(async () => {
+      slow.release(new Response(JSON.stringify({ messages: [
+        { role: 'user', content: 'OLDQUESTION' }, { role: 'assistant', content: 'OLDANSWER' }] }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    })
+
+    // Painted, it would be posted as the new conversation's history too.
+    expect(screen.queryByText('OLDQUESTION')).toBeNull()
+  })
+
   it('New Chat starts a conversation and deletes none', async () => {
     await signedInApp()
     await ask('question thirteen')
@@ -460,5 +505,62 @@ describe('leaving a conversation mid-answer', () => {
     // The old conversation is left, not erased: History is how you get back.
     expect(h.deletes).toEqual([])
     expect(screen.queryByText('question thirteen', { ignore: 'textarea, script, style' })).toBeNull()
+  })
+})
+
+describe('identity transitions (the 2026-10-02 defensive read)', () => {
+  it('the credentials leave storage the moment Sign out is pressed', async () => {
+    const pending = held<Response>()
+    h.setLogout(() => pending.promise)
+    await signedInApp()
+
+    await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: /Sign out/i })[0]) })
+
+    // The logout POST is still out, and no token is left for anything else to
+    // send meanwhile - a guest opened in this window used to chat as the
+    // outgoing account.
+    expect(localStorage.getItem('az_jwt_token')).toBeNull()
+    expect(localStorage.getItem('az_jwt_refresh')).toBeNull()
+    // The POST itself still carried the outgoing token.
+    const calls = (globalThis.fetch as unknown as { mock: { calls: [unknown, RequestInit?][] } }).mock.calls
+    const logout = calls.find(([u]) => String(u).includes('/api/auth/logout'))
+    expect((logout?.[1]?.headers as Record<string, string>).Authorization).toBe('Bearer test-token')
+    await act(async () => { pending.release(new Response('{}', { status: 200 })) })
+  })
+
+  it("a guest's unsent draft does not follow them into the account they sign into", async () => {
+    h = installFetch({ guestMode: true })
+    render(<App />)
+    const guestDoor = await screen.findByRole('button', { name: /Continue as guest/i })
+    await act(async () => { fireEvent.click(guestDoor) })
+    const box = await screen.findByPlaceholderText(/Message/i)
+    fireEvent.change(box, { target: { value: 'A HALF-WRITTEN DRAFT' } })
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /^Sign in$/i })) })
+    fireEvent.change(await screen.findByPlaceholderText('Username'), { target: { value: 'tester' } })
+    fireEvent.change(screen.getByPlaceholderText('Password'), { target: { value: 'a-password' } })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /^Sign in$/i })) })
+
+    const accountBox = await screen.findByPlaceholderText(/Message/i) as HTMLTextAreaElement
+    expect(accountBox.value).toBe('')
+  })
+
+  it('a regenerate still trimming when the account signs out never re-sends', async () => {
+    await signedInApp()
+    await ask('question fifteen')
+    await waitFor(() => expect(screen.getByText('hi')).toBeInTheDocument())
+    const trim = held<Response>()
+    h.setTrim(() => trim.promise)
+
+    await clickRegenerate()
+    await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: /Sign out/i })[0]) })
+    await act(async () => {
+      trim.release(new Response(JSON.stringify({ status: 'ok' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    })
+
+    // Only the original turn was ever posted - never the signed-out account's
+    // turn again, with or without its token.
+    expect(h.chatBodies).toHaveLength(1)
   })
 })
