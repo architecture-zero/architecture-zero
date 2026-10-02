@@ -239,7 +239,15 @@ def admin_mfa_reset(user_id: int, body: MfaResetRequest | None = Body(None),
         raise HTTPException(status_code=403,
                             detail="Only an Owner can reset an Owner's MFA")
     disable_mfa(user_id)
-    log("admin_mfa_reset", admin_id=current_user["id"], target_user_id=user_id)
+    # The seed the code count and any pending setup belonged to is gone, so
+    # they go too (2026-10-02) - or the person enrolling again would meet a
+    # cap their old seed filled. This door takes the caller's password; an
+    # unlock, which takes none, never clears the count.
+    from app.security import clear_totp_attempts, clear_mfa_pending
+    clear_totp_attempts(user_id)
+    clear_mfa_pending(user_id)
+    log("admin_mfa_reset", admin_id=current_user["id"], target_user_id=user_id,
+        self_target=(user_id == current_user["id"]))
     return {"status": "MFA disabled"}
 
 

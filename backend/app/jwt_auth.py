@@ -185,14 +185,14 @@ def require_totp_step_up(current_user: dict, code: str, action: str) -> None:
     thief does not hold the authenticator). An account with no second
     factor cannot take this door and is told the other one.
 
-    Wrong codes count twice: against the account lock, as every step-up
-    failure does, and in security's per-account code bound - the one a
-    correct password cannot clear (on the re-key, the password step-up just
-    before this one has cleared the lock's counter)."""
+    Every code checked here counts in security's per-account code bound
+    before it is read (a right one clears it) - the bound a correct password
+    cannot clear (on the re-key, the password step-up just before this one
+    has cleared the lock's counter). A wrong one also counts against the
+    account lock, as every step-up failure does."""
     import pyotp  # function-local, like every other pyotp use in this app
     from app.logger import log
-    from app.security import (check_totp_failures, record_totp_failure,
-                              clear_totp_failures)
+    from app.security import count_totp_attempt, clear_totp_attempts
     from app.users import reset_failed_attempts
     if not current_user.get("mfa_enabled"):
         raise HTTPException(
@@ -212,12 +212,11 @@ def require_totp_step_up(current_user: dict, code: str, action: str) -> None:
     if not (code or "").strip():
         raise HTTPException(status_code=400,
                             detail=f"A current authenticator code is required to {action}")
-    check_totp_failures(current_user["id"])
+    count_totp_attempt(current_user["id"])
     if not pyotp.TOTP(current_user["mfa_secret"]).verify(code.strip(), valid_window=1):
-        record_totp_failure(current_user["id"])
         _count_step_up_failure(current_user, action, "totp")
         raise HTTPException(status_code=400, detail="Invalid authenticator code")
-    clear_totp_failures(current_user["id"])
+    clear_totp_attempts(current_user["id"])
     reset_failed_attempts(current_user["id"])
     log("auth_step_up", user_id=current_user["id"], action=action, how="totp")
 

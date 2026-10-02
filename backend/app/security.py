@@ -330,11 +330,13 @@ def burn_mfa_challenge(jti: str) -> None:
                        MFA_CHALLENGE_TTL, default=_fresh_challenge())
 
 
-# ── Wrong authenticator codes, per ACCOUNT (2026-10-02) ──────────────────────
-# Every door that checks an account's CURRENT code - the sign-in challenge
-# (/mfa/complete) and the code step-up (the re-key, and resetting your own
-# password where a surface has that door) - counts a wrong code here, and only
-# a RIGHT code clears it.
+# ── Authenticator-code attempts, per ACCOUNT (2026-10-02) ────────────────────
+# Every door that checks a code against an account's seed - the sign-in
+# challenge (/mfa/complete), the code step-up (the re-key, and resetting your
+# own password where a surface has that door) and the enrollment confirm
+# (/mfa/enable, against a PENDING seed) - counts the attempt here before the
+# code is read, and only a RIGHT code clears the count (an operator's MFA reset
+# clears it too: the seed it counted against is gone).
 #
 # The account lock (failed_attempts/locked_until) cannot be this bound on its
 # own: a correct password clears it at every password step-up door, so whoever
@@ -343,24 +345,47 @@ def burn_mfa_challenge(jti: str) -> None:
 # addresses as they have. That did not matter while the password alone
 # re-keyed the authenticator; it matters the moment a code is the second proof
 # on the re-key. One bound for every door, because a code learned at one is
-# good at the others for its 30 to 90 seconds.
+# good at the others for its 30 to 90 seconds - a right guess at the pending
+# confirm included, since it switches the factor on.
 #
-# A fixed window from the first wrong code (the expiry is set when the row is
+# Counted in ONE versioned write before the code is read (state_store.update),
+# not read-then-write: with a check here and a record after the verify, every
+# request in a concurrent burst read the same count below the cap and got its
+# guess (found by the defensive read of this change, before it shipped). A
+# fixed window from the first attempt (the expiry is set when the row is
 # created and kept after), so the cap is TOTP_MAX_FAILURES per window - the
 # same five per fifteen minutes the account lock allows a password guesser.
 TOTP_MAX_FAILURES   = int(os.getenv("TOTP_MAX_FAILURES",   "5"))
 TOTP_FAILURE_WINDOW = int(os.getenv("TOTP_FAILURE_WINDOW", "900"))  # seconds
+# How long a seed that setup stored may still be confirmed. Before this a
+# pending seed waited forever, and the confirm was a door that takes a session
+# alone (2026-10-02, the same defensive read).
+MFA_PENDING_TTL     = int(os.getenv("MFA_PENDING_TTL",     "1800"))  # seconds
 
 
 def _totp_key(user_id: int) -> str:
     return f"totp_fail:{user_id}"
 
 
-def check_totp_failures(user_id: int) -> None:
-    """Refuse a code check on an account at its cap of wrong codes, before the
-    code is read - so the refusal holds against a right code too."""
-    doc = state_store.get(_totp_key(user_id))
-    if doc and int(doc.get("n", 0)) >= TOTP_MAX_FAILURES:
+def _pending_key(user_id: int) -> str:
+    return f"mfa_pending:{user_id}"
+
+
+def count_totp_attempt(user_id: int) -> None:
+    """Count one code check against the account, then refuse it past the cap -
+    before the code is read, so the refusal holds against a right code and
+    against a burst alike. A right code then calls clear_totp_attempts; a wrong
+    one leaves the count. The first refusal in a window is logged: someone
+    guessing codes is the signal an operator wants, whichever door they used."""
+    doc = state_store.update(_totp_key(user_id),
+                             lambda d: d.__setitem__("n", int(d.get("n", 0)) + 1),
+                             TOTP_FAILURE_WINDOW,
+                             default={"n": 0, "since": time.time()})
+    if doc["n"] > TOTP_MAX_FAILURES:
+        if doc["n"] == TOTP_MAX_FAILURES + 1:
+            from app.logger import log
+            log("auth_totp_cap_reached", user_id=user_id,
+                attempts=TOTP_MAX_FAILURES, window_seconds=TOTP_FAILURE_WINDOW)
         remaining = max(1, int((doc.get("since", 0) + TOTP_FAILURE_WINDOW
                                 - time.time()) // 60) + 1)
         raise HTTPException(
@@ -369,24 +394,25 @@ def check_totp_failures(user_id: int) -> None:
                     f"Try again in {remaining} minute(s)."))
 
 
-def record_totp_failure(user_id: int) -> int:
-    """Count a wrong code against the account. Returns the new count. The
-    count reaching the cap is logged once - someone guessing codes is the
-    signal an operator wants, whichever door they used."""
-    doc = state_store.update(_totp_key(user_id),
-                             lambda d: d.__setitem__("n", int(d.get("n", 0)) + 1),
-                             TOTP_FAILURE_WINDOW,
-                             default={"n": 0, "since": time.time()})
-    if doc["n"] == TOTP_MAX_FAILURES:
-        from app.logger import log
-        log("auth_totp_cap_reached", user_id=user_id, failures=doc["n"],
-            window_seconds=TOTP_FAILURE_WINDOW)
-    return doc["n"]
-
-
-def clear_totp_failures(user_id: int) -> None:
-    """A right code: the only thing that refunds code guesses."""
+def clear_totp_attempts(user_id: int) -> None:
+    """A right code, or the seed itself reset by an operator: the only things
+    that refund code guesses. Never an unlock - that takes no password, so a
+    session alone could refund its own guesses."""
     state_store.delete(_totp_key(user_id))
+
+
+def mark_mfa_pending(user_id: int) -> None:
+    """Setup just stored a seed nobody has proven yet: it may be confirmed
+    for MFA_PENDING_TTL seconds, then the setup must start again."""
+    state_store.put(_pending_key(user_id), {"since": time.time()}, MFA_PENDING_TTL)
+
+
+def mfa_pending_live(user_id: int) -> bool:
+    return state_store.get(_pending_key(user_id)) is not None
+
+
+def clear_mfa_pending(user_id: int) -> None:
+    state_store.delete(_pending_key(user_id))
 
 
 

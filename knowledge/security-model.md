@@ -82,11 +82,13 @@ longer-lived credential or replace an authentication factor without the
 password. Re-keying an authenticator that is already enrolled takes more:
 the password AND a current code from that authenticator (since 2026-10-02),
 so a session plus the password cannot swap in someone else's - and a person
-who lost theirs asks an admin for the MFA reset below. Wrong codes are
-capped per account at every door that checks one, and only a right code
-clears that count, so passing a password step-up never buys more guesses;
-MFA enable verifies a pending code only and will not test a code against an
-enrolled account's live seed. A wrong password answers 400 with a plain
+who lost theirs asks an admin for the MFA reset below. Code attempts are
+capped per account at every door that checks one - counted in one write
+before the code is read, so a burst of concurrent guesses gets no more than
+the cap - and only a right code (or that reset) clears the count, so passing
+a password step-up never buys more guesses; MFA enable verifies a pending
+code only, within 30 minutes of its setup, and will not test a code against
+an enrolled account's live seed. A wrong password answers 400 with a plain
 reason, never a 401 that would log the operator out, and it counts against
 the same lockout as a failed login, so the step-up is not a second guessing
 surface. An account

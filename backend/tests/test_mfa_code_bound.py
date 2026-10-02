@@ -220,3 +220,101 @@ def test_a_right_code_clears_the_bound(client, probe, monkeypatch):
     assert _sign_in(client, _wrong_code(seed)).status_code == 401
     assert _sign_in(client, _wrong_code(seed)).status_code == 401
     assert _sign_in(client, pyotp.TOTP(seed).now()).status_code == 200
+
+
+def test_a_mistyped_pending_code_is_a_400_not_a_401(client, probe):
+    """A signed-in client reads a 401 as an expired session and signs out, so a
+    mistyped code in the middle of a re-key - with MFA off until it verifies -
+    must not answer one. The step-up doors' contract: a string 400."""
+    r = _rekey(client, probe, mfa_code=pyotp.TOTP(probe["secret"]).now())
+    assert r.status_code == 200, r.text
+    fresh = r.json()["secret"]
+    r = client.post("/api/auth/mfa/enable", headers=probe["headers"],
+                    json={"code": _wrong_code(fresh)})
+    assert r.status_code == 400 and r.json()["detail"] == "Invalid authenticator code", r.text
+    assert _row(probe["id"])["mfa_enabled"] is False
+
+
+# -- 4. The pending confirm, the burst, and what may refund guesses ------------
+# From the defensive read of this change, before it shipped: the confirm took a
+# session alone and checked a PENDING seed with no bound and no expiry, and the
+# cap was read in one step and written in another.
+
+def test_pending_codes_count_in_the_same_bound(client, probe, monkeypatch):
+    """A right guess at the confirm switches the factor on and is a code the
+    other doors accept for its window, so pending codes share the bound."""
+    r = _rekey(client, probe, mfa_code=pyotp.TOTP(probe["secret"]).now())
+    assert r.status_code == 200, r.text
+    fresh = r.json()["secret"]
+    monkeypatch.setattr(security, "TOTP_MAX_FAILURES", 3)
+    for _ in range(3):
+        r = client.post("/api/auth/mfa/enable", headers=probe["headers"],
+                        json={"code": _wrong_code(fresh)})
+        assert r.status_code == 400, r.text
+    r = client.post("/api/auth/mfa/enable", headers=probe["headers"],
+                    json={"code": pyotp.TOTP(fresh).now()})
+    assert r.status_code == 429, r.text
+    assert _row(probe["id"])["mfa_enabled"] is False
+
+
+def test_a_pending_setup_expires(client, probe):
+    """A seed setup stored may be confirmed for MFA_PENDING_TTL, then the setup
+    starts again - a pending seed no longer waits forever behind a door that
+    takes a session alone."""
+    from app import state_store
+    r = _rekey(client, probe, mfa_code=pyotp.TOTP(probe["secret"]).now())
+    assert r.status_code == 200, r.text
+    fresh = r.json()["secret"]
+    # The pending mark as it reads once MFA_PENDING_TTL has passed.
+    state_store.put(f"mfa_pending:{probe['id']}", {"since": 0.0}, ttl=-1)
+    r = client.post("/api/auth/mfa/enable", headers=probe["headers"],
+                    json={"code": pyotp.TOTP(fresh).now()})
+    assert r.status_code == 400 and "expired" in r.json()["detail"], r.text
+    assert _row(probe["id"])["mfa_enabled"] is False
+
+
+def test_the_bound_holds_against_a_burst(probe):
+    """Counted in one versioned write before the code is read, so a burst of
+    concurrent attempts gets exactly the cap, not one guess per request that
+    read the count before any of them wrote it."""
+    import threading
+    from fastapi import HTTPException
+    passed, refused = [], []
+    lock = threading.Lock()
+
+    def attempt():
+        try:
+            security.count_totp_attempt(probe["id"])
+            with lock:
+                passed.append(1)
+        except HTTPException as exc:
+            with lock:
+                refused.append(exc.status_code)
+
+    threads = [threading.Thread(target=attempt) for _ in range(12)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(passed) == security.TOTP_MAX_FAILURES, (passed, refused)
+    assert refused and set(refused) == {429}
+
+
+def test_an_mfa_reset_clears_the_bound_and_an_unlock_does_not(client, probe,
+                                                              admin_headers, monkeypatch):
+    """The reset takes the operator's password and removes the seed the count
+    was against, so it clears the count; an unlock takes no password, so a
+    session alone could use it to refund its own guesses - it leaves the count."""
+    from app import state_store
+    monkeypatch.setattr(security, "TOTP_MAX_FAILURES", 3)
+    seed = probe["secret"]
+    for _ in range(3):
+        assert _sign_in(client, _wrong_code(seed)).status_code == 401
+    r = client.post(f"/api/admin/users/{probe['id']}/unlock", headers=admin_headers)
+    assert r.status_code == 200, r.text
+    assert _sign_in(client, pyotp.TOTP(seed).now()).status_code == 429
+    r = client.post(f"/api/admin/users/{probe['id']}/mfa-reset", headers=admin_headers,
+                    json={"current_password": "AdminPass1"})
+    assert r.status_code == 200, r.text
+    assert f"totp_fail:{probe['id']}" not in state_store.keys("totp_fail:")
+    assert _row(probe["id"])["mfa_enabled"] is False

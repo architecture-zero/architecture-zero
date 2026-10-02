@@ -79,6 +79,10 @@ def test_legacy_plaintext_row_still_verifies(client, probe):
         db.query(User).filter(User.id == probe["id"]).update(
             {"mfa_secret": legacy_seed, "mfa_enabled": False})
     assert get_user_by_id(probe["id"])["mfa_secret"] == legacy_seed
+    # Setup marks a seed pending for MFA_PENDING_TTL (2026-10-02); this row
+    # was written straight to the column, so mark it as setup would.
+    from app.security import mark_mfa_pending
+    mark_mfa_pending(probe["id"])
     code = pyotp.TOTP(legacy_seed).now()
     r = client.post("/api/auth/mfa/enable", headers=probe["headers"],
                     json={"code": code})

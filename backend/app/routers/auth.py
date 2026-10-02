@@ -41,8 +41,8 @@ from app.permissions import effective_permissions
 from app.security import (check_setup_rate_limit, check_auth_rate_limit,
                           check_mfa_challenge,
                           record_mfa_failure, burn_mfa_challenge,
-                          check_totp_failures, record_totp_failure,
-                          clear_totp_failures,
+                          count_totp_attempt, clear_totp_attempts,
+                          mark_mfa_pending, mfa_pending_live, clear_mfa_pending,
                           client_ip_from_request, verify_setup_claim_code,
                           burn_setup_claim_code)
 from app.users import (create_user, owner_exists, store_refresh_token,
@@ -230,9 +230,10 @@ def mfa_complete(request: MFACompleteRequest, req: Request):
 
     And since 2026-10-02 the per-account CODE bound (security.py): a correct
     password clears failed_attempts at every step-up door, so a holder of a
-    session and the password could keep the lock from ever landing; wrong
-    codes now also count where only a right code clears them, shared with
-    the re-key door's code step-up.
+    session and the password could keep the lock from ever landing; every
+    code is now also counted, before it is read, where only a right code
+    clears the count, shared with the re-key's code step-up and the
+    enrollment confirm.
     """
     from datetime import datetime, timezone, timedelta
     import pyotp
@@ -259,11 +260,10 @@ def mfa_complete(request: MFACompleteRequest, req: Request):
             raise HTTPException(status_code=429, detail=f"Account locked. Try again in {remaining} minute(s).")
         unlock_user(user["id"])
 
-    check_totp_failures(user["id"])
+    count_totp_attempt(user["id"])
     totp = pyotp.TOTP(user["mfa_secret"])
     if not totp.verify(request.code, valid_window=1):
         record_mfa_failure(jti)
-        record_totp_failure(user["id"])
         increment("auth_failures_total")
         attempts = increment_failed_attempts(user["id"])
         if attempts >= MAX_LOGIN_ATTEMPTS:
@@ -274,7 +274,7 @@ def mfa_complete(request: MFACompleteRequest, req: Request):
         raise HTTPException(status_code=401, detail="Invalid authenticator code")
 
     burn_mfa_challenge(jti)
-    clear_totp_failures(user["id"])
+    clear_totp_attempts(user["id"])
     reset_failed_attempts(user["id"])
     access_token = create_access_token(user["id"], user["username"], user["role"])
     raw_refresh, expires_at = create_refresh_token(user["id"])
@@ -343,6 +343,10 @@ def mfa_setup(request: MFASetupRequest | None = None,
             username=current_user["username"])
     secret = pyotp.random_base32()
     set_mfa_secret(current_user["id"], secret)
+    # The new seed may be confirmed for MFA_PENDING_TTL, then setup starts
+    # again (2026-10-02): the confirm takes a session alone, so a pending seed
+    # that waited forever was a door that stayed open forever.
+    mark_mfa_pending(current_user["id"])
     instance_name = os.getenv("VITE_INSTANCE_NAME", "Architecture Zero")
     uri = pyotp.totp.TOTP(secret).provisioning_uri(
         name=current_user["username"],
@@ -371,6 +375,13 @@ def mfa_enable(request: MFAEnableRequest, current_user: dict = Depends(get_curre
     now answered 409 before any code is read, the same for every code. A
     re-key flips mfa_enabled off until the new code verifies, so the re-key
     still finishes here.
+
+    And the pending check is bounded too (2026-10-02, the defensive read of
+    the change above): a right guess here switches the factor on and is a
+    code the other doors accept for its window, and this door takes a
+    session alone. So the attempt counts in the per-account code bound
+    before the code is read, and a pending seed may be confirmed only for
+    MFA_PENDING_TTL after its setup.
     """
     import pyotp
     user = get_user_by_id(current_user["id"])
@@ -383,9 +394,21 @@ def mfa_enable(request: MFAEnableRequest, current_user: dict = Depends(get_curre
                    "current code.")
     if not user or not user.get("mfa_secret"):
         raise HTTPException(status_code=400, detail="Call /api/auth/mfa/setup first")
+    if not mfa_pending_live(user["id"]):
+        raise HTTPException(
+            status_code=400,
+            detail="This authenticator setup has expired - start it again with "
+                   "POST /api/auth/mfa/setup.")
+    count_totp_attempt(user["id"])
     totp = pyotp.TOTP(user["mfa_secret"])
     if not totp.verify(request.code, valid_window=1):
-        raise HTTPException(status_code=401, detail="Invalid authenticator code")
+        # 400, not 401 (2026-10-02): a signed-in client reads a 401 as an
+        # expired session - refresh, retry, sign out - so a mistyped code in
+        # the middle of a re-key signed the person out while MFA was off.
+        # The same contract as the step-up doors.
+        raise HTTPException(status_code=400, detail="Invalid authenticator code")
+    clear_totp_attempts(user["id"])
+    clear_mfa_pending(user["id"])
     enable_mfa(current_user["id"])
     log("auth_mfa_enabled", user_id=current_user["id"])
     return {"status": "MFA enabled"}
