@@ -181,6 +181,10 @@ jobs:
       - uses: actions/checkout@v7
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
+          # The scanner itself, pinned: the action's default was 0.70.0. Bumped to
+          # 0.74.0 on 2026-10-02 after a before/after on the committed tree of all
+          # six repos with these flags - the same findings under both versions.
+          version: v0.74.0
           scan-type: fs
           scanners: vuln,secret,misconfig
           severity: HIGH,CRITICAL
