@@ -95,11 +95,14 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   why it is still there.
 - **Widen client test coverage** - the tests that mount the chat client cover
   the stored-row invariant across every stream outcome, which is where the
-  defects were. Not yet covered: the admin panel, the setup wizard, model
-  selection, and the identity transitions (sign-in, sign-out, continue as
-  guest) whose state resets are currently verified by hand. Each wants the
-  same treatment - find the rule, find where the rule becomes an observable,
-  test that rather than the symptoms.
+  defects were, and since 2026-10-02 the paths that touch it or the user's
+  identity: the refusals made before storage (409, 413), leaving a
+  conversation mid-answer, a render that lands late, and the identity
+  transitions' resets (sign-out's credentials, a guest's draft into an
+  account, a history read that lands after a switch). Not yet covered: the
+  admin panel, the setup wizard, model selection. Each wants the same
+  treatment - find the rule, find where the rule becomes an observable, test
+  that rather than the symptoms.
 - ~~**Alerts that fire on an unwatched box**~~ - SHIPPED 2026-10-02
   (`backend/app/self_check.py`): the disk and Ollama alerts were raised
   inside `GET /api/health/detailed` alone, so they fired only while an Owner
