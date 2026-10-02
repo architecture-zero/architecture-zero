@@ -107,13 +107,15 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   stopped and nobody signed in, nothing sent. The same probes, and the backup
   and drill heartbeats, now run on a timer from boot through the same alerts;
   the runbook's Monitoring section says what the timer cannot see.
-- **An update that takes its own copy first** - the first boot after an
-  update encrypts the second-factor seeds and saved provider keys in place,
-  and an older version cannot read them afterwards (the runbook's "Going
-  back"). The way back is a copy of the data directory taken before the
-  update, which today is a step the operator has to remember. Still ahead: the
-  boot taking that copy itself before its first one-way change, and refusing
-  the change if the copy cannot be written.
+- ~~**An update that takes its own copy first**~~ - SHIPPED 2026-10-02
+  (`backend/app/db.py`, "A copy before the first one-way change"): the first
+  boot after an update encrypts plaintext second-factor seeds and saved
+  provider keys in place, and an older version cannot read them afterwards.
+  A boot with anything to convert now copies the database first, through
+  SQLite's backup API, and holds the conversion when it cannot write the
+  copy; the runbook's "Going back" says how to use it. The copy is the
+  database alone - copying the whole data directory before an update stays
+  the operator's step.
 - ~~**Stop that stops the model**~~ - SHIPPED 2026-10-01
   (`backend/app/closing_stream.py`): a client disconnect cancelled the
   streaming response without closing its synchronous generator, so the

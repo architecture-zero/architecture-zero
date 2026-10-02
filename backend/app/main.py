@@ -118,7 +118,10 @@ app.include_router(chat_router.router)
 _create_schema()   # create all tables via SQLAlchemy (idempotent)
 init_config_db()   # seed config defaults
 from app.config import encrypt_plaintext_secrets as _sweep_secrets
-_moved = _sweep_secrets()
+from app.db import one_way_changes_allowed as _one_way_ok
+# Held, like the seed sweep in init_db, when the boot could not copy the
+# database first (app/db.py, "A copy before the first one-way change").
+_moved = _sweep_secrets() if _one_way_ok() else 0
 if _moved:
     print(f"provider-key sweep: encrypted {_moved} plaintext secret(s) at rest", flush=True)
 if ENABLE_AUDIT_LOG:

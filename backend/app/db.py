@@ -243,12 +243,97 @@ def _encrypt_mfa_seeds_sweep() -> int:
     return converged
 
 
+# -- A copy before the first one-way change (2026-10-02) ----------------------
+# The first boot after an update encrypts any second-factor seed and saved
+# provider key still stored plaintext, in place - and an older version cannot
+# read either afterwards (the runbook's "Going back"; the 2026-09-29 upgrade
+# rehearsal ran it: the old code booted healthy, then failed every second
+# factor and would have sent a ciphertext as the provider key). The way back
+# is a copy taken before that boot, which was a step the operator had to
+# remember. Now the boot takes it: when this boot would convert anything, the
+# database is copied first through SQLite's backup API (a consistent snapshot
+# under a live writer, unlike a file copy), and if the copy cannot be written
+# the conversion is HELD - the rows stay plaintext, readable by both versions,
+# and the log says why. Decided once per boot; both sweeps ask.
+PRE_UPDATE_COPY_DIR = os.getenv("PRE_UPDATE_COPY_DIR", "")   # default: <db dir>/pre-update
+PRE_UPDATE_COPIES_KEPT = int(os.getenv("PRE_UPDATE_COPIES_KEPT", "3"))
+_one_way_allowed: bool | None = None
+
+
+def _pending_one_way() -> dict:
+    """Rows this boot would rewrite in a form an older version cannot read."""
+    from app.config import get_all_config, is_secret_config_key
+    from app.crypto_at_rest import is_encrypted
+    from app.models import User
+    with get_session() as db:
+        seeds = sum(1 for (s,) in db.query(User.mfa_secret)
+                    .filter(User.mfa_secret.isnot(None)).all() if not is_encrypted(s))
+    keys = sum(1 for k, v in get_all_config().items()
+               if is_secret_config_key(k) and v and not is_encrypted(v))
+    return {"mfa_seeds": seeds, "provider_keys": keys}
+
+
+def take_pre_update_copy() -> str | None:
+    """Copy the SQLite database before a one-way change; the copy's path, or
+    None when it could not be taken (not SQLite, no file yet, or a failed
+    write). The newest PRE_UPDATE_COPIES_KEPT copies are kept."""
+    import sqlite3
+    import time
+    from sqlalchemy.engine import make_url
+    if not _sqlite:
+        return None
+    src = make_url(DATABASE_URL).database
+    if not src or src == ":memory:" or not os.path.exists(src):
+        return None
+    dest_dir = PRE_UPDATE_COPY_DIR or os.path.join(os.path.dirname(os.path.abspath(src)),
+                                                   "pre-update")
+    base = os.path.basename(src)
+    try:
+        os.makedirs(dest_dir, mode=0o700, exist_ok=True)
+        dest = os.path.join(dest_dir, f"{base}.{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}")
+        source, target = sqlite3.connect(src), sqlite3.connect(dest)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+            source.close()
+        os.chmod(dest, 0o600)
+        kept = sorted(f for f in os.listdir(dest_dir) if f.startswith(base + "."))
+        for old in kept[:-PRE_UPDATE_COPIES_KEPT]:
+            os.remove(os.path.join(dest_dir, old))
+        return dest
+    except Exception as e:
+        print(f"pre-update copy: could not write it ({e})", flush=True)
+        return None
+
+
+def one_way_changes_allowed() -> bool:
+    """True when this boot may convert rows an older version cannot read:
+    there is nothing to convert, or the copy was taken. Decided once per boot."""
+    global _one_way_allowed
+    if _one_way_allowed is None:
+        pending = _pending_one_way()
+        if not any(pending.values()):
+            _one_way_allowed = True
+        else:
+            copy = take_pre_update_copy()
+            _one_way_allowed = copy is not None
+            if copy:
+                print(f"pre-update copy: {copy} - taken before converting {pending} "
+                      "in place (the way back: the runbook's Going back)", flush=True)
+            else:
+                print(f"one-way change HELD: {pending} stay as they are - the boot could "
+                      "not copy the database first, so it does not convert them. Back the "
+                      "database up, then restart.", flush=True)
+    return _one_way_allowed
+
+
 def init_db():
     from app import models  # noqa: F401 - register all ORM models
     Base.metadata.create_all(engine)
     _rebuild_chat_sessions_unique()
     _run_migrations()
-    encrypted = _encrypt_mfa_seeds_sweep()
+    encrypted = _encrypt_mfa_seeds_sweep() if one_way_changes_allowed() else 0
     if encrypted:
         print(f"mfa seed sweep: encrypted {encrypted} plaintext seed(s) at rest",
               flush=True)

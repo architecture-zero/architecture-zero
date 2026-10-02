@@ -166,6 +166,17 @@ the update. Whatever was written after the update goes with it. The checkout
 is left on the tag, not on a branch: `git checkout main` before the next
 update, or `git pull` has nothing to pull into.
 
+If you did not take the copy: since 2026-10-02 the first boot that would
+convert anything an older version cannot read takes a copy of the database
+first - `backend/data/pre-update/history.db.<UTC time>`, the newest three
+kept (`PRE_UPDATE_COPY_DIR`, `PRE_UPDATE_COPIES_KEPT`) - and its log names it.
+If it cannot write that copy, it does not convert: the log says
+`one-way change HELD`, the rows stay as they were, and both versions can
+still read them. That copy is the database alone. To go back with it, stop,
+put it in place of `backend/data/history.db` (and remove `history.db-wal` and
+`history.db-shm` beside it), check out the older version, and start; the
+rest of the data directory is whatever the newer version left.
+
 **One-time note for instances created before session ids became per-owner.**
 `chat_sessions` originally required a session id to be unique across the whole
 deployment, while the code that reads those rows scoped them to their owner - so
