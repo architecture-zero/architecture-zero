@@ -8,23 +8,25 @@ waited five minutes with nobody signed in - no alert - then made one Owner
 read of the route, and the alert arrived within the second.
 
 Now the same probes run on a timer from boot, through the same alert channels
-and the same per-key cooldown (app.alerting), plus the backup job's and the
-restore drill's heartbeats - read by the same function the public
-/api/backup-status probe serves, so the alarm and the probe cannot disagree
-about what is stale. The detailed route calls the same probes, so what an
-Owner sees on the Monitoring tab is what the timer checks.
+and the same per-key cooldown (app.alerting). The detailed route calls the
+same probes, so what an Owner sees on the Monitoring tab is what the timer
+checks.
 
-What it watches, decided once (the ROADMAP asked for that rather than one
-alert at a time): the data volume's disk use, Ollama when it is enabled, and
-the two backup heartbeats. Everything else an operator wants watched from
-outside is in the runbook's Monitoring section.
+What it watches is decided once, by the deployment's startup hook, which
+passes it in: the data volume's disk use always; Ollama through the given
+reader when Ollama is enabled (None: not watched here); and the backup job's
+and the restore drill's heartbeats through the given status reader - the same
+function a public /api/backup-status probe serves, so the alarm and the probe
+cannot disagree (None: this deployment's backups are watched elsewhere).
+Everything else an operator wants watched from outside is in the runbook's
+Monitoring section. This file is the same on every surface that carries it.
 
 SELF_CHECK_INTERVAL_SECONDS (default 300; 0 turns the timer off). The first
 run comes one interval after boot, so a restart is not itself an alert.
 SELF_CHECK_BACKUP (default true) - false on a deployment that backs up some
 other way and writes no backup-status.json. Alerts leave the box only when a
 channel is configured (ALERT_WEBHOOK_URL, or the SMTP set): an instance with
-none runs the probes and logs what failed, nothing else.
+none runs the probes and logs what changed, nothing else.
 """
 import asyncio
 import os
@@ -72,13 +74,11 @@ def probe_ollama(ollama_get) -> dict:
         return {"name": "ollama", "ok": False, "latency_ms": None}
 
 
-def probe_backups() -> dict:
-    """The backup job's and the restore drill's heartbeats, read the way
-    /api/backup-status reads them; an alert for each one that is not ok."""
-    # Function-local: the system router imports this module for its probes.
-    from app.routers.system import _backup_job_state
-    states = {"backup": _backup_job_state("backup-status.json"),
-              "drill": _backup_job_state("drill-status.json")}
+def probe_backups(backup_state) -> dict:
+    """The backup job's and the restore drill's heartbeats through the given
+    status reader; an alert for each one that is not ok."""
+    states = {"backup": backup_state("backup-status.json"),
+              "drill": backup_state("drill-status.json")}
     for kind, st in states.items():
         if not st.get("ok"):
             age = st.get("age_hours")
@@ -86,7 +86,7 @@ def probe_backups() -> dict:
                        f"{kind}: {st.get('reason', 'unknown')}"
                        + (f" (age {age}h)" if age is not None else "")
                        + ". The host job writes its status into the data directory;"
-                         " docs/runbook.md, Backups.")
+                         " the runbook's Backups section.")
     return states
 
 
@@ -112,14 +112,13 @@ def _note(failing: list) -> None:
         _last_logged = now
 
 
-def run_self_check() -> dict:
-    """One pass of every probe; the log says what changed."""
-    from app.runtime_config import _DATA_DIR, _ollama_get
-    result = {"disk": probe_disk(_DATA_DIR)}
-    if ollama_enabled():
-        result["ollama"] = probe_ollama(_ollama_get)
-    if SELF_CHECK_BACKUP:
-        result["backups"] = probe_backups()
+def run_self_check(data_dir: str, ollama_get=None, backup_state=None) -> dict:
+    """One pass of every probe this deployment watches; the log says what changed."""
+    result = {"disk": probe_disk(data_dir)}
+    if ollama_get is not None and ollama_enabled():
+        result["ollama"] = probe_ollama(ollama_get)
+    if backup_state is not None and SELF_CHECK_BACKUP:
+        result["backups"] = probe_backups(backup_state)
     failing = []
     if not result["disk"].get("ok"):
         failing.append("disk")
@@ -132,17 +131,19 @@ def run_self_check() -> dict:
     return result
 
 
-async def self_check_loop() -> None:
+async def self_check_loop(data_dir: str, ollama_get=None, backup_state=None) -> None:
     """The timer. Started from the startup hook; the probes run off the event
     loop (a blocking disk or HTTP read must never stall a request)."""
     interval = SELF_CHECK_INTERVAL_SECONDS
     if interval <= 0:
         log("self_check_off")
         return
-    log("self_check_started", interval_seconds=interval, backups=SELF_CHECK_BACKUP)
+    log("self_check_started", interval_seconds=interval,
+        ollama=ollama_get is not None and ollama_enabled(),
+        backups=backup_state is not None and SELF_CHECK_BACKUP)
     while True:
         await asyncio.sleep(interval)
         try:
-            await asyncio.to_thread(run_self_check)
+            await asyncio.to_thread(run_self_check, data_dir, ollama_get, backup_state)
         except Exception as e:
             log_error("self_check_crashed", error=str(e)[:300])

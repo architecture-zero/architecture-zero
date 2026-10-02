@@ -401,9 +401,14 @@ async def startup_tasks():
     asyncio.create_task(_bg_guarded())
     # The instance checks itself (2026-10-02): disk, Ollama and the backup
     # heartbeats on a timer, through the same alerts the Monitoring tab's
-    # reads raise - before this, an unwatched box sent nothing.
+    # reads raise - before this, an unwatched box sent nothing. What it
+    # watches is passed in here: the data volume, Ollama through the same
+    # reader the detailed route uses, and the two heartbeats through the
+    # reader /api/backup-status serves.
     from app.self_check import self_check_loop
-    asyncio.create_task(self_check_loop())
+    from app.runtime_config import _DATA_DIR, _ollama_get
+    from app.routers.system import _backup_job_state
+    asyncio.create_task(self_check_loop(_DATA_DIR, _ollama_get, _backup_job_state))
 
 
 @app.on_event("shutdown")
