@@ -81,7 +81,33 @@ def test_no_copy_no_conversion(plaintext_seed, fresh_boot, monkeypatch):
     assert _raw_seed(plaintext_seed["id"]) == plaintext_seed["seed"]
 
 
-def test_nothing_to_convert_takes_no_copy(client, fresh_boot):
+@pytest.fixture
+def nothing_to_convert(client):
+    """A database with nothing left to convert. The suite's database is
+    shared, and other tests write stand-ins for pre-encryption rows raw (a
+    provider key through set_config, say): those are set aside for this test
+    and put back after, so the question is asked of a database that has none."""
+    from app.config import get_all_config, is_secret_config_key, set_config
+    from app.crypto_at_rest import is_encrypted
+    from app.models import User
+    keys = {k: v for k, v in get_all_config().items()
+            if is_secret_config_key(k) and v and not is_encrypted(v)}
+    for k in keys:
+        set_config(k, "")
+    with dbmod.get_session() as s:
+        seeds = {uid: seed for uid, seed in s.query(User.id, User.mfa_secret)
+                 .filter(User.mfa_secret.isnot(None)).all() if not is_encrypted(seed)}
+        for uid in seeds:
+            s.query(User).filter(User.id == uid).update({"mfa_secret": None})
+    yield
+    for k, v in keys.items():
+        set_config(k, v)
+    with dbmod.get_session() as s:
+        for uid, seed in seeds.items():
+            s.query(User).filter(User.id == uid).update({"mfa_secret": seed})
+
+
+def test_nothing_to_convert_takes_no_copy(nothing_to_convert, fresh_boot):
     assert not any(dbmod._pending_one_way().values())
     dbmod.init_db()
     assert dbmod.one_way_changes_allowed() is True
