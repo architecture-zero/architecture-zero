@@ -100,6 +100,13 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   guest) whose state resets are currently verified by hand. Each wants the
   same treatment - find the rule, find where the rule becomes an observable,
   test that rather than the symptoms.
+- ~~**Alerts that fire on an unwatched box**~~ - SHIPPED 2026-10-02
+  (`backend/app/self_check.py`): the disk and Ollama alerts were raised
+  inside `GET /api/health/detailed` alone, so they fired only while an Owner
+  had the Monitoring tab open - rehearsed 2026-09-29, five minutes with Ollama
+  stopped and nobody signed in, nothing sent. The same probes, and the backup
+  and drill heartbeats, now run on a timer from boot through the same alerts;
+  the runbook's Monitoring section says what the timer cannot see.
 - **An update that takes its own copy first** - the first boot after an
   update encrypts the second-factor seeds and saved provider keys in place,
   and an older version cannot read them afterwards (the runbook's "Going
