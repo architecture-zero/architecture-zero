@@ -308,7 +308,7 @@ def get_available_models():
     # enable flag; dormant (unkeyed) providers stay out of the picker
     # entirely.
     for name, entry in OPENAI_COMPAT.items():
-        if name == "openai":  # legacy ENABLE_OPENAI flag handles it above
+        if name == "openai":  # its own group above (offered_providers: its toggle or a key)
             continue
         if name in offered:
             groups.append({"provider": name, "label": entry["label"],

@@ -136,6 +136,10 @@ Since v0.1.x, for a script or a client of your own:
 - Sign-in attempts are bounded per address (429), a request over the input
   bound is refused before it is scanned, stored or billed (413), and a second
   message on a conversation that is still answering is refused (409).
+- Changing a role: setting the role an account already has answers
+  `{"status": "unchanged"}` and writes nothing (it used to reset the account's
+  explicit permission list); changing your own role is refused (403); an id
+  that names no active account is a 404, with nothing written.
 
 ### Going back
 

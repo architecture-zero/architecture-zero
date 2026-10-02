@@ -245,7 +245,9 @@ ingests text, not images.
 
 ## I cannot delete or demote a user
 
-Two protections fire here by design: you cannot deactivate yourself, and
-the LAST active Owner can never be deactivated or demoted - removing it
-would re-open the public first-run setup endpoint to anyone. Create a
-second Owner first if you are rotating the account.
+These protections fire here by design: you cannot deactivate yourself or
+change your own role (another Owner does it), and the LAST active Owner can
+never be deactivated or demoted - removing it would re-open the public
+first-run setup endpoint to anyone. Create a second Owner first if you are
+rotating the account. Setting a user to the role they already have changes
+nothing: it answers "unchanged" and leaves their explicit permissions alone.
