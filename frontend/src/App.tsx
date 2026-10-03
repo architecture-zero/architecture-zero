@@ -421,6 +421,10 @@ function Message({ role, content, toolCalls, sources, helpLane, notice, msgIndex
         )}
         {!isUser && (
           <div className="flex items-center gap-3 opacity-0 group-hover:opacity-100 transition-opacity px-1">
+            {/* Drawn only when a vote has somewhere to go. Withholding the
+                handler alone left the thumbs on screen, and a click lit one up
+                while nothing was sent - a vote the person believes landed. */}
+            {onFeedback && (
             <div className="flex items-center gap-1">
               <button
                 onClick={() => vote(1)}
@@ -437,6 +441,7 @@ function Message({ role, content, toolCalls, sources, helpLane, notice, msgIndex
                 &#128078;
               </button>
             </div>
+            )}
             <button onClick={copy} className="text-xs text-gray-500 hover:text-gray-300 transition-colors">
               {copied ? '✓ Copied' : 'Copy'}
             </button>
@@ -1958,7 +1963,10 @@ export default function App() {
                   // Guests have no session; /api/feedback needs one, and a 401 here
                     // raises the sticky session-expired banner at someone who never
                     // logged in. Withhold the control rather than the error.
-                    onFeedback={m.role === 'assistant' && !isGuest ? handleFeedback : undefined}
+                    // An UNSTORED answer has no row to vote on: its turn_index is
+                    // the count of stored rows before it, which names the NEXT
+                    // stored row - the vote would land on another turn.
+                    onFeedback={m.role === 'assistant' && !isGuest && !m.ephemeral ? handleFeedback : undefined}
                   onRegenerate={m.role === 'assistant' && i === messages.length - 1 ? regenerate : undefined}
                   onEdit={m.role === 'user' ? (newContent) => editAndRegenerate(i, newContent) : undefined}
                 />

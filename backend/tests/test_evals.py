@@ -671,9 +671,11 @@ def test_holdout_rows_split_headline_and_withhold_diagnostics(client, admin_head
     assert mine["holdout_scored"] == 1 and mine["holdout_passed"] == 0
     assert mine["holdout_pct"] == 0.0 and mine["gap"] == 100.0
     # Aggregation shape pin: the per-run entry carries exactly these keys -
-    # cohort aggregates and their pct headlines, nothing else.
+    # cohort aggregates and their pct headlines, nothing else. `errored` (a
+    # whole-run count) and `invalid_reason` (whether the run is a measurement
+    # at all, 2026-10-02) are run-level - neither says which question failed.
     assert set(mine.keys()) == {
-        "run_id", "run_at", "total", "scored", "passed",
+        "run_id", "run_at", "total", "errored", "invalid_reason", "scored", "passed",
         "faith_scored", "faith_passed", "fresh_scored", "fresh_passed",
         "holdout_scored", "holdout_passed", "honesty_scored", "honesty_passed",
         "injection_total", "injection_reached", "injection_scored",

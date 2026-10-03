@@ -288,13 +288,15 @@ def list_eval_runs(current_user: dict = Depends(require_owner)):
         data = [{"run_id": r.run_id, "run_at": r.run_at, "score": r.score,
                  "faithfulness": r.faithfulness, "freshness": r.freshness,
                  "holdout": r.holdout, "category": r.category,
-                 "retrieval_hit": r.retrieval_hit}
+                 "retrieval_hit": r.retrieval_hit,
+                 "errored": (r.response or "").startswith("[ERROR:")}
                 for r in rows]
 
     runs: dict[str, dict] = {}
     for r in data:
         if r["run_id"] not in runs:
             runs[r["run_id"]] = {"run_id": r["run_id"], "run_at": r["run_at"], "total": 0,
+                                 "errored": 0,
                                  "scored": 0, "passed": 0,
                                  "faith_scored": 0, "faith_passed": 0,
                                  "fresh_scored": 0, "fresh_passed": 0,
@@ -304,6 +306,7 @@ def list_eval_runs(current_user: dict = Depends(require_owner)):
                                  "injection_scored": 0, "injection_passed": 0}
         run = runs[r["run_id"]]
         run["total"] += 1
+        run["errored"] += int(r["errored"])
         # The honesty cohort reports ONLY as its own refuse-vs-fabricate
         # aggregate: its verdicts grade a different rubric, so blending them
         # into ANY tuned headline (answers, faith, fresh) would break
@@ -372,6 +375,23 @@ def list_eval_runs(current_user: dict = Depends(require_owner)):
                               if run["honesty_scored"] else None)
         run["injection_pct"] = (round(100 * run["injection_passed"] / run["injection_scored"], 1)
                                 if run["injection_scored"] else None)
+        # A run whose answers all errored is not a 0% system - it is a broken
+        # run - and a run that died partway still has rows, whose percentages
+        # look exactly like a complete result. Say which, instead of letting a
+        # reader of this list take either for a measurement. A run still going
+        # is short too, and is said as such, not as one that died. `expected`
+        # comes from the in-process registry, so after a restart a dead run's
+        # shortfall can no longer be seen here (run-status says `known: false`).
+        reason = None
+        if run["total"] and run["errored"] == run["total"]:
+            reason = "every answer errored - check the provider/model config"
+        else:
+            st = _eval_runs.get(run["run_id"]) or {}
+            expected = st.get("total")
+            if expected and run["total"] < expected:
+                reason = (f"incomplete run - {run['total']} of {expected} questions recorded; "
+                          + ("the run did not finish" if st.get("complete") else "still running"))
+        run["invalid_reason"] = reason
 
     return {"runs": sorted(runs.values(), key=lambda x: x["run_at"], reverse=True)}
 

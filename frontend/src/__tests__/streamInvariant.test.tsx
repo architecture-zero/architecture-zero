@@ -293,6 +293,36 @@ describe('what reaches the model', () => {
   })
 })
 
+describe('a vote lands on a stored row or is not offered', () => {
+  it('offers no thumbs on an answer that was never stored', async () => {
+    await signedInApp()
+    await ask('first')
+    await waitFor(() => expect(screen.getByText('hi')).toBeInTheDocument())
+    h.setChat(() => new Response(
+      sseStream([tok('UNSTOREDPART'), errEvent('died')]).stream, { status: 200 }))
+    await ask('second')
+    await waitFor(() => expect(screen.getByText(/was not saved/i)).toBeInTheDocument())
+
+    // One stored answer, one pair. A vote on the unstored bubble was posted
+    // with the ordinal of the NEXT stored row - another turn's label.
+    expect(screen.getAllByTitle('Good response')).toHaveLength(1)
+    expect(screen.getAllByTitle('Bad response')).toHaveLength(1)
+  })
+
+  it('offers a guest no thumbs at all - their vote has nowhere to go', async () => {
+    h = installFetch({ guestMode: true })
+    render(<App />)
+    const guestDoor = await screen.findByRole('button', { name: /Continue as guest/i })
+    await act(async () => { fireEvent.click(guestDoor) })
+    await screen.findByPlaceholderText(/Message/i)
+    await ask('a guest question')
+    await waitFor(() => expect(screen.getByText('hi')).toBeInTheDocument())
+
+    expect(screen.queryByTitle('Good response')).toBeNull()
+    expect(screen.queryByTitle('Bad response')).toBeNull()
+  })
+})
+
 describe('one turn at a time', () => {
   it('a refused turn (409) leaves no bubble, restores the draft and says so', async () => {
     await signedInApp()
