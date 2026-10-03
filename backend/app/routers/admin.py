@@ -26,6 +26,7 @@ from app.audit import get_audit_log, export_audit_csv
 from app.config import get_config, set_config, get_all_config_masked
 from app.jwt_auth import require_owner, require_permission
 from app.permissions import is_owner
+from app.security import validate_outbound_url
 from app.logger import log
 from app.runtime_config import (_config_or_default, _ollama_get, DEFAULT_MODEL,
                                 EVAL_JUDGE_MODEL_DEFAULT, MAX_CONTEXT_TOKENS,
@@ -227,6 +228,13 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
         raise HTTPException(
             status_code=403,
             detail=f"Owner access required to set: {', '.join(sorted(_owner_only))}")
+    # Owner-gated is not the same as checked: the rerank path POSTs candidate
+    # chunk text to this address, and until 2026-10-02 it took any string - the
+    # cloud metadata address included. Same pre-write block, same reason.
+    if "rerank_remote_url" in body:
+        if not isinstance(body["rerank_remote_url"], str):
+            raise HTTPException(status_code=400, detail="rerank_remote_url must be a string")
+        body["rerank_remote_url"] = validate_outbound_url(body["rerank_remote_url"])
 
     # Boolean keys accept exactly bool and str, refused HERE in the same
     # pre-write pass as suggestions (hardening cleanup item 6, rider A3-1,

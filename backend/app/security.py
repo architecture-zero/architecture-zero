@@ -1,8 +1,10 @@
 import re
 import time
 import os
+import socket
 import ipaddress
 import secrets
+from urllib.parse import urlparse
 from fastapi import HTTPException, Request
 
 from app import state_store
@@ -497,3 +499,49 @@ def get_security_config() -> dict:
         "rate_limit_window": RATE_LIMIT_WINDOW,
         "injection_protection": ENABLE_INJECTION_PROTECTION,
     }
+
+
+# ── Operator-set outbound URLs ────────────────────────────────────────────────
+# Link-local holds the cloud metadata service (169.254.169.254 hands out IAM
+# credentials to anything on the instance), in both address families.
+_LINK_LOCAL_NETS = (ipaddress.ip_network("169.254.0.0/16"),
+                    ipaddress.ip_network("fe80::/10"))
+
+
+def validate_outbound_url(url: str) -> str:
+    """Refuse an operator-set outbound URL that is not http(s), or whose host
+    is or resolves to a link-local / cloud-metadata address. Loopback and
+    private ranges are allowed on purpose: a self-hosted model or reranker is
+    internal. An empty value is returned as-is - it means "use the
+    environment's default". A name that does not resolve when it is written is
+    allowed (the route is owner-gated; it is not the metadata vector).
+
+    This is the check at WRITE time. ollama_base_url and rerank_remote_url
+    stored any string until 2026-10-02. Peer URLs take the stricter, pinned
+    guard in peers.py instead, because a peer is fetched on every chat.
+    """
+    url = (url or "").strip()
+    if not url:
+        return url
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise HTTPException(status_code=400, detail="URL must use http or https and name a host")
+    host = parsed.hostname
+    try:
+        addrs = [ipaddress.ip_address(host)]
+    except ValueError:
+        try:
+            addrs = [ipaddress.ip_address(info[4][0])
+                     for info in socket.getaddrinfo(host, None)]
+        except (OSError, ValueError):
+            addrs = []
+    for addr in addrs:
+        # An IPv4 address written in IPv6-mapped form (::ffff:169.254.169.254)
+        # is the same destination, and an IPv6 network never contains it.
+        mapped = getattr(addr, "ipv4_mapped", None)
+        if any(a in net for a in (addr, mapped) if a is not None
+               for net in _LINK_LOCAL_NETS):
+            raise HTTPException(
+                status_code=400,
+                detail="URL targets a link-local (cloud metadata) address")
+    return url

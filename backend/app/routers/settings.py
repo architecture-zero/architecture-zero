@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from app.config import set_config, encrypt_secret
 from app.logger import log
 from app.jwt_auth import get_current_user, require_owner, require_step_up
+from app.security import validate_outbound_url
 from app.providers import (ENABLE_OLLAMA, ENABLE_ANTHROPIC, ENABLE_OPENAI,
                            OLLAMA_BASE, ANTHROPIC_KEY, OPENAI_COMPAT, offered_providers,
                            compat_key_configured, _compat_base, _compat_headers,
@@ -106,6 +107,11 @@ def update_settings(body: ProviderSettingsRequest, current_user: dict = Depends(
             raise HTTPException(
                 status_code=400,
                 detail="rag_similarity_threshold must be a number between 0 and 1")
+    # The model endpoint is where every prompt goes; until 2026-10-02 it stored
+    # any string, the cloud metadata address included. Checked here, in the
+    # same pre-write block, so a refused address writes nothing else either.
+    _ollama_url = (validate_outbound_url(body.ollama_base_url)
+                   if body.ollama_base_url is not None else None)
 
     if body.ollama_enabled is not None:
         set_config("provider_ollama_enabled", "true" if body.ollama_enabled else "false")
@@ -114,7 +120,7 @@ def update_settings(body: ProviderSettingsRequest, current_user: dict = Depends(
     if body.openai_enabled is not None:
         set_config("provider_openai_enabled", "true" if body.openai_enabled else "false")
     if body.ollama_base_url is not None:
-        set_config("ollama_base_url", body.ollama_base_url.strip())
+        set_config("ollama_base_url", _ollama_url)
     if body.anthropic_api_key is not None and body.anthropic_api_key.strip() not in _MASKED:
         set_config("anthropic_api_key", encrypt_secret(body.anthropic_api_key.strip()))
     for name in OPENAI_COMPAT:
