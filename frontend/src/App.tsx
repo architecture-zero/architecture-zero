@@ -791,7 +791,11 @@ export default function App() {
         if (d.suggestions && d.suggestions.length > 0) setSuggestions(d.suggestions)
         if (d.allow_model_selection !== undefined) setAllowModelSelection(d.allow_model_selection)
         if (d.allow_rag_toggle !== undefined) setAllowRagToggle(d.allow_rag_toggle)
-        if (d.default_model) setModel(d.default_model)
+        // The picker's highlight starts on what an untouched request gets: the
+        // operator's chat_model pin when there is one, which default_model is
+        // not - seeding from default_model highlighted a model that would not
+        // answer.
+        if (d.chat_model_effective || d.default_model) setModel(d.chat_model_effective || d.default_model || '')
         if (d.default_rag_enabled !== undefined) { setUseRag(d.default_rag_enabled); setRagKnown(true) }
         if (d.guest_mode_enabled !== undefined) setGuestModeEnabled(d.guest_mode_enabled)
         if (d.instance_name) setInstanceName(d.instance_name)
@@ -1495,7 +1499,14 @@ export default function App() {
   // model via Ollama" while a hosted API answered - a worse lie than the
   // hardcoded "Claude API" it replaced, because it looks specific.
   // chat_model_effective is what the server says actually answers.
-  const providerLabel = effectiveModel || ''
+  //
+  // AND NAME THE ONE THAT ANSWERS THIS REQUEST. A picked model is sent, and
+  // the server answers with it whenever selection is allowed - so naming the
+  // pin after a pick named a model that did not answer. Untouched (nothing
+  // sent), or with selection off (the server ignores what is sent), the
+  // server's own effective model answers. Unknown is empty, never a guess.
+  const answeringModel = modelTouched && allowModelSelection ? model : effectiveModel
+  const providerLabel = answeringModel || ''
   const guestTurnCount = isGuest ? messages.filter(m => m.role === 'user').length : 0
   const guestAtLimit = isGuest && guestTurnCount >= GUEST_TURN_LIMIT
   // One name for "a request is in flight", covering both the pre-first-token
@@ -1859,9 +1870,14 @@ export default function App() {
           >
             Trust
           </a>
-          {/* The server's effective model when it has told us one - a pinned
-              model must not be misreported as whatever this client last chose. */}
-          <span className="text-xs text-gray-500 bg-gray-800 px-2.5 py-1 rounded-full border border-gray-700">{effectiveModel || model}</span>
+          {/* The model that answers this request (answeringModel): the user's
+              pick when one is sent and honoured, else the server's effective
+              model. It fell back to `model` when the server had not said - a
+              guess, which an untouched request does not send. Unknown shows
+              nothing. */}
+          {answeringModel && (
+            <span className="text-xs text-gray-500 bg-gray-800 px-2.5 py-1 rounded-full border border-gray-700">{answeringModel}</span>
+          )}
           {currentUser && (currentUser.role === 'owner' || currentUser.role === 'admin' || currentUser.permissions?.some(p => ['manage_users', 'manage_system', 'manage_kb', 'view_analytics'].includes(p))) && (
             <button
               onClick={() => setView('admin')}
