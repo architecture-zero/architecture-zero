@@ -326,20 +326,6 @@ _HONESTY_SYSTEM = (
 )
 
 
-def cohens_kappa(pairs: list[tuple[int, int]]) -> float:
-    """Cohen's kappa for binary rater pairs - shared by the judge-vs-human
-    comparison and the judge-vs-judge agreement report; one implementation so
-    the two published numbers can never drift apart."""
-    n = len(pairs)
-    po = sum(1 for a, b in pairs if a == b) / n
-    pa1 = sum(1 for a, _ in pairs if a == 1) / n
-    pb1 = sum(1 for _, b in pairs if b == 1) / n
-    pe = pa1 * pb1 + (1 - pa1) * (1 - pb1)
-    if pe == 1.0:
-        return 1.0 if po == 1.0 else 0.0
-    return (po - pe) / (1 - pe)
-
-
 def _parse_verdict(raw: str) -> dict | None:
     """Extract the {"pass": bool, "rationale": str} object from judge output.
     Tolerates code fences and stray prose; returns None if unparseable."""

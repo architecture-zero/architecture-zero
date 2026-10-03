@@ -262,6 +262,16 @@ def _run_ingest(job_id: str, filename: str, text: str, department: str,
         stale = sorted(existing - desired.keys())
         if stale:
             delete_documents(stale, department)
+        # The upload handler's step, for the same reason: a held earlier
+        # upload of this file is now a stale snapshot. Its own try, because
+        # the version IS indexed - the handler below would mark this job
+        # failed over bookkeeping.
+        try:
+            from app.quarantine import resolve_moot_holds
+            resolve_moot_holds(filename, department)
+        except Exception as e:
+            log_error("quarantine_supersede_failed", job_id=job_id,
+                      source=filename, error=str(e))
         increment("ingest_total")
         log("ingest_async_complete", job_id=job_id, source=filename,
             chunks=len(chunks), department=department)

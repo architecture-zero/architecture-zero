@@ -34,20 +34,35 @@ def write_quarantine_row(source: str, department: str | None, trust: str,
             "detail": "Injection-shaped content withheld from the knowledge base; review it via the quarantine queue (GET /api/admin/kb/quarantine)."}
 
 
-def resolve_moot_holds(source: str) -> int:
+def resolve_moot_holds(source: str, department: str | None = None) -> int:
     """A held row is moot the moment the SAME source ingests into the corpus:
     the live version is indexed, so the held snapshot is outdated (rule tuning
     between quarantine and re-sync can otherwise re-quarantine a benign
     document on every sync, outliving its own review-delete). Marks such rows
     'superseded' (not 'deleted': the owner never reviewed them - the status
     keeps the audit honest) so the review queue, which lists held only, shows
-    real decisions."""
+    real decisions.
+
+    `department` narrows the match for a caller that indexed one (source,
+    department) pair - an upload: the same file name in another department is
+    another document, and its hold is not moot. A caller whose source is a
+    unique id may pass the source alone.
+
+    Both upload paths call this once the new version is fully indexed (the
+    synchronous handler and the queued worker). Until 2026-10-03 nothing
+    called it - defined and never called, found by the module-hygiene check -
+    so a held upload outlived its clean replacement, and releasing it later
+    put the OLD text back over the new one (release is add-then-prune over the
+    same source)."""
     from sqlalchemy import select
     now = _dt.datetime.utcnow().isoformat()
+    stmt = select(QuarantinedDoc).where(QuarantinedDoc.source == source,
+                                        QuarantinedDoc.status == "held")
+    if department is not None:
+        # write_quarantine_row stores an empty department as "general".
+        stmt = stmt.where(QuarantinedDoc.department == (department or "general"))
     with get_session() as db:
-        rows = db.execute(select(QuarantinedDoc).where(
-            QuarantinedDoc.source == source,
-            QuarantinedDoc.status == "held")).scalars().all()
+        rows = db.execute(stmt).scalars().all()
         for r in rows:
             r.status = "superseded"
             r.reviewed_at = now

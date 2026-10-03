@@ -249,15 +249,26 @@ def _ingest_trust(current_user: dict, requested: str | None = None) -> str:
     content is the owner's own -> curated (an Owner may explicitly request a
     lower tier, e.g. a batch run under the owner account stamping
     'untrusted'); every other caller is clamped to untrusted - a non-owner
-    must not be able to author policy-tier content, whatever they claim."""
+    must not be able to author policy-tier content, whatever they claim.
+
+    LOWER only. Until 2026-10-03 the Owner's request was honored in either
+    direction, so `system` - the tier only app.system_records stamps, the
+    instance's own live truth - could be minted through this route while this
+    docstring said "lower". Declaring content less trusted is useful when
+    ingesting third-party material knowingly; declaring it more trusted is only
+    ever a way past the policy. trust_rank had no caller here, which is how the
+    module-hygiene check surfaced it."""
     from app.permissions import is_owner
-    from app.rag_config import TRUST_TIER_CURATED, TRUST_TIER_UNTRUSTED, TRUST_TIER_ORDER
+    from app.rag_config import (TRUST_TIER_CURATED, TRUST_TIER_UNTRUSTED,
+                                TRUST_TIER_ORDER, trust_rank)
     if is_owner(current_user):
-        return requested if requested in TRUST_TIER_ORDER else TRUST_TIER_CURATED
+        if requested in TRUST_TIER_ORDER and trust_rank(requested) >= trust_rank(TRUST_TIER_CURATED):
+            return requested
+        return TRUST_TIER_CURATED
     return TRUST_TIER_UNTRUSTED
 
 
-from app.quarantine import write_quarantine_row as _write_quarantine_row
+from app.quarantine import resolve_moot_holds, write_quarantine_row as _write_quarantine_row
 
 
 @router.post("/api/ingest")
@@ -512,6 +523,14 @@ async def upload_file(
     stale = sorted(existing - desired.keys())
     if stale:
         delete_documents(stale, department)
+    # The new version is live, so an earlier upload of this file still held
+    # for review is a stale snapshot - releasing it would put the old text
+    # back over this one. It leaves the queue as superseded. Bookkeeping: the
+    # upload IS indexed, so a failure here is logged, never this upload's error.
+    try:
+        resolve_moot_holds(name, department)
+    except Exception as e:
+        log_error("quarantine_supersede_failed", source=name, error=str(e))
 
     increment("ingest_total")
     log("ingest_upload", source=name, chunks=len(chunks), ext=ext, department=department)

@@ -169,6 +169,32 @@ def test_quarantine_backstop_drops_only_this_jobs_chunks(monkeypatch):
     assert "q-77" in (row["error"] or "")
 
 
+def test_a_completed_job_retires_a_held_copy_of_its_file(monkeypatch):
+    """The upload handler's step on the queued path: once every chunk of the
+    new version is indexed, an earlier upload of the same file still held for
+    review is a stale snapshot and leaves the queue as superseded. A failure
+    there is bookkeeping - the job still completes."""
+    from app import chunking, database, quarantine
+    calls = []
+    monkeypatch.setattr(chunking, "chunk_plain", lambda text: ["c1"])
+    monkeypatch.setattr(database, "get_source_ids", lambda name, dept: [])
+    monkeypatch.setattr(database, "add_document", lambda *a, **k: None)
+    monkeypatch.setattr(database, "delete_documents", lambda ids, dept: None)
+    monkeypatch.setattr(quarantine, "resolve_moot_holds",
+                        lambda source, department=None: calls.append((source, department)) or 1)
+    job_id = jobs.create_job(source="doc.md", department="general")
+    jobs._run_ingest(job_id, "doc.md", "text", "general", None)
+    assert calls == [("doc.md", "general")]
+    assert next(j for j in jobs.list_jobs() if j["job_id"] == job_id)["status"] == "complete"
+
+    def _boom(source, department=None):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(quarantine, "resolve_moot_holds", _boom)
+    job_id = jobs.create_job(source="doc.md", department="general")
+    jobs._run_ingest(job_id, "doc.md", "text", "general", None)
+    assert next(j for j in jobs.list_jobs() if j["job_id"] == job_id)["status"] == "complete"
+
+
 # -- The two paths must agree on the id -------------------------------------
 
 def test_queued_and_sync_paths_produce_identical_chunk_ids(client, admin_headers,

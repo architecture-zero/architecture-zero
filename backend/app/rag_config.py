@@ -94,12 +94,6 @@ RECENCY_HALF_LIFE_DAYS = float(os.getenv("RECENCY_HALF_LIFE_DAYS", "180"))
 RECENCY_FLOOR          = float(os.getenv("RECENCY_FLOOR", "0.7"))
 
 
-# Human-readable fusion label ("70/30") derived from the weights - so even the
-# ratio string in generated docs comes from the numbers, not a typed literal.
-def fusion_ratio_label() -> str:
-    return f"{round(VECTOR_WEIGHT * 100)}/{round(BM25_WEIGHT * 100)}"
-
-
 # --- Access-tier retrieval scoping ---
 # Minimum clearance LEVEL required to retrieve from each KB department (Chroma
 # collection). app/rerank.retrieve drops any department whose min-level

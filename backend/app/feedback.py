@@ -4,10 +4,6 @@ from app.db import get_session
 from app.models import Feedback as FeedbackModel
 
 
-def init_feedback_db():
-    pass  # Schema managed by db.init_db()
-
-
 def save_feedback(session_id: str, turn_index: int, value: int):
     with get_session() as db:
         db.add(FeedbackModel(

@@ -9,6 +9,7 @@ so these run in the suite.
 """
 import ast
 import pathlib
+import re
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 
@@ -210,3 +211,133 @@ def test_the_startup_ingest_flag_has_exactly_one_definition():
              and any(isinstance(t, ast.Name) and t.id == "_startup_ingest_active"
                      for t in n.targets))
     )], f"expected exactly one definition, in runtime_config: {defs}"
+
+
+# ── Defined and never called ─────────────────────────────────────────────────
+#
+# A module-level function that nothing outside the tests reaches is invisible
+# to every passing test and to CI: a test that calls a function directly
+# proves it works, not that the product uses it. This repo shipped that shape
+# at least three times: check_daily_guest_budget (the guest spend bound, found
+# 2026-08-26), clear_trust_cache (2026-08-28), and resolve_moot_holds, found
+# when this check first ran (2026-10-03) - with no caller, a held upload
+# outlived its clean re-upload, and releasing it put the old text back.
+#
+# Same contract as the dead-import check above: every exemption states why the
+# function stays with no caller, and an exemption that stops being needed
+# fails, so the list cannot outlive its reasons. A test-only hook is exempt by
+# its name (`*_for_tests`) rather than by an entry.
+
+# The directories the production image ships (backend/Dockerfile): a caller
+# counts only if it ships, so the check reads the same files here and in the
+# image. alembic/ is read where a surface has one.
+_SHIPPED = ("app", "scripts", "alembic")
+
+_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+_ALLOWED_UNCALLED = {
+    "app/crypto_at_rest.py:decrypt_at_rest":
+        "the strict reader, kept for this module's next tenant - the one "
+        "tolerant caller uses try_decrypt_at_rest (see that docstring)",
+    "app/jwt_auth.py:unusable_password_hash":
+        "the no-password sentinel an SSO door stamps; this surface has no SSO "
+        "yet and the rule rides so a port inherits it (the comment above "
+        "UNUSABLE_PASSWORD_PREFIX)",
+    "app/pii.py:redact_output":
+        "the one-shot oracle the streaming OutputFilter is property-tested "
+        "against (test_output_pii.py)",
+    "app/state_store.py:put_if_absent":
+        "the single-use primitive an SSO door burns its one-time state with; "
+        "this surface has no SSO door yet",
+}
+
+
+def _shipped_modules():
+    for d in _SHIPPED:
+        base = APP.parent / d
+        if base.is_dir():
+            yield from sorted(p for p in base.rglob("*.py")
+                              if "__pycache__" not in p.parts)
+
+
+def _docstrings(tree):
+    """The string nodes that are docstrings: a docstring that names a function
+    describes it, it does not reach it."""
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                             ast.AsyncFunctionDef)):
+            body = node.body
+            if (body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                found.add(id(body[0].value))
+    return found
+
+
+def _reached(tree):
+    """Names one module reaches a function by, and its import aliases.
+
+    A read by name, an attribute (`module.fn`), and an identifier-shaped word
+    in a non-docstring string - getattr and registry dispatch reach a function
+    that way. A reference inside the function's own body (recursion) does not
+    count: it reaches nothing from outside."""
+    reached, aliases = set(), {}
+    docs = _docstrings(tree)
+    for stmt in tree.body:
+        owner = (stmt.name if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+                 else None)
+        for node in ast.walk(stmt):
+            if isinstance(node, ast.alias):
+                if node.asname:
+                    aliases.setdefault(node.asname, set()).add(node.name.rsplit(".", 1)[-1])
+                continue
+            if isinstance(node, ast.Name):
+                words = [node.id]
+            elif isinstance(node, ast.Attribute):
+                words = [node.attr]
+            elif (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                  and id(node) not in docs):
+                words = _WORD.findall(node.value)
+            else:
+                continue
+            reached.update(w for w in words if w != owner)
+    return reached, aliases
+
+
+def _uncalled_functions():
+    """(key, line) for every undecorated module-level function under app/ that
+    nothing shipped reaches. A decorator registers its function somewhere (a
+    route, a hook), so a decorated one is reached by construction."""
+    reached, aliases = set(), {}
+    for path in _shipped_modules():
+        r, a = _reached(_tree(path))
+        reached |= r
+        for alias, originals in a.items():
+            aliases.setdefault(alias, set()).update(originals)
+    for alias, originals in aliases.items():
+        if alias in reached:          # `import fire as fire_alert`, then fire_alert()
+            reached |= originals
+    for path in _modules():
+        for node in _tree(path).body:
+            if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and not node.decorator_list
+                    and not node.name.startswith("__")
+                    and not node.name.endswith("_for_tests")
+                    and node.name not in reached):
+                yield f"{path.relative_to(APP.parent).as_posix()}:{node.name}", node.lineno
+
+
+def test_no_module_level_function_is_defined_and_never_called():
+    uncalled, exemptions_used = [], set()
+    for key, lineno in _uncalled_functions():
+        if key in _ALLOWED_UNCALLED:
+            exemptions_used.add(key)
+            continue
+        uncalled.append(f"{key} (line {lineno})")
+    assert not uncalled, (
+        "module-level functions nothing outside the tests calls. Wire the "
+        "caller, delete the function, or add it to _ALLOWED_UNCALLED with the "
+        "reason it stays:\n  " + "\n  ".join(sorted(uncalled)))
+    stale = sorted(set(_ALLOWED_UNCALLED) - exemptions_used)
+    assert not stale, f"_ALLOWED_UNCALLED entries no longer needed - remove them: {stale}"

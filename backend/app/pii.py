@@ -37,19 +37,11 @@ def build_blocklist(raw: str) -> list[str]:
     return [t.strip().lower() for t in raw.split(",") if t.strip()]
 
 
-def apply_blocklist(text: str, blocklist: list[str]) -> str:
-    """Replace blocked terms with [BLOCKED] (case-insensitive)."""
-    if not blocklist:
-        return text
-    for term in blocklist:
-        text = re.sub(re.escape(term), "[BLOCKED]", text, flags=re.IGNORECASE)
-    return text
-
-
 # ── Output side (2026-09-16, the product tail's third item) ─────────────────
 #
 # The scanner above runs on text ENTERING the corpus. Nothing ran on text
-# LEAVING in an answer: the one output control was apply_blocklist, applied
+# LEAVING in an answer: the one output control was apply_blocklist (deleted
+# 2026-10-03, uncalled since this filter replaced it), applied
 # to each streamed token on its own - and a regex applied per token can never
 # match anything a token boundary splits ("123-45-" + "6789" is two
 # non-matches). The same hole let a blocklisted term through whenever the
