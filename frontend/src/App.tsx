@@ -1164,7 +1164,8 @@ export default function App() {
         body: JSON.stringify({
           prompt, history: historyForRequest, session_id: sessionId,
           // SEND A MODEL ONLY IF THE USER PICKED ONE. `model` is seeded from
-          // /api/config's default_model, which is never empty, so this client
+          // /api/config (chat_model_effective since 2026-10-02, default_model
+          // before), which is never empty, so this client
           // always sent an explicit model - and chat.py applies the operator's
           // `chat_model` pin only `if not request.model`. The pin was therefore
           // inert for every signed-in user, while the header badge and footer
@@ -2068,9 +2069,10 @@ export default function App() {
                 )}
               </button>
             </div>
-            {/* Names the MODEL actually answering: chat_model_effective from
-                /api/config - the server's own resolved value, not an inference
-                this client makes. (The comment here used to say /api/status;
+            {/* Names the MODEL actually answering (answeringModel): the user's
+                pick when one is sent and honoured, else chat_model_effective
+                from /api/config - the server's own resolved value, not an
+                inference this client makes. (The comment here used to say /api/status;
                 that is where an earlier version read status.provider.provider,
                 which is the ENABLED-PROVIDER SET rather than the thing that
                 answered, and reports the literal string "multi" when more than

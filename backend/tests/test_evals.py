@@ -32,8 +32,9 @@ def _fake_sources(monkeypatch, sources):
 
 
 def test_corpus_fingerprint_is_order_independent(monkeypatch):
-    """Same corpus CONTENT must hash the same regardless of the order Chroma
-    happens to hand back collections - otherwise the stamp would report drift on
+    """The same corpus LISTING - (source, department, chunk count) triples; the
+    fingerprint never reads text - must hash the same regardless of the order
+    Chroma happens to hand back collections - otherwise the stamp would report drift on
     every run and nobody would trust it."""
     from app.database import corpus_fingerprint
 

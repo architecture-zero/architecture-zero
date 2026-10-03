@@ -21,7 +21,7 @@ Follow-up questions in the same conversation keep the context of what was alread
 
 Under each answer you will see Sources: the documents the answer was built from. If an answer has no sources, treat it with more care: it was not grounded in a document.
 
-Under an answer you can also click Copy, rate it with the thumbs up and thumbs down buttons (your administrator sees the ratings), or click Regenerate for a second attempt at the same question. Edit, on your own message, lets you fix it without retyping; the answer is regenerated from the edited message.
+Under an answer you can also click Copy, rate it with the thumbs up and thumbs down buttons when you are signed in (your administrator sees the ratings; an answer that was stopped or failed has none, because it was not saved), or click Regenerate for a second attempt at the same question. Edit, on your own message, lets you fix it without retyping; the answer is regenerated from the edited message.
 
 ## The left panel
 
