@@ -129,8 +129,15 @@ echo "== 8. a first question is answered, and grounded =="
 # check 7 asserts. Sending "use_rag":true here OVERRIDES that default instead of
 # testing it - which is how this suite passed 16/16 twice while a bare question
 # answered from training memory with zero sources.
+#
+# WITH THE BROWSER'S ORIGIN, on purpose. A browser sends Origin on every chat
+# POST and the server checks it - a plain-HTTP host name passes only when
+# CORS_ORIGIN lists it. curl sends none, so without this header checks 8 and 9
+# pass against a deployment no browser can talk to, and the 403 that names the
+# fix is never seen.
+ORIGIN=$(sed -E 's#^(https?://[^/]+).*#\1#' <<<"$BASE")
 ans=$(curl -s -m 300 -X POST "$BASE/api/chat" -H 'Content-Type: application/json' \
-  -H "Authorization: Bearer $TOK" \
+  -H "Authorization: Bearer $TOK" -H "Origin: $ORIGIN" \
   -d '{"prompt":"What is Architecture Zero?","history":[],"session_id":"acceptance"}')
 if grep -q '\[DONE\]' <<<"$ans"; then ok "the answer streamed to [DONE]"; else bad "chat stream" "$(head -c 400 <<<"$ans")"; fi
 # The QUOTED form. `grep -qi 'sources'` matched the word anywhere in the body -
@@ -152,7 +159,7 @@ echo "== 9. an explicit use_rag:false is still honoured =="
 # It also asserts [DONE]: a purely negative assertion ("no sources event") passes
 # against a dead backend, an error page, or an empty body.
 off=$(curl -s -m 300 -X POST "$BASE/api/chat" -H 'Content-Type: application/json' \
-  -H "Authorization: Bearer $TOK" \
+  -H "Authorization: Bearer $TOK" -H "Origin: $ORIGIN" \
   -d '{"prompt":"What is Architecture Zero?","use_rag":false,"history":[],"session_id":"acceptance-ragoff"}')
 # From /api/status, which is where rag_only_mode is reported - NOT /api/config,
 # which does not carry the key at all. Reading it off the wrong payload would

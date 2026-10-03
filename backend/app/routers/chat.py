@@ -21,8 +21,10 @@ import uuid
 import asyncio
 import logging
 import pathlib
+import ipaddress
 
 from contextlib import closing
+from urllib.parse import urlsplit
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from typing import Literal
 from pydantic import BaseModel
@@ -61,6 +63,63 @@ from app.runtime_config import (_config_or_default, DEFAULT_MODEL, RAG_ONLY_MODE
                                 _all_origins, _allow_all)
 
 logger = logging.getLogger(__name__)
+
+
+def _same_origin_trusted(origin: str, host: str) -> bool:
+    """Is this a same-origin request that DNS rebinding cannot have forged?
+
+    The browser sets both headers - Host is the server it is talking to, Origin
+    the page it came from - so a page on evil.com posting here sends Origin:
+    evil.com against Host: myserver and fails the equality below. Equality alone
+    is not enough, though. Under DNS rebinding the attacker points their OWN
+    name at this server's address: the visitor's browser then sends Host:
+    evil.com AND Origin: http://evil.com, the two match, and a page the attacker
+    controls can hold a conversation with an instance it should never reach - an
+    internal box with guest chat on - and read the answers. Until 2026-10-02
+    equality was all this checked.
+
+    So equality is trusted only where rebinding cannot produce it:
+    - https: the TLS handshake for the attacker's name fails here, because this
+      server's certificate does not name it, so such a request never arrives;
+    - an IP-address or localhost host: rebinding needs a domain name to rebind.
+    A plain-HTTP origin with a domain name (http://myserver:3000) is exactly the
+    rebinding shape, so it must be listed in CORS_ORIGIN like any other origin.
+    That keeps the paths a first install takes - localhost, a LAN address, a
+    real HTTPS name - working with nothing to configure.
+
+    Compared verbatim, including the port, because a different port is a
+    different origin - so a reverse proxy in front of this must forward the
+    client's Host unchanged (nginx: $http_host; $host drops the port).
+    """
+    if not origin or not host:
+        return False
+    scheme, sep, rest = origin.partition("://")
+    if not sep or rest != host:
+        return False
+    if scheme == "https":
+        return True
+    name = (urlsplit(origin).hostname or "").lower()
+    if name == "localhost":
+        return True
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    return True
+
+
+def _origin_refusal(origin: str, host: str) -> str:
+    """The 403's sentence. It names the fix: an operator behind their own proxy
+    otherwise sees a refusal with nothing to act on."""
+    if host and origin.partition("://")[2] == host:
+        return (f"Origin not allowed: {origin} is this server, but a plain-HTTP "
+                "address with a host name is the shape a DNS-rebinding page "
+                f"takes, so it must be listed: set CORS_ORIGIN={origin} (HTTPS, "
+                "an IP address and localhost pass on their own).")
+    return (f"Origin not allowed: {origin} does not match this server's host "
+            f"({host or 'unset'}). If you are behind a reverse proxy, forward the "
+            "client's Host header verbatim (nginx: proxy_set_header Host "
+            "$http_host). For a genuinely different origin, set CORS_ORIGIN.")
 
 router = APIRouter()
 
@@ -372,45 +431,21 @@ def _chat_gates(request: ChatRequest, req: Request, current_user: dict | None) -
     # Server-side origin validation - blocks cross-origin browser requests
     # from unlisted domains.
     #
-    # SAME-ORIGIN ALWAYS PASSES, and without this the shipped configuration only
-    # worked on localhost. Browsers send `Origin` on same-origin POSTs too, and
-    # nginx forwards it untouched, so the reference client hit this gate on its
-    # own requests: the allow-list is CORS_ORIGIN (default
-    # http://localhost:5173) plus two hardcoded dev origins, so an operator who
-    # followed the README and browsed to their server on any other host or port
-    # got 403 "Origin not allowed" on every single question. `.env.example` told
-    # them the value was "never consulted" with the shipped compose, which was
-    # true only by the coincidence of the default matching localhost.
-    #
-    # An Origin equal to this request's own Host is same-origin by construction
-    # and cannot be forged from another site: the browser sets both, Host being
-    # the server it is talking to and Origin the page it came from, so a page on
-    # evil.com posting here still sends Origin: evil.com against Host: myserver
-    # and is still refused. The allow-list keeps doing its real job - genuine
-    # CROSS-origin callers such as an embedded widget, via CORS_ORIGIN and
-    # WIDGET_ORIGINS.
+    # A same-origin request passes when rebinding cannot have forged it
+    # (`_same_origin_trusted`: HTTPS, an IP address or localhost); everything
+    # else must be listed in CORS_ORIGIN or WIDGET_ORIGINS - genuine CROSS-origin
+    # callers such as an embedded widget, and a plain-HTTP host name. Why
+    # same-origin passes at all: browsers send `Origin` on same-origin POSTs too,
+    # and nginx forwards it untouched, so before the pass an operator who
+    # followed the README and browsed to their server on any host or port but
+    # the default got 403 "Origin not allowed" on every single question.
     if not _allow_all:
         origin = req.headers.get("origin", "")
         if origin and origin not in _all_origins:
-            # Compared verbatim, INCLUDING the port, because a different port is
-            # a different origin. That puts a requirement on any reverse proxy
-            # in front of this: it must forward the client's Host unchanged.
-            # nginx's $host drops the port and $http_host does not, and the
-            # shipped frontend config had the former - which made every
-            # same-origin request look cross-origin the moment the instance ran
-            # on any port but the default. The refusal names the fix, because an
-            # operator behind their own proxy will otherwise see only a 403 with
-            # nothing to act on.
             host = req.headers.get("host", "")
-            same_origin = bool(host) and origin.split("://", 1)[-1] == host
-            if not same_origin:
-                raise HTTPException(
-                    status_code=403,
-                    detail=(f"Origin not allowed: {origin} does not match this "
-                            f"server's host ({host or 'unset'}). If you are behind "
-                            "a reverse proxy, forward the client's Host header "
-                            "verbatim (nginx: proxy_set_header Host $http_host). "
-                            "For a genuinely different origin, set CORS_ORIGIN."))
+            if not _same_origin_trusted(origin, host):
+                raise HTTPException(status_code=403,
+                                    detail=_origin_refusal(origin, host))
 
     # Expired/invalid token presented: 401, the refresh signal - NOT the
     # guest 403 below, which the client's 401-keyed silent refresh never
@@ -1056,14 +1091,14 @@ async def help_page(name: str, req: Request, user: dict | None = Depends(optiona
     if not HELP_DOCS_SYNC:
         raise HTTPException(status_code=404, detail="In-product help is off on this instance.")
     # The three pre-gate checks chat runs, in chat's order: the origin
-    # allowlist (same-origin always passes, exactly as in the chat handler,
-    # whose block above is the canonical, commented form), the stale-token 401
+    # allowlist (a trusted same-origin request passes, by the same
+    # `_same_origin_trusted` rule as the chat handler), the stale-token 401
     # (the client's silent-refresh signal), then the guest door.
     if not _allow_all:
         origin = req.headers.get("origin", "")
         host = req.headers.get("host", "")
-        same_origin = bool(host) and origin.split("://", 1)[-1] == host
-        if origin and origin not in _all_origins and not same_origin:
+        if (origin and origin not in _all_origins
+                and not _same_origin_trusted(origin, host)):
             raise HTTPException(status_code=403, detail="Origin not allowed")
     if user is None and getattr(req.state, "auth_token_invalid", False):
         raise HTTPException(status_code=401, detail="Session expired - sign in again.")

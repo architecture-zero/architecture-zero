@@ -229,7 +229,23 @@ def _origin_gate_armed():
     )
 
 
-def test_same_origin_is_accepted_on_any_host(client, admin_headers):
+def _chat_from(client, headers, origin, host, origins=None):
+    """One armed chat request carrying this Origin and Host."""
+    allow_all, default_origins = _origin_gate_armed()
+    listed = (patch("app.routers.chat._all_origins", origins)
+              if origins is not None else default_origins)
+    with allow_all, listed, \
+         patch("app.routers.chat.guest_chat_available", return_value=True), \
+         patch("app.routers.chat.get_config", side_effect=_cfg("warn")), \
+         patch("app.routers.chat.stream_chat_events",
+               side_effect=_capturing_stream({})):
+        return client.post("/api/chat",
+                           json={"prompt": "hi", "model": "test-model",
+                                 "session_id": "r7-origin", "use_rag": False},
+                           headers={**headers, "Origin": origin, "Host": host})
+
+
+def test_same_origin_is_accepted_where_rebinding_cannot_forge_it(client, admin_headers):
     """THE LIVE-LEG FIND, and no code-read round caught it in seven attempts.
 
     The allow-list is CORS_ORIGIN (default http://localhost:5173) plus two
@@ -238,21 +254,77 @@ def test_same_origin_is_accepted_on_any_host(client, admin_headers):
     to their own server on any other host or port got 403 on every question,
     while .env.example told them the value was never consulted with the shipped
     compose. Found by running the reference client on port 5174.
+
+    Narrowed 2026-10-02 to the cases DNS rebinding cannot produce - HTTPS, an IP
+    address, localhost - which are the paths a first install takes. A plain-HTTP
+    host name is the rebinding shape and must be listed (the next test).
     """
+    for origin, host in (("https://ai.example.com", "ai.example.com"),
+                         ("https://myserver.example:5173", "myserver.example:5173"),
+                         ("http://localhost:5174", "localhost:5174"),
+                         ("http://192.168.1.50:3000", "192.168.1.50:3000"),
+                         ("http://[::1]:3000", "[::1]:3000")):
+        r = _chat_from(client, admin_headers, origin, host)
+        assert r.status_code == 200, f"same-origin request from {origin}: {r.text}"
+
+
+def test_a_plain_http_host_name_must_be_listed(client, admin_headers):
+    """DNS REBINDING. The attacker points their own name at this server, so the
+    visitor's browser sends Host: evil.example AND Origin: http://evil.example -
+    equal. Until 2026-10-02 equality was all this gate checked, so a page the
+    attacker controls could hold a guest conversation with an internal
+    plain-HTTP box and read the answers. A plain-HTTP host name now passes only
+    when CORS_ORIGIN lists it, and the refusal says exactly what to set. Both
+    requests were answered 200 by the old gate."""
+    for origin, host in (("http://evil.example", "evil.example"),
+                         ("http://myserver.example:5173", "myserver.example:5173")):
+        r = _chat_from(client, admin_headers, origin, host)
+        assert r.status_code == 403, f"{origin}: {r.text}"
+        detail = r.json()["detail"]
+        assert f"CORS_ORIGIN={origin}" in detail and "rebinding" in detail, detail
+
+
+def test_a_listed_plain_http_host_name_passes(client, admin_headers):
+    """The fix the refusal names works: list the origin, and it passes."""
+    r = _chat_from(client, admin_headers, "http://myserver.example:5173",
+                   "myserver.example:5173",
+                   origins=["http://myserver.example:5173"])
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.parametrize("origin,host,trusted", [
+    ("https://a.example", "a.example", True),
+    ("http://LOCALHOST:5173", "LOCALHOST:5173", True),
+    ("http://127.0.0.1:8080", "127.0.0.1:8080", True),
+    ("http://[::1]:3000", "[::1]:3000", True),
+    ("http://a.example", "a.example", False),              # the rebinding shape
+    ("http://localhost.evil.example", "localhost.evil.example", False),
+    ("http://127.0.0.1.nip.io", "127.0.0.1.nip.io", False),
+    ("https://a.example", "b.example", False),             # cross-origin
+    ("https://a.example:8443", "a.example", False),        # the port counts
+    ("null", "a.example", False),
+    ("", "a.example", False),
+    ("http://127.0.0.1", "", False),
+])
+def test_same_origin_trust_cases(origin, host, trusted):
+    from app.routers.chat import _same_origin_trusted
+    assert _same_origin_trusted(origin, host) is trusted
+
+
+def test_the_help_page_applies_the_same_rule(client):
+    """/api/help/page runs chat's gate; the rebinding shape is refused there
+    too, and a LAN address still reads its page."""
     allow_all, origins = _origin_gate_armed()
-    for host in ("myserver.example:5173", "ai.example.com", "localhost:5174"):
-        with allow_all, origins, \
-             patch("app.routers.chat.guest_chat_available", return_value=True), \
-             patch("app.routers.chat.get_config", side_effect=_cfg("warn")), \
-             patch("app.routers.chat.stream_chat_events",
-                   side_effect=_capturing_stream({})):
-            r = client.post("/api/chat",
-                            json={"prompt": "hi", "model": "test-model",
-                                  "session_id": "r7-origin", "use_rag": False},
-                            headers={**admin_headers,
-                                     "Origin": "http://" + host,
-                                     "Host": host})
-        assert r.status_code == 200, f"same-origin request from {host}: {r.text}"
+    with allow_all, origins, \
+         patch("app.routers.chat.guest_chat_available", return_value=True):
+        ok = client.get("/api/help/page", params={"name": "help/getting-started.md"},
+                        headers={"Origin": "http://192.168.1.50:3000",
+                                 "Host": "192.168.1.50:3000"})
+        bad = client.get("/api/help/page", params={"name": "help/getting-started.md"},
+                         headers={"Origin": "http://evil.example",
+                                  "Host": "evil.example"})
+    assert ok.status_code == 200, ok.text
+    assert bad.status_code == 403, bad.text
 
 
 def test_cross_origin_is_still_refused(client, admin_headers):

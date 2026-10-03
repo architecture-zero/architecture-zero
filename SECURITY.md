@@ -87,6 +87,11 @@ Two settings matter more than the rest, and both default to the safe option:
 - `ENABLE_AUTH=true` for anything reachable from a network.
 - Leave `CORS_ORIGIN` at a specific origin. Setting it to `*` also disables the
   server-side origin check, so it is more permissive than it looks.
+- Serving over plain HTTP by a host name? List that origin in `CORS_ORIGIN`. The
+  chat routes trust a same-origin request on their own only over HTTPS or from
+  an IP address or localhost, because a DNS-rebinding page can pose as a
+  plain-HTTP host name (its own name pointed at your server). A request that
+  turns this into an answer for an unlisted plain-HTTP name is in scope.
 
 `ENABLE_AGENT_TOOLS` is off by default and should stay off unless you have read
 what the tool surface does. The shell tool is a real shell.
