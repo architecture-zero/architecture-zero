@@ -1189,7 +1189,10 @@ export default function App() {
           return last && last.role === 'user' && last.ephemeral && last.content === prompt
             ? prev.slice(0, -1) : prev
         })
-        setInput(prompt)
+        // Into an EMPTY box only. The box stays live while a request is in
+        // flight, so the user may have started the next thought; writing the
+        // old draft back unconditionally erased it.
+        setInput(cur => (cur.trim() ? cur : prompt))
         setTurnNotice(notice)
         setLoading(false)
         // The draft came back without a keystroke, so onInput never sized the

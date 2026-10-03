@@ -335,6 +335,26 @@ describe('the size refusal (413)', () => {
     await waitFor(() => expect(screen.getByTitle('Send message')).toBeInTheDocument())
   })
 
+  it('gives the draft back only into an empty box - never over text typed since', async () => {
+    // The box stays live while a request is in flight (00e811a), so a refusal
+    // can arrive after the user has started the next thought. Writing the old
+    // draft back unconditionally erased it (found 2026-10-02 by the forks'
+    // audit of these rounds).
+    await signedInApp()
+    let release!: (r: Response) => void
+    h.setChat(() => new Promise<Response>(res => { release = res }))
+    await ask('question nine')
+    const box = screen.getByPlaceholderText(/Message/i) as HTMLTextAreaElement
+    await waitFor(() => expect(box.value).toBe(''))
+    fireEvent.change(box, { target: { value: 'my next thought' } })
+    await act(async () => {
+      release(new Response(JSON.stringify({ detail: 'busy' }),
+        { status: 409, headers: { 'Content-Type': 'application/json' } }))
+    })
+    await waitFor(() => expect(screen.getByRole('status')).toBeInTheDocument())
+    expect(box.value).toBe('my next thought')
+  })
+
   it('says what happened when the 413 carries no sentence (a proxy page)', async () => {
     await signedInApp()
     h.setChat(() => new Response('<html><body><h1>413 Request Entity Too Large</h1></body></html>',
