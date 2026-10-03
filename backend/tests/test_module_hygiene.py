@@ -256,8 +256,13 @@ def _shipped_modules():
     for d in _SHIPPED:
         base = APP.parent / d
         if base.is_dir():
-            yield from sorted(p for p in base.rglob("*.py")
-                              if "__pycache__" not in p.parts)
+            yield from sorted(
+                p for p in base.rglob("*.py")
+                if "__pycache__" not in p.parts
+                # A checker that names functions to compare them across
+                # surfaces reaches none of them: a fleet drift script lists
+                # hundreds as strings, which hid two uncalled ones where it runs.
+                and p.relative_to(APP.parent).as_posix() != "scripts/check_fleet_drift.py")
 
 
 def _docstrings(tree):
