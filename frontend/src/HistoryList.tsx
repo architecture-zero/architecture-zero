@@ -1,7 +1,7 @@
 /**
  * The chat sidebar's History list (2026-10-03, the 2026-08-01 UI audit's
- * sessions drawer, from Kin's): conversations grouped Today / Last 7 days /
- * Older by their last activity, each renamable in place, and a delete that
+ * sessions drawer): conversations grouped Today / Last 7 days / Older by
+ * their last activity, each renamable in place, and a delete that
  * asks once and leaves the row where it was when the server refuses - it used
  * to drop the row whatever the response said, and the next poll put it back.
  *
