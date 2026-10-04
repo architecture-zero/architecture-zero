@@ -709,6 +709,39 @@ function DefaultModelPointer({ model, goToModels }: { model: string; goToModels?
   )
 }
 
+// One Save button's honest states (the 2026-08-01 UI audit's dirty-state
+// item, the shape the Models tab already had): disabled while nothing differs
+// from what the server holds, "Unsaved changes" beside it once something does,
+// and "Saved" only after the server accepted the write. A button that is
+// always lit says nothing about whether there is anything to save.
+function SaveStatus({ dirty, saved, savedText = 'Saved' }: { dirty: boolean; saved: boolean; savedText?: string }) {
+  if (dirty) return <span className="text-xs text-amber-400">Unsaved changes</span>
+  if (saved) return <span className="text-xs text-green-400">{savedText}</span>
+  return <span className="text-xs text-gray-600">No unsaved changes</span>
+}
+
+function SaveBar({ label, dirty, saving = false, saved, onSave }: {
+  label: string; dirty: boolean; saving?: boolean; saved: boolean; onSave: () => void
+}) {
+  return (
+    <div className="flex items-center justify-end gap-3">
+      <SaveStatus dirty={dirty} saved={saved} />
+      <button
+        onClick={onSave}
+        disabled={!dirty || saving}
+        className="px-5 py-2 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-40"
+        style={{ backgroundColor: PRIMARY_COLOR }}
+      >
+        {saving ? 'Saving…' : label}
+      </button>
+    </div>
+  )
+}
+
+// The suggestions as the server stores them - one per line, trimmed, no
+// blanks - so a stray empty line does not read as an edit.
+const normLines = (text: string) => text.split('\n').map(s => s.trim()).filter(Boolean).join('\n')
+
 // ── Tab: System Prompt ─────────────────────────────────────────────────────
 
 // What the assistant is told, and what it offers on an empty chat - nothing
@@ -716,10 +749,16 @@ function DefaultModelPointer({ model, goToModels }: { model: string; goToModels?
 // tabs of their own (the 2026-08-01 UI audit's prompt-tab split).
 export function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<string, string> }) {
   const [prompt, setPrompt] = useState('')
+  // What the server holds, as of the last read or accepted save: each Save is
+  // lit only while its box differs from it.
+  const [promptBaseline, setPromptBaseline] = useState('')
   const [saved, setSaved] = useState(false)
+  const [savingPrompt, setSavingPrompt] = useState(false)
   const [loading, setLoading] = useState(true)
   const [suggestionsText, setSuggestionsText] = useState('')
+  const [suggestionsBaseline, setSuggestionsBaseline] = useState('')
   const [suggestionsSaved, setSuggestionsSaved] = useState(false)
+  const [savingSuggestions, setSavingSuggestions] = useState(false)
   // Did each read actually answer? The `if (!d)` guards below stop a failed
   // read from writing WRONG values into state - they do not stop a Save from
   // sending the state the component still has, which is its initial empty
@@ -735,14 +774,15 @@ export function SystemPromptTab({ api, headers }: { api: string; headers: () => 
     guardedJson<AdminConfig>(
       fetch(`${api}/api/admin/config`, { headers: headers() }), 'Loading system prompt')
       .then(d => {
-        if (d) { setPrompt(d.system_prompt || ''); setPromptLoaded(true) }
+        if (d) { const p = d.system_prompt || ''; setPrompt(p); setPromptBaseline(p); setPromptLoaded(true) }
         setLoading(false)
       })
     guardedJson<{ suggestions?: string[] }>(
       fetch(`${api}/api/config`, { headers: headers() }), 'Loading settings')
       .then(d => {
         if (!d) return
-        setSuggestionsText((d.suggestions || []).join('\n'))
+        const lines = (d.suggestions || []).join('\n')
+        setSuggestionsText(lines); setSuggestionsBaseline(lines)
         setSuggestionsLoaded(true)
       })
   }, [])
@@ -757,7 +797,12 @@ export function SystemPromptTab({ api, headers }: { api: string; headers: () => 
         + 'overwrite it with an empty value. Reload the page and try again.')
       return
     }
-    if (!(await guardedPatch('/api/admin/config', { system_prompt: prompt }))) return
+    const sent = prompt
+    setSavingPrompt(true)
+    const ok = await guardedPatch('/api/admin/config', { system_prompt: sent })
+    setSavingPrompt(false)
+    if (!ok) return
+    setPromptBaseline(sent)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
@@ -769,10 +814,17 @@ export function SystemPromptTab({ api, headers }: { api: string; headers: () => 
       return
     }
     const list = suggestionsText.split('\n').map(s => s.trim()).filter(Boolean)
-    if (!(await guardedPatch('/api/admin/config', { suggestions: list }))) return
+    setSavingSuggestions(true)
+    const ok = await guardedPatch('/api/admin/config', { suggestions: list })
+    setSavingSuggestions(false)
+    if (!ok) return
+    setSuggestionsBaseline(list.join('\n'))
     setSuggestionsSaved(true)
     setTimeout(() => setSuggestionsSaved(false), 2000)
   }
+
+  const promptDirty = prompt !== promptBaseline
+  const suggestionsDirty = normLines(suggestionsText) !== normLines(suggestionsBaseline)
 
   if (loading) return <p className="text-xs text-gray-500">Loading…</p>
 
@@ -791,15 +843,7 @@ export function SystemPromptTab({ api, headers }: { api: string; headers: () => 
           rows={10}
           className="w-full bg-gray-900 border border-gray-700 focus:border-blue-500/60 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-500 outline-none resize-none font-mono leading-relaxed"
         />
-        <div className="flex justify-end">
-          <button
-            onClick={save}
-            className="px-5 py-2 rounded-lg text-sm font-medium transition-colors"
-            style={{ backgroundColor: PRIMARY_COLOR }}
-          >
-            {saved ? '✓ Saved' : 'Save Prompt'}
-          </button>
-        </div>
+        <SaveBar label="Save Prompt" dirty={promptDirty} saving={savingPrompt} saved={saved} onSave={save} />
       </div>
 
       {/* Chat suggestions */}
@@ -815,16 +859,7 @@ export function SystemPromptTab({ api, headers }: { api: string; headers: () => 
           placeholder={"What can you help me with?\nHow do I get started?\nWhat kinds of questions can I ask?"}
           className="w-full bg-gray-900 border border-gray-700 focus:border-blue-500/60 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-500 outline-none resize-none leading-relaxed"
         />
-        <div className="flex items-center justify-end gap-3">
-          {suggestionsSaved && <span className="text-xs text-green-400">Saved</span>}
-          <button
-            onClick={saveSuggestions}
-            className="px-5 py-2 rounded-lg text-sm font-medium transition-colors"
-            style={{ backgroundColor: PRIMARY_COLOR }}
-          >
-            Save Suggestions
-          </button>
-        </div>
+        <SaveBar label="Save Suggestions" dirty={suggestionsDirty} saving={savingSuggestions} saved={suggestionsSaved} onSave={saveSuggestions} />
       </div>
     </div>
   )
@@ -1082,7 +1117,10 @@ export function GuestAccessTab({ api, headers }: { api: string; headers: () => R
 
 interface ModelGroup { provider: string; label: string; models: { value: string; label: string; badge: string }[] }
 interface ModelSlot { value: string; effective?: string; default: string; overridden: boolean }
-interface ModelConfig { chat: ModelSlot; eval_writer: ModelSlot; eval_judge: ModelSlot; same_family_warning: boolean }
+// `default` is default_model; `chat` is the chat_model pin over it ("" = follow
+// the default) - the server's two keys, both of them shown below.
+interface ModelConfig { default: ModelSlot; chat: ModelSlot; eval_writer: ModelSlot; eval_judge: ModelSlot; same_family_warning: boolean }
+type ModelKey = 'default' | 'chat' | 'eval_writer' | 'eval_judge'
 
 function ModelSelect(props: {
   groups: ModelGroup[]
@@ -1111,10 +1149,17 @@ function ModelSelect(props: {
   )
 }
 
-function ModelsTab({ api, headers }: { api: string; headers: () => Record<string, string> }) {
+// The default model's one control (2026-10-03). This tab showed the chat pin
+// and the two eval slots but never the server's `default` slot, so once the
+// System Prompt tab and Settings stopped editing default_model nothing in the
+// admin could set it.
+const draftOf = (d: ModelConfig): Record<ModelKey, string> =>
+  ({ default: d.default.value, chat: d.chat.value, eval_writer: d.eval_writer.value, eval_judge: d.eval_judge.value })
+
+export function ModelsTab({ api, headers }: { api: string; headers: () => Record<string, string> }) {
   const [groups, setGroups] = useState<ModelGroup[]>([])
   const [cfg, setCfg] = useState<ModelConfig | null>(null)
-  const [draft, setDraft] = useState<{ chat: string; eval_writer: string; eval_judge: string } | null>(null)
+  const [draft, setDraft] = useState<Record<ModelKey, string> | null>(null)
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
 
@@ -1127,29 +1172,31 @@ function ModelsTab({ api, headers }: { api: string; headers: () => Record<string
       .then(d => {
         if (!d) return
         setCfg(d)
-        setDraft({ chat: d.chat.value, eval_writer: d.eval_writer.value, eval_judge: d.eval_judge.value })
+        setDraft(draftOf(d))
       })
   }, [api])
 
-  const dirty = !!cfg && !!draft && (
-    draft.chat !== cfg.chat.value ||
-    draft.eval_writer !== cfg.eval_writer.value ||
-    draft.eval_judge !== cfg.eval_judge.value
-  )
+  const dirty = !!cfg && !!draft && (Object.keys(draft) as ModelKey[]).some(k => draft[k] !== cfg[k].value)
 
   const save = async () => {
-    if (!draft) return
+    if (!draft || !cfg) return
     setSaving(true); setMsg('')
+    // Only the slots that changed. The whole draft used to go, so saving one
+    // slot wrote every other slot's current value into a stored row - and a
+    // slot showing its default (DEFAULT_MODEL, the judge's default) then
+    // stayed pinned to that literal when the default itself changed.
+    const changed = Object.fromEntries(
+      (Object.keys(draft) as ModelKey[]).filter(k => draft[k] !== cfg[k].value).map(k => [k, draft[k]]))
     try {
       const r = await fetch(`${api}/api/admin/model-config`, {
         method: 'PATCH',
         headers: { ...headers(), 'Content-Type': 'application/json' },
-        body: JSON.stringify(draft),
+        body: JSON.stringify(changed),
       })
       if (!r.ok) { const d = await r.json().catch(() => ({})); setMsg(d.detail || `Save failed (HTTP ${r.status})`); return }
       const d: ModelConfig = await r.json()
       setCfg(d)
-      setDraft({ chat: d.chat.value, eval_writer: d.eval_writer.value, eval_judge: d.eval_judge.value })
+      setDraft(draftOf(d))
       setMsg('Saved')
     } catch {
       setMsg('Save failed - could not reach the backend')
@@ -1162,10 +1209,15 @@ function ModelsTab({ api, headers }: { api: string; headers: () => Record<string
 
   if (!cfg || !draft) return <p className="text-xs text-gray-600">Loading model config…</p>
 
-  const rows: { key: 'chat' | 'eval_writer' | 'eval_judge'; label: string; desc: string; slot: ModelSlot; followOption?: string }[] = [
-    { key: 'chat', label: 'Chat default', slot: cfg.chat,
+  // A "" value means "follow the default model" for the chat pin and the eval
+  // writer - the server's own chains (chat: chat_model else default_model;
+  // writer: eval_answer_model else default_model, never via the chat pin).
+  const rows: { key: ModelKey; label: string; desc: string; slot: ModelSlot; followOption?: string }[] = [
+    { key: 'default', label: 'Default model', slot: cfg.default,
+      desc: 'What chat and the eval writer use when nothing is pinned for them.' },
+    { key: 'chat', label: 'Chat', slot: cfg.chat, followOption: 'Follow the default model',
       desc: 'What visitors get when they do not pick a model.' },
-    { key: 'eval_writer', label: 'Eval answer writer', slot: cfg.eval_writer, followOption: 'Follow the chat default',
+    { key: 'eval_writer', label: 'Eval answer writer', slot: cfg.eval_writer, followOption: 'Follow the default model',
       desc: 'Pinned per run so a chat-dial change can never silently change what a measurement measures.' },
     { key: 'eval_judge', label: 'Eval judge', slot: cfg.eval_judge,
       desc: 'Grades every answer. Must come from a different company than the writer - the guard blocks same-family runs.' },
@@ -1214,8 +1266,8 @@ function ModelsTab({ api, headers }: { api: string; headers: () => Record<string
                 )}
               </div>
               <p className="text-xs text-gray-500 mt-2">{row.desc}
-                {row.key === 'eval_writer' && cfg.eval_writer.effective && draftVal === '' &&
-                  ` Currently resolves to ${cfg.eval_writer.effective}.`}
+                {(row.key === 'eval_writer' || row.key === 'chat') && row.slot.effective && draftVal === '' &&
+                  ` Currently resolves to ${row.slot.effective}.`}
               </p>
             </div>
           )
@@ -1229,6 +1281,7 @@ function ModelsTab({ api, headers }: { api: string; headers: () => Record<string
           </button>
           {msg && <span className={`text-xs ${msg === 'Saved' ? 'text-emerald-400' : 'text-red-400'}`}>{msg}</span>}
           {!dirty && !msg && <span className="text-xs text-gray-600">No unsaved changes</span>}
+          {dirty && !msg && <span className="text-xs text-amber-400">Unsaved changes</span>}
         </div>
       </section>
 
@@ -2295,6 +2348,10 @@ export function SettingsTab({ api, headers, goToModels }: {
       if (!r.ok) { const d = await r.json(); setError(d.detail || 'Save failed'); return }
       const updated: ProviderSettings = await r.json()
       setSettings(updated)
+      setOllamaEnabled(updated.ollama_enabled)
+      setAnthropicEnabled(updated.anthropic_enabled)
+      setOpenaiEnabled(updated.openai_enabled)
+      setOllamaBase(updated.ollama_base_url)
       // REHYDRATE FROM THE RESPONSE. The input kept displaying whatever was
       // typed, so a value the server did not store still read back as the
       // current setting under a green "Saved" banner. What the server returns
@@ -2332,6 +2389,17 @@ export function SettingsTab({ api, headers, goToModels }: {
         <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all duration-200 ${value ? 'left-5' : 'left-0.5'}`} />
       </button>
     </div>
+  )
+
+  // Lit only while the form differs from what the server last returned. A
+  // typed key always counts: a blank key box means "keep the current one".
+  const dirty = !!settings && (
+    ollamaEnabled !== settings.ollama_enabled ||
+    anthropicEnabled !== settings.anthropic_enabled ||
+    openaiEnabled !== settings.openai_enabled ||
+    ollamaBase !== settings.ollama_base_url ||
+    anthropicKey.trim() !== '' || openaiKey.trim() !== '' ||
+    parseFloat(ragThreshold) !== settings.rag_similarity_threshold
   )
 
   if (!settings) return <p className="text-xs text-gray-500">{error || 'Loading…'}</p>
@@ -2456,15 +2524,17 @@ export function SettingsTab({ api, headers, goToModels }: {
       {/* Save */}
       <div className="flex items-center gap-3 pt-2 border-t border-gray-800">
         {error && <p className="text-xs text-red-400 flex-1">{error}</p>}
-        {saved && <p className="text-xs text-green-400">Saved - changes take effect immediately.</p>}
-        <button
-          onClick={save}
-          disabled={saving}
-          className="ml-auto px-5 py-2 rounded-lg text-sm font-medium text-white disabled:opacity-50 transition-colors"
-          style={{ backgroundColor: PRIMARY_COLOR }}
-        >
-          {saving ? 'Saving…' : 'Save Settings'}
-        </button>
+        <div className="ml-auto flex items-center gap-3">
+          <SaveStatus dirty={dirty} saved={saved} savedText="Saved - changes take effect immediately." />
+          <button
+            onClick={save}
+            disabled={!dirty || saving}
+            className="px-5 py-2 rounded-lg text-sm font-medium text-white disabled:opacity-40 transition-colors"
+            style={{ backgroundColor: PRIMARY_COLOR }}
+          >
+            {saving ? 'Saving…' : 'Save Settings'}
+          </button>
+        </div>
       </div>
     </div>
   )

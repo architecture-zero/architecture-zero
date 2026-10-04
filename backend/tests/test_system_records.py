@@ -303,3 +303,27 @@ def test_a_flagged_generated_chunk_is_not_labelled_clean():
                           "auto_generated": "true", "injection_flagged": True})
     assert "LIVE SYSTEM RECORD" in label
     assert "flagged by the injection scan" in label
+
+
+def test_the_default_answering_model_follows_the_chat_route_chain(client, monkeypatch):
+    """The record names what a chat with no explicit model answers with - the
+    chat route's own chain: the chat_model pin, else the configured
+    default_model, else the env default. It read the pin or the ENV default,
+    so an operator who set the default model and pinned no chat model got a
+    record naming a model that was not answering (found 2026-10-03, when the
+    admin's Models tab became the one place the default model is set).
+
+    Both get_config references are replaced so the REAL _config_or_default
+    runs over the fake rows."""
+    import app.config as cfg
+    import app.runtime_config as rc
+    rows: dict = {}
+    fake = lambda key, default="": rows.get(key, default)  # noqa: E731
+    monkeypatch.setattr(cfg, "get_config", fake)
+    monkeypatch.setattr(rc, "get_config", fake)
+    rows.update(chat_model="", default_model="configured-default")
+    assert sr._snapshot()["default_model"] == "configured-default"
+    rows["chat_model"] = "pinned-chat"
+    assert sr._snapshot()["default_model"] == "pinned-chat"
+    rows.update(chat_model="", default_model="")
+    assert sr._snapshot()["default_model"] == rc.DEFAULT_MODEL

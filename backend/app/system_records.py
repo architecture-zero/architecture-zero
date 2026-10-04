@@ -166,7 +166,7 @@ def _snapshot() -> dict:
     from app.corpus_scan import INJECTION_SCAN_MODE
     from app.rerank import rerank_enabled, rerank_provider, rerank_model
     from app.runtime_config import (ALLOW_GUEST_MODE, RAG_ONLY_MODE, PII_SCAN_MODE,
-                                    PII_OUTPUT_MODE,
+                                    PII_OUTPUT_MODE, _config_or_default,
                                     DEFAULT_MODEL, DEMO_DAILY_GUEST_LIMIT,
                                     ENCRYPTION_AT_REST_VERIFIED)
     from app.routers.chat import GUEST_MAX_TURNS
@@ -192,7 +192,13 @@ def _snapshot() -> dict:
     snap["security"] = get_security_config()
     snap["tools"] = get_tool_config()
     snap["provider"] = get_provider_config()
-    snap["default_model"] = get_config("chat_model", "") or DEFAULT_MODEL
+    # What a chat with no explicit model answers with: the chat route's own
+    # chain - the chat_model pin, else the configured default_model, else the
+    # env default. This read the pin or the ENV default, skipping the
+    # configured default_model, so a default set in the admin with no pin was
+    # recorded as a model that was not answering (2026-10-03).
+    snap["default_model"] = (get_config("chat_model", "").strip()
+                             or _config_or_default("default_model", DEFAULT_MODEL))
     snap["rerank_enabled"] = rerank_enabled()
     snap["rerank_provider"] = rerank_provider()
     snap["rerank_model"] = rerank_model()

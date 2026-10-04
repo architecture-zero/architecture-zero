@@ -16,7 +16,7 @@
  */
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { SystemPromptTab, ChatControlsTab, GuestAccessTab, SettingsTab } from '../AdminPanel'
+import { SystemPromptTab, ChatControlsTab, GuestAccessTab, SettingsTab, ModelsTab } from '../AdminPanel'
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -32,11 +32,24 @@ const SETTINGS = {
   default_model: 'm', rag_similarity_threshold: 0.4,
 }
 
+const MODEL_GROUPS = [{ provider: 'p', label: 'P', models: [
+  { value: 'd', label: 'D', badge: '' }, { value: 'e', label: 'E', badge: '' }, { value: 'j', label: 'J', badge: '' }] }]
+// The template keeps two keys: default_model (`default`) and the chat_model
+// pin over it (`chat`, "" = follow the default).
+const MODELCFG = {
+  default: { value: 'd', default: 'd', overridden: false },
+  chat: { value: '', effective: 'd', default: '', overridden: false },
+  eval_writer: { value: '', effective: 'd', default: '', overridden: false },
+  eval_judge: { value: 'j', default: 'j', overridden: false },
+  same_family_warning: false,
+}
+
 type Responder = () => Response
 interface Calls {
   patches: Record<string, unknown>[]
   contextPatches: Record<string, unknown>[]
   puts: Record<string, unknown>[]
+  modelPatches: Record<string, unknown>[]
 }
 
 function installFetch(o: {
@@ -44,7 +57,7 @@ function installFetch(o: {
   context?: Responder; contextPatch?: Responder
   settings?: Responder; put?: Responder
 } = {}): Calls {
-  const calls: Calls = { patches: [], contextPatches: [], puts: [] }
+  const calls: Calls = { patches: [], contextPatches: [], puts: [], modelPatches: [] }
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     const method = (init?.method || 'GET').toUpperCase()
@@ -64,6 +77,13 @@ function installFetch(o: {
       }
       return (o.context ?? (() => json({ strategy: 'warn', max_tokens: 6000, encryption_verified: true })))()
     }
+    if (url.endsWith('/api/admin/model-config')) {
+      if (method === 'PATCH') {
+        calls.modelPatches.push(body())
+      }
+      return json(MODELCFG)
+    }
+    if (url.endsWith('/api/models')) return json({ groups: MODEL_GROUPS })
     if (url.endsWith('/api/settings')) {
       if (method === 'PUT') {
         calls.puts.push(body())
@@ -95,7 +115,9 @@ describe('System Prompt tab: the prompt and the suggestions, nothing else', () =
   it('Save Prompt after a refused prompt read sends nothing and says why', async () => {
     const calls = installFetch({ adminConfig: () => json({ detail: 'Forbidden' }, 403) })
     render(<SystemPromptTab api="" headers={noHeaders} />)
-    fireEvent.click(await screen.findByText('Save Prompt'))
+    const save = await screen.findByText('Save Prompt')
+    fireEvent.change(screen.getAllByRole('textbox')[0], { target: { value: 'typed over nothing' } })
+    fireEvent.click(save)
     await screen.findByText(/the system prompt never loaded/)
     expect(calls.patches).toEqual([])
   })
@@ -103,7 +125,9 @@ describe('System Prompt tab: the prompt and the suggestions, nothing else', () =
   it('Save Suggestions after a failed settings read sends nothing', async () => {
     const calls = installFetch({ config: () => json({ detail: 'boom' }, 502) })
     render(<SystemPromptTab api="" headers={noHeaders} />)
-    fireEvent.click(await screen.findByText('Save Suggestions'))
+    const save = await screen.findByText('Save Suggestions')
+    fireEvent.change(screen.getAllByRole('textbox')[1], { target: { value: 'typed over nothing' } })
+    fireEvent.click(save)
     await screen.findByText(/these settings never loaded/)
     expect(calls.patches).toEqual([])
   })
@@ -199,10 +223,78 @@ describe('Settings tab', () => {
     const calls = installFetch()
     render(<SettingsTab api="" headers={noHeaders} />)
     await screen.findByText('m')
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '0.5' } })
     fireEvent.click(screen.getByText('Save Settings'))
     fireEvent.change(await screen.findByPlaceholderText('Your password'), { target: { value: 'pw' } })
     fireEvent.click(screen.getByText('Confirm'))
     await waitFor(() => expect(calls.puts).toHaveLength(1))
     expect('default_model' in calls.puts[0]).toBe(false)
+  })
+})
+
+
+describe('Save buttons light only for a real change (dirty-state saves)', () => {
+  it('Save Prompt is dark until the prompt changes, and says Saved only after the server accepts', async () => {
+    const calls = installFetch()
+    render(<SystemPromptTab api="" headers={noHeaders} />)
+    const save = (await screen.findByText('Save Prompt')).closest('button')!
+    expect(save).toBeDisabled()
+    fireEvent.change(screen.getAllByRole('textbox')[0], { target: { value: 'You are the new persona.' } })
+    expect(save).toBeEnabled()
+    expect(screen.getByText('Unsaved changes')).toBeInTheDocument()
+    fireEvent.click(save)
+    await waitFor(() => expect(calls.patches).toEqual([{ system_prompt: 'You are the new persona.' }]))
+    await screen.findByText('Saved')
+    expect(save).toBeDisabled()
+  })
+
+  it('a refused save leaves the change marked unsaved and the button lit', async () => {
+    installFetch({ patch: () => json({ detail: 'expired' }, 401) })
+    render(<SystemPromptTab api="" headers={noHeaders} />)
+    const save = (await screen.findByText('Save Prompt')).closest('button')!
+    fireEvent.change(screen.getAllByRole('textbox')[0], { target: { value: 'edited' } })
+    fireEvent.click(save)
+    await screen.findByText(/your session expired/)
+    expect(screen.getByText('Unsaved changes')).toBeInTheDocument()
+    expect(save).toBeEnabled()
+  })
+
+  it('a blank line in the suggestions is not a change', async () => {
+    installFetch()
+    render(<SystemPromptTab api="" headers={noHeaders} />)
+    const save = (await screen.findByText('Save Suggestions')).closest('button')!
+    fireEvent.change(screen.getAllByRole('textbox')[1], { target: { value: 'first\n\n' } })
+    expect(save).toBeDisabled()
+    fireEvent.change(screen.getAllByRole('textbox')[1], { target: { value: 'first\nsecond' } })
+    expect(save).toBeEnabled()
+  })
+
+  it('Save Settings is dark until something changes, and a typed key counts', async () => {
+    installFetch()
+    render(<SettingsTab api="" headers={noHeaders} />)
+    const save = (await screen.findByText('Save Settings')).closest('button')!
+    expect(save).toBeDisabled()
+    fireEvent.change(screen.getByPlaceholderText(/leave blank to keep current/), { target: { value: 'sk-ant-new' } })
+    expect(save).toBeEnabled()
+  })
+})
+
+describe('Models tab: the default model has its own row', () => {
+  it('sets the default model in its own row and sends only the slot that changed', async () => {
+    const calls = installFetch()
+    render(<ModelsTab api="" headers={noHeaders} />)
+    await screen.findByText('Default model')
+    fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'e' } })
+    expect(screen.getByText('Unsaved changes')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Save changes'))
+    await waitFor(() => expect(calls.modelPatches).toEqual([{ default: 'e' }]))
+  })
+
+  it('the chat pin and the eval writer can follow the default model', async () => {
+    installFetch()
+    render(<ModelsTab api="" headers={noHeaders} />)
+    await screen.findByText('Default model')
+    expect(screen.getAllByText('Follow the default model')).toHaveLength(2)
+    expect(screen.getByText(/do not pick a model\. Currently resolves to d\./)).toBeInTheDocument()
   })
 })
