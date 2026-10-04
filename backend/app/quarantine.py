@@ -35,13 +35,11 @@ def write_quarantine_row(source: str, department: str | None, trust: str,
 
 
 def resolve_moot_holds(source: str, department: str | None = None) -> int:
-    """A held row is moot the moment the SAME source ingests into the corpus:
-    the live version is indexed, so the held snapshot is outdated (rule tuning
-    between quarantine and re-sync can otherwise re-quarantine a benign
-    document on every sync, outliving its own review-delete). Marks such rows
-    'superseded' (not 'deleted': the owner never reviewed them - the status
-    keeps the audit honest) so the review queue, which lists held only, shows
-    real decisions.
+    """A held row is moot once a clean version of the SAME document is
+    indexed: the held snapshot is outdated, and releasing it would put the old
+    text back over the new one. Marks such rows 'superseded' (not 'deleted':
+    the owner never reviewed them - the status keeps the audit honest) so the
+    review queue, which lists held only, shows real decisions.
 
     `department` narrows the match for a caller that indexed one (source,
     department) pair - an upload: the same file name in another department is
@@ -49,7 +47,8 @@ def resolve_moot_holds(source: str, department: str | None = None) -> int:
     unique id may pass the source alone.
 
     Both upload paths call this once the new version is fully indexed (the
-    synchronous handler and the queued worker). Until 2026-10-03 nothing
+    synchronous handler and the queued worker); POST /api/ingest does not,
+    so a hold it wrote waits for review. Until 2026-10-03 nothing
     called it - defined and never called, found by the module-hygiene check -
     so a held upload outlived its clean replacement, and releasing it later
     put the OLD text back over the new one (release is add-then-prune over the
