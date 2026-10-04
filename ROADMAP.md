@@ -100,7 +100,8 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   conversation mid-answer, a render that lands late, and the identity
   transitions' resets (sign-out's credentials, a guest's draft into an
   account, a history read that lands after a switch). Not yet covered: the
-  admin panel, the setup wizard, model selection. Each wants the same
+  setup wizard, model selection, and the admin panel beyond its save rules
+  (those have their cases since 2026-10-03, adminWriteSafety.test.tsx). Each wants the same
   treatment - find the rule, find where the rule becomes an observable, test
   that rather than the symptoms.
 - ~~**Alerts that fire on an unwatched box**~~ - SHIPPED 2026-10-02

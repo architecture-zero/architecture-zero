@@ -125,8 +125,9 @@ The platform is API-first: everything - chat (streaming SSE at /api/chat),
 ingestion, users, evals, the trust panel - is served over a documented HTTP
 surface, so any client works. A reference web client ships with it
 (`frontend/`): chat with citations, the claim screen, and an admin panel
-covering knowledge base, quarantine review, users, models, system prompt,
-audit, monitoring, backup and the ingest queue. It is a reference, not a
+covering the trust panel, knowledge base, quarantine review, users, the
+system prompt, chat controls, guest access, settings, models, audit,
+monitoring, backup and the ingest queue. It is a reference, not a
 requirement - the API is the product, and the client is one consumer of it.
 Full walkthrough: [docs/runbook.md](docs/runbook.md).
 
@@ -301,10 +302,13 @@ Stated here rather than discovered later. Each is tracked in
   tested as an invariant with a case per stream outcome - together with the
   paths that touch it or the user's identity (the refusals made before
   storage, leaving a conversation mid-answer, sign-in and sign-out resets).
-  The rest of the client - layout, the admin panel, model selection - is
-  covered by the acceptance suite driving a real deployment, not by unit
-  tests. Read a green frontend suite as "the storage invariant and the
-  identity resets hold", not "the client is verified".
+  Since 2026-10-03 two more rules have their cases: the admin panel's saves
+  (a failed read never becomes a write, each switch saves only its own
+  key, a Save stays dark until something changed) and the History list
+  (grouping, rename, a delete that asks once). The rest of the client -
+  layout, model selection, the setup wizard - is covered by the acceptance
+  suite driving a real deployment, not by unit tests. Read a green frontend
+  suite as "those rules hold", not "the client is verified".
 
 ## License
 
