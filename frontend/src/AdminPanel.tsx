@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import type { ReactNode } from 'react'
 import { actionError, emitError, guardedJson, guardedPoll } from './errorSurface'
 import { SCRAPE_CONFIG_YAML } from './scrapeConfig'
 
@@ -627,98 +628,14 @@ function KBManage({ api, headers }: { api: string; headers: () => Record<string,
   )
 }
 
-// ── Tab: System Prompt ─────────────────────────────────────────────────────
+// ── Shared by the System Prompt, Chat Controls and Guest Access tabs ──────
 
-function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<string, string> }) {
-  const [prompt, setPrompt] = useState('')
-  const [saved, setSaved] = useState(false)
-  const [loading, setLoading] = useState(true)
-  const [strategy, setStrategy] = useState<'warn' | 'summarize'>('warn')
-  const [maxTokens, setMaxTokens] = useState(6000)
-  const [strategySaved, setStrategySaved] = useState(false)
-  const [encryptionVerified, setEncryptionVerified] = useState(false)
-  const [suggestionsText, setSuggestionsText] = useState('')
-  const [suggestionsSaved, setSuggestionsSaved] = useState(false)
-  const [allowModelSelection, setAllowModelSelection] = useState(true)
-  const [allowRagToggle, setAllowRagToggle] = useState(true)
-  const [defaultModel, setDefaultModel] = useState('')
-  const [defaultRagEnabled, setDefaultRagEnabled] = useState(false)
-  const [guestChatEnabled, setGuestChatEnabled] = useState(true)
-  const [guestEnvAllowed, setGuestEnvAllowed] = useState(true)
-  const [availableModels, setAvailableModels] = useState<{ value: string; label: string }[]>([])
-  const [controlsSaved, setControlsSaved] = useState(false)
-  // Did /api/config actually answer? The `if (!d) return` guards below stop a
-  // failed read from writing WRONG values into state - they do not stop the
-  // component from SAVING the state it still has, which is its initial
-  // defaults. saveControls PATCHes all five keys together, so one toggle after
-  // a failed read overwrites the operator's real settings with those defaults -
-  // including default_rag_enabled, whose initial value here is false while the
-  // server's is true. The read failing and the save proceeding are two separate
-  // events; only this flag connects them.
-  const [controlsLoaded, setControlsLoaded] = useState(false)
-  // The prompt box has its own read, so it needs its own answer to the same
-  // question - did this value ever arrive from the server?
-  const [promptLoaded, setPromptLoaded] = useState(false)
+// Never confirm a save the server did not accept. An expired token makes
+// these PATCHes 401 while the UI still flashes "Saved", and the operator
+// walks away believing a setting changed - the failure is silent on both
+// sides, which is what makes it worth a helper rather than a habit.
+function useGuardedPatch(api: string, headers: () => Record<string, string>) {
   const [saveErr, setSaveErr] = useState('')
-
-  useEffect(() => {
-    // BOTH loads go through the guard and BOTH early-out on null. Neither
-    // route is public, and a 401/403 body is valid JSON - so a bare
-    // .then(r => r.json()) RESOLVES, every `!== undefined` check below is
-    // skipped, and the component keeps its own initial state. That state is
-    // what saveControls then PATCHes back, so a failed READ became a
-    // destructive WRITE: retrieval turned off by default, and every control
-    // the operator had locked silently unlocked. The `if (!d) return` is the
-    // whole fix, and it is why the guard returns null rather than throwing.
-    guardedJson<AdminConfig>(
-      fetch(`${api}/api/admin/config`, { headers: headers() }), 'Loading system prompt')
-      .then(d => {
-        if (d) { setPrompt(d.system_prompt || ''); setPromptLoaded(true) }
-        setLoading(false)
-      })
-    guardedJson<{
-      suggestions?: string[]
-      allow_model_selection?: boolean
-      allow_rag_toggle?: boolean
-      default_model?: string
-      default_rag_enabled?: boolean
-      guest_mode_configured?: boolean
-      guest_mode_env_allowed?: boolean
-    }>(fetch(`${api}/api/config`, { headers: headers() }), 'Loading settings')
-      .then(d => {
-        if (!d) return
-        setSuggestionsText((d.suggestions || []).join('\n'))
-        if (d.allow_model_selection !== undefined) setAllowModelSelection(d.allow_model_selection)
-        if (d.allow_rag_toggle !== undefined) setAllowRagToggle(d.allow_rag_toggle)
-        if (d.default_model) setDefaultModel(d.default_model)
-        if (d.default_rag_enabled !== undefined) setDefaultRagEnabled(d.default_rag_enabled)
-        // The STORED half, not the effective one. This control edits the
-        // row; binding it to `guest_mode_enabled` (which is env AND row) meant
-        // saving any neighbouring control wrote the AND back and erased a
-        // deliberate setting whenever the env half was off.
-        if (d.guest_mode_configured !== undefined) setGuestChatEnabled(d.guest_mode_configured)
-        if (d.guest_mode_env_allowed !== undefined) setGuestEnvAllowed(d.guest_mode_env_allowed)
-        setControlsLoaded(true)
-      })
-    guardedJson<{ groups?: { models: { value: string; label: string }[] }[] }>(
-      fetch(`${api}/api/models`, { headers: headers() }), 'Loading models')
-      .then(d => {
-        if (!d) return
-        const flat = (d.groups || []).flatMap(g => g.models)
-        setAvailableModels(flat)
-      })
-    guardedJson<{ strategy?: 'warn' | 'summarize'; max_tokens?: number; encryption_verified?: boolean }>(
-      fetch(`${api}/api/admin/context`, { headers: headers() }), 'Loading context settings')
-      .then(d => {
-        if (!d) return
-        setStrategy(d.strategy || 'warn'); setMaxTokens(d.max_tokens || 6000); setEncryptionVerified(!!d.encryption_verified)
-      })
-  }, [])
-
-  // Never confirm a save the server did not accept. An expired token makes
-  // these PATCHes 401 while the UI still flashes "Saved", and the operator
-  // walks away believing a setting changed - the failure is silent on both
-  // sides, which is what makes it worth a helper rather than a habit.
   const guardedPatch = async (path: string, body: object): Promise<boolean> => {
     setSaveErr('')
     try {
@@ -739,12 +656,102 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
       return false
     }
   }
+  return { guardedPatch, saveErr, setSaveErr }
+}
+
+const NEVER_LOADED = 'NOT saved - these settings never loaded, so saving would '
+  + 'overwrite them with defaults. Reload the page and try again.'
+
+function SaveErrorLine({ text }: { text: string }) {
+  if (!text) return null
+  return (
+    <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
+      {text}
+    </p>
+  )
+}
+
+function SwitchRow({ label, desc, on, onToggle }: {
+  label: string; desc: ReactNode; on: boolean; onToggle: () => void
+}) {
+  return (
+    <div className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-gray-800/50 border border-gray-700">
+      <div>
+        <p className="text-sm text-gray-300">{label}</p>
+        <p className="text-xs text-gray-500 mt-0.5">{desc}</p>
+      </div>
+      <button
+        role="switch"
+        aria-checked={on}
+        aria-label={label}
+        onClick={onToggle}
+        className={`w-10 h-5 rounded-full transition-colors relative flex-shrink-0 ${on ? 'bg-blue-600' : 'bg-gray-600'}`}
+      >
+        <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all duration-200 ${on ? 'left-5' : 'left-0.5'}`} />
+      </button>
+    </div>
+  )
+}
+
+// The default model has ONE control, in Models (2026-10-03). It used to have
+// three - the System Prompt tab, Settings and Models - all writing the same
+// default_model, so an operator could not tell which one was the setting.
+// The other tabs show it and point there.
+function DefaultModelPointer({ model, goToModels }: { model: string; goToModels?: () => void }) {
+  return (
+    <p className="text-xs text-gray-500">
+      Default model: <span className="font-mono text-gray-300">{model || 'the server default'}</span>
+      {' - '}
+      {goToModels
+        ? <button type="button" onClick={goToModels} className="underline underline-offset-2 hover:text-white">change it in Models</button>
+        : 'change it in Models'}
+    </p>
+  )
+}
+
+// ── Tab: System Prompt ─────────────────────────────────────────────────────
+
+// What the assistant is told, and what it offers on an empty chat - nothing
+// else since 2026-10-03, when the chat controls and the guest switch moved to
+// tabs of their own (the 2026-08-01 UI audit's prompt-tab split).
+export function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<string, string> }) {
+  const [prompt, setPrompt] = useState('')
+  const [saved, setSaved] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [suggestionsText, setSuggestionsText] = useState('')
+  const [suggestionsSaved, setSuggestionsSaved] = useState(false)
+  // Did each read actually answer? The `if (!d)` guards below stop a failed
+  // read from writing WRONG values into state - they do not stop a Save from
+  // sending the state the component still has, which is its initial empty
+  // strings. Each box has its own read, so each needs its own answer.
+  const [promptLoaded, setPromptLoaded] = useState(false)
+  const [suggestionsLoaded, setSuggestionsLoaded] = useState(false)
+  const { guardedPatch, saveErr, setSaveErr } = useGuardedPatch(api, headers)
+
+  useEffect(() => {
+    // BOTH loads go through the guard and BOTH early-out on null. Neither
+    // route is public, and a 401/403 body is valid JSON - so a bare
+    // .then(r => r.json()) RESOLVES and the failure looks like a load.
+    guardedJson<AdminConfig>(
+      fetch(`${api}/api/admin/config`, { headers: headers() }), 'Loading system prompt')
+      .then(d => {
+        if (d) { setPrompt(d.system_prompt || ''); setPromptLoaded(true) }
+        setLoading(false)
+      })
+    guardedJson<{ suggestions?: string[] }>(
+      fetch(`${api}/api/config`, { headers: headers() }), 'Loading settings')
+      .then(d => {
+        if (!d) return
+        setSuggestionsText((d.suggestions || []).join('\n'))
+        setSuggestionsLoaded(true)
+      })
+  }, [])
 
   const save = async () => {
-    // Same gate as saveControls, for the same reason: if the read failed this
-    // box holds the component's empty initial string rather than the operator's
-    // prompt, and saving would overwrite a configured system prompt with
-    // nothing - on a failure the screen otherwise renders as "loaded".
+    // If the read failed this box holds the component's empty initial string
+    // rather than the operator's prompt, and saving would overwrite a
+    // configured system prompt with nothing - on a failure the screen
+    // otherwise renders as "loaded".
     if (!promptLoaded) {
       setSaveErr('NOT saved - the system prompt never loaded, so saving would '
         + 'overwrite it with an empty value. Reload the page and try again.')
@@ -756,7 +763,7 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
   }
 
   const saveSuggestions = async () => {
-    if (!controlsLoaded) {
+    if (!suggestionsLoaded) {
       setSaveErr('NOT saved - these settings never loaded, so saving would '
         + 'overwrite them. Reload the page and try again.')
       return
@@ -767,54 +774,11 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
     setTimeout(() => setSuggestionsSaved(false), 2000)
   }
 
-  const saveControls = async (
-    allowModel = allowModelSelection,
-    allowRag = allowRagToggle,
-    defModel = defaultModel,
-    defRag = defaultRagEnabled,
-    guestChat = guestChatEnabled,
-  ) => {
-    // REFUSE to write settings we never successfully read. This block sends all
-    // five keys at once, so saving one control from unhydrated state silently
-    // rewrites the other four to this component's initial values.
-    if (!controlsLoaded) {
-      setSaveErr('NOT saved - these settings never loaded, so saving would '
-        + 'overwrite them with defaults. Reload the page and try again.')
-      return false
-    }
-    // Every key here must be in the backend's config allowlist. It rejects an
-    // unknown key BY NAME with a 400 and validates the whole body before
-    // writing any of it, so one stale key takes the entire block down with it -
-    // which is exactly what guest_chat_enabled and guest_widget_enabled did.
-    const ok = await guardedPatch('/api/admin/config', {
-      allow_model_selection: allowModel,
-      allow_rag_toggle: allowRag,
-      default_model: defModel,
-      default_rag_enabled: defRag,
-      guest_mode_enabled: guestChat,
-    })
-    if (!ok) return false
-    setControlsSaved(true)
-    setTimeout(() => setControlsSaved(false), 2000)
-    return true
-  }
-
-  const saveStrategy = async (s: 'warn' | 'summarize') => {
-    setStrategy(s)
-    if (!(await guardedPatch('/api/admin/context', { strategy: s }))) return
-    setStrategySaved(true)
-    setTimeout(() => setStrategySaved(false), 2000)
-  }
-
   if (loading) return <p className="text-xs text-gray-500">Loading…</p>
 
   return (
     <div className="space-y-6">
-      {saveErr && (
-        <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
-          {saveErr}
-        </p>
-      )}
+      <SaveErrorLine text={saveErr} />
       {/* System prompt */}
       <div className="space-y-3">
         <p className="text-xs text-gray-400">
@@ -838,8 +802,121 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
         </div>
       </div>
 
-      {/* Context window strategy */}
+      {/* Chat suggestions */}
       <div className="border-t border-gray-800 pt-5 space-y-3">
+        <div>
+          <p className="text-xs text-gray-300 font-medium mb-0.5">Chat Suggestions</p>
+          <p className="text-xs text-gray-500">Shown on the empty chat screen. One suggestion per line (max 3 displayed).</p>
+        </div>
+        <textarea
+          value={suggestionsText}
+          onChange={e => setSuggestionsText(e.target.value)}
+          rows={4}
+          placeholder={"What can you help me with?\nHow do I get started?\nWhat kinds of questions can I ask?"}
+          className="w-full bg-gray-900 border border-gray-700 focus:border-blue-500/60 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-500 outline-none resize-none leading-relaxed"
+        />
+        <div className="flex items-center justify-end gap-3">
+          {suggestionsSaved && <span className="text-xs text-green-400">Saved</span>}
+          <button
+            onClick={saveSuggestions}
+            className="px-5 py-2 rounded-lg text-sm font-medium transition-colors"
+            style={{ backgroundColor: PRIMARY_COLOR }}
+          >
+            Save Suggestions
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Tab: Chat Controls ─────────────────────────────────────────────────────
+
+// How every conversation behaves: what happens when one runs long, and the
+// defaults users chat with. Split out of the System Prompt tab 2026-10-03.
+export function ChatControlsTab({ api, headers, goToModels }: {
+  api: string; headers: () => Record<string, string>; goToModels?: () => void
+}) {
+  const [loading, setLoading] = useState(true)
+  const [strategy, setStrategy] = useState<'warn' | 'summarize'>('warn')
+  const [maxTokens, setMaxTokens] = useState(6000)
+  const [strategySaved, setStrategySaved] = useState(false)
+  const [allowModelSelection, setAllowModelSelection] = useState(true)
+  const [allowRagToggle, setAllowRagToggle] = useState(true)
+  const [defaultModel, setDefaultModel] = useState('')
+  const [defaultRagEnabled, setDefaultRagEnabled] = useState(false)
+  const [controlsSaved, setControlsSaved] = useState(false)
+  // Did /api/config actually answer? The `if (d)` guard below stops a failed
+  // read from writing WRONG values into state - it does not stop a switch
+  // from saving the state the component still has, which is its initial
+  // defaults (default_rag_enabled starts false here while the server's is
+  // true). The read failing and the save proceeding are two separate events;
+  // only this flag connects them.
+  const [controlsLoaded, setControlsLoaded] = useState(false)
+  const { guardedPatch, saveErr, setSaveErr } = useGuardedPatch(api, headers)
+
+  useEffect(() => {
+    // Through the guard, early-out on null: a 401/403 body is valid JSON, so
+    // a bare .then(r => r.json()) RESOLVED, every `!== undefined` check was
+    // skipped, and the next save PATCHed this component's initial state back -
+    // a failed READ became a destructive WRITE: retrieval turned off by
+    // default, and every control the operator had locked silently unlocked.
+    guardedJson<{
+      allow_model_selection?: boolean
+      allow_rag_toggle?: boolean
+      default_model?: string
+      default_rag_enabled?: boolean
+    }>(fetch(`${api}/api/config`, { headers: headers() }), 'Loading settings')
+      .then(d => {
+        if (d) {
+          if (d.allow_model_selection !== undefined) setAllowModelSelection(d.allow_model_selection)
+          if (d.allow_rag_toggle !== undefined) setAllowRagToggle(d.allow_rag_toggle)
+          if (d.default_model) setDefaultModel(d.default_model)
+          if (d.default_rag_enabled !== undefined) setDefaultRagEnabled(d.default_rag_enabled)
+          setControlsLoaded(true)
+        }
+        setLoading(false)
+      })
+    guardedJson<{ strategy?: 'warn' | 'summarize'; max_tokens?: number }>(
+      fetch(`${api}/api/admin/context`, { headers: headers() }), 'Loading context settings')
+      .then(d => {
+        if (!d) return
+        setStrategy(d.strategy || 'warn'); setMaxTokens(d.max_tokens || 6000)
+      })
+  }, [])
+
+  // ONE KEY PER SWITCH. These switches used to PATCH every control together,
+  // so flipping one also rewrote the others' stored rows with whatever the
+  // panel was showing - and the server treats a stored row as an operator's
+  // decision. Omitting a key leaves its stored value untouched, which is the
+  // honest meaning of "I did not touch this control".
+  const flip = (key: string, cur: boolean, set: (v: boolean) => void) => {
+    if (!controlsLoaded) { setSaveErr(NEVER_LOADED); return }
+    set(!cur)
+    guardedPatch('/api/admin/config', { [key]: !cur }).then(ok => {
+      if (!ok) { set(cur); return }
+      setControlsSaved(true)
+      setTimeout(() => setControlsSaved(false), 2000)
+    })
+  }
+
+  const saveStrategy = async (s: 'warn' | 'summarize') => {
+    // A refused save puts the choice back: the highlighted card is a claim
+    // about what the server holds.
+    const prev = strategy
+    setStrategy(s)
+    if (!(await guardedPatch('/api/admin/context', { strategy: s }))) { setStrategy(prev); return }
+    setStrategySaved(true)
+    setTimeout(() => setStrategySaved(false), 2000)
+  }
+
+  if (loading) return <p className="text-xs text-gray-500">Loading…</p>
+
+  return (
+    <div className="space-y-6">
+      <SaveErrorLine text={saveErr} />
+      {/* Context window strategy */}
+      <div className="space-y-3">
         <div>
           <p className="text-xs text-gray-300 font-medium mb-0.5">Context Window Strategy</p>
           <p className="text-xs text-gray-500">
@@ -870,124 +947,108 @@ function SystemPromptTab({ api, headers }: { api: string; headers: () => Record<
         {strategySaved && <p className="text-xs text-green-400">Strategy saved</p>}
       </div>
 
-      {/* Chat suggestions */}
-      <div className="border-t border-gray-800 pt-5 space-y-3">
-        <div>
-          <p className="text-xs text-gray-300 font-medium mb-0.5">Chat Suggestions</p>
-          <p className="text-xs text-gray-500">Shown on the empty chat screen. One suggestion per line (max 3 displayed).</p>
-        </div>
-        <textarea
-          value={suggestionsText}
-          onChange={e => setSuggestionsText(e.target.value)}
-          rows={4}
-          placeholder={"What can you help me with?\nHow do I get started?\nWhat kinds of questions can I ask?"}
-          className="w-full bg-gray-900 border border-gray-700 focus:border-blue-500/60 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-500 outline-none resize-none leading-relaxed"
-        />
-        <div className="flex items-center justify-end gap-3">
-          {suggestionsSaved && <span className="text-xs text-green-400">Saved</span>}
-          <button
-            onClick={saveSuggestions}
-            className="px-5 py-2 rounded-lg text-sm font-medium transition-colors"
-            style={{ backgroundColor: PRIMARY_COLOR }}
-          >
-            Save Suggestions
-          </button>
-        </div>
-      </div>
-
       {/* Usage controls */}
       <div className="border-t border-gray-800 pt-5 space-y-3">
         <div>
           <p className="text-xs text-gray-300 font-medium mb-0.5">Usage Controls</p>
-          <p className="text-xs text-gray-500">Global defaults applied to all users. Hiding a control locks users to the value set here.</p>
+          <p className="text-xs text-gray-500">Global defaults applied to all users. Hiding a control locks users to its default.</p>
         </div>
+        <DefaultModelPointer model={defaultModel} goToModels={goToModels} />
+        <SwitchRow
+          label="Allow model selection"
+          desc="Users can switch models in the sidebar"
+          on={allowModelSelection}
+          onToggle={() => flip('allow_model_selection', allowModelSelection, setAllowModelSelection)}
+        />
+        <SwitchRow
+          label="RAG enabled by default"
+          desc="Knowledge base active for all new conversations"
+          on={defaultRagEnabled}
+          onToggle={() => flip('default_rag_enabled', defaultRagEnabled, setDefaultRagEnabled)}
+        />
+        <SwitchRow
+          label="Allow RAG toggle"
+          desc="Users can enable/disable knowledge base in the sidebar"
+          on={allowRagToggle}
+          onToggle={() => flip('allow_rag_toggle', allowRagToggle, setAllowRagToggle)}
+        />
+        {controlsSaved && <p className="text-xs text-green-400 text-right">Saved</p>}
+      </div>
+    </div>
+  )
+}
 
-        {/* Default model */}
-        <div className="space-y-1.5">
-          <p className="text-xs text-gray-400">Default model</p>
-          <select
-            value={defaultModel}
-            onChange={e => setDefaultModel(e.target.value)}
-            className="w-full bg-gray-900 border border-gray-700 focus:border-blue-500/60 rounded-lg px-3 py-2 text-sm text-white outline-none"
-          >
-            <option value="">- use server default -</option>
-            {availableModels.map(m => (
-              <option key={m.value} value={m.value}>{m.label}</option>
-            ))}
-          </select>
-        </div>
+// ── Tab: Guest Access ──────────────────────────────────────────────────────
 
-        {/* Allow model selection toggle */}
-        <div className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-gray-800/50 border border-gray-700">
-          <div>
-            <p className="text-sm text-gray-300">Allow model selection</p>
-            <p className="text-xs text-gray-500 mt-0.5">Users can switch models in the sidebar</p>
-          </div>
-          <button
-            onClick={() => { setAllowModelSelection(!allowModelSelection); saveControls(!allowModelSelection, allowRagToggle, defaultModel, defaultRagEnabled).then(ok => { if (!ok) setAllowModelSelection(allowModelSelection) }) }}
-            className={`w-10 h-5 rounded-full transition-colors relative flex-shrink-0 ${allowModelSelection ? 'bg-blue-600' : 'bg-gray-600'}`}
-          >
-            <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all duration-200 ${allowModelSelection ? 'left-5' : 'left-0.5'}`} />
-          </button>
-        </div>
+// Who may chat without signing in, and the operator's record that the host's
+// disk is encrypted. Both sat at the bottom of the System Prompt tab until
+// 2026-10-03, below the chat suggestions - a security control where nobody
+// looking for one would look.
+export function GuestAccessTab({ api, headers }: { api: string; headers: () => Record<string, string> }) {
+  const [loading, setLoading] = useState(true)
+  // Starts CLOSED and is corrected by /api/config. It started ON, so a failed
+  // read drew guests as allowed on an instance that refuses them - a control
+  // panel lying about a control is worse than one that is absent.
+  const [guestChatEnabled, setGuestChatEnabled] = useState(false)
+  // null until the read answers: neither sentence about the host's half is
+  // true before then.
+  const [guestEnvAllowed, setGuestEnvAllowed] = useState<boolean | null>(null)
+  const [loaded, setLoaded] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [encryptionVerified, setEncryptionVerified] = useState(false)
+  const { guardedPatch, saveErr, setSaveErr } = useGuardedPatch(api, headers)
 
-        {/* Default RAG */}
-        <div className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-gray-800/50 border border-gray-700">
-          <div>
-            <p className="text-sm text-gray-300">RAG enabled by default</p>
-            <p className="text-xs text-gray-500 mt-0.5">Knowledge base active for all new conversations</p>
-          </div>
-          <button
-            onClick={() => { setDefaultRagEnabled(!defaultRagEnabled); saveControls(allowModelSelection, allowRagToggle, defaultModel, !defaultRagEnabled).then(ok => { if (!ok) setDefaultRagEnabled(defaultRagEnabled) }) }}
-            className={`w-10 h-5 rounded-full transition-colors relative flex-shrink-0 ${defaultRagEnabled ? 'bg-blue-600' : 'bg-gray-600'}`}
-          >
-            <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all duration-200 ${defaultRagEnabled ? 'left-5' : 'left-0.5'}`} />
-          </button>
-        </div>
+  useEffect(() => {
+    guardedJson<{ guest_mode_configured?: boolean; guest_mode_env_allowed?: boolean }>(
+      fetch(`${api}/api/config`, { headers: headers() }), 'Loading settings')
+      .then(d => {
+        if (d) {
+          // The STORED half, not the effective one. This switch edits the
+          // row; binding it to `guest_mode_enabled` (which is env AND row)
+          // meant a save wrote the AND back and erased a deliberate setting
+          // whenever the env half was off.
+          if (d.guest_mode_configured !== undefined) setGuestChatEnabled(d.guest_mode_configured)
+          if (d.guest_mode_env_allowed !== undefined) setGuestEnvAllowed(d.guest_mode_env_allowed)
+          setLoaded(true)
+        }
+        setLoading(false)
+      })
+    guardedJson<{ encryption_verified?: boolean }>(
+      fetch(`${api}/api/admin/context`, { headers: headers() }), 'Loading context settings')
+      .then(d => { if (d) setEncryptionVerified(!!d.encryption_verified) })
+  }, [])
 
-        {/* Allow RAG toggle */}
-        <div className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-gray-800/50 border border-gray-700">
-          <div>
-            <p className="text-sm text-gray-300">Allow RAG toggle</p>
-            <p className="text-xs text-gray-500 mt-0.5">Users can enable/disable knowledge base in the sidebar</p>
-          </div>
-          <button
-            onClick={() => { setAllowRagToggle(!allowRagToggle); saveControls(allowModelSelection, !allowRagToggle, defaultModel, defaultRagEnabled).then(ok => { if (!ok) setAllowRagToggle(allowRagToggle) }) }}
-            className={`w-10 h-5 rounded-full transition-colors relative flex-shrink-0 ${allowRagToggle ? 'bg-blue-600' : 'bg-gray-600'}`}
-          >
-            <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all duration-200 ${allowRagToggle ? 'left-5' : 'left-0.5'}`} />
-          </button>
-        </div>
+  // Sends guest_mode_enabled and nothing else. Before the split every chat
+  // control's save carried it, so flipping retrieval rewrote the guest row.
+  const flipGuest = () => {
+    if (!loaded) { setSaveErr(NEVER_LOADED); return }
+    const cur = guestChatEnabled
+    setGuestChatEnabled(!cur)
+    guardedPatch('/api/admin/config', { guest_mode_enabled: !cur }).then(ok => {
+      if (!ok) { setGuestChatEnabled(cur); return }
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    })
+  }
 
-        <div className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-gray-800/50 border border-gray-700">
-          <div>
-            <p className="text-sm text-gray-300">Guest access</p>
-            <p className="text-xs text-gray-500 mt-0.5">
-              Allow unauthenticated chat; when off, visitors get the sign-in wall.
-              This is the admin half of a double gate.
-              {guestEnvAllowed
-                ? ' The host has set ALLOW_GUEST_MODE=true, so this control decides.'
-                : ' The host has NOT set ALLOW_GUEST_MODE=true, so guests stay refused whatever this says - your setting is stored and takes effect if that changes.'}
-            </p>
-          </div>
-          <button
-            onClick={() => { setGuestChatEnabled(!guestChatEnabled); saveControls(allowModelSelection, allowRagToggle, defaultModel, defaultRagEnabled, !guestChatEnabled).then(ok => { if (!ok) setGuestChatEnabled(guestChatEnabled) }) }}
-            className={`w-10 h-5 rounded-full transition-colors relative flex-shrink-0 ${guestChatEnabled ? 'bg-blue-600' : 'bg-gray-600'}`}
-          >
-            <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all duration-200 ${guestChatEnabled ? 'left-5' : 'left-0.5'}`} />
-          </button>
-        </div>
+  if (loading) return <p className="text-xs text-gray-500">Loading…</p>
 
-        <div className="flex items-center justify-end gap-3 pt-1">
-          {controlsSaved && <span className="text-xs text-green-400">Saved</span>}
-          <button
-            onClick={() => saveControls()}
-            className="px-5 py-2 rounded-lg text-sm font-medium transition-colors"
-            style={{ backgroundColor: PRIMARY_COLOR }}
-          >
-            Save Controls
-          </button>
-        </div>
+  return (
+    <div className="space-y-6">
+      <SaveErrorLine text={saveErr} />
+      <div className="space-y-3">
+        <SwitchRow
+          label="Guest access"
+          desc={<>
+            Allow unauthenticated chat; when off, visitors get the sign-in wall.
+            This is the admin half of a double gate.
+            {guestEnvAllowed === true && ' The host has set ALLOW_GUEST_MODE=true, so this control decides.'}
+            {guestEnvAllowed === false && ' The host has NOT set ALLOW_GUEST_MODE=true, so guests stay refused whatever this says - your setting is stored and takes effect if that changes.'}
+          </>}
+          on={guestChatEnabled}
+          onToggle={flipGuest}
+        />
+        {saved && <p className="text-xs text-green-400 text-right">Saved</p>}
       </div>
 
       {/* Encryption at rest */}
@@ -2145,7 +2206,9 @@ interface ProviderSettings {
   rag_similarity_threshold: number
 }
 
-function SettingsTab({ api, headers }: { api: string; headers: () => Record<string, string> }) {
+export function SettingsTab({ api, headers, goToModels }: {
+  api: string; headers: () => Record<string, string>; goToModels?: () => void
+}) {
   const stepUp = useStepUp()
   const [settings, setSettings] = useState<ProviderSettings | null>(null)
   const [ollamaEnabled, setOllamaEnabled] = useState(false)
@@ -2154,7 +2217,6 @@ function SettingsTab({ api, headers }: { api: string; headers: () => Record<stri
   const [ollamaBase, setOllamaBase] = useState('')
   const [anthropicKey, setAnthropicKey] = useState('')
   const [openaiKey, setOpenaiKey] = useState('')
-  const [defaultModel, setDefaultModel] = useState('')
   const [ragThreshold, setRagThreshold] = useState('0.40')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -2186,7 +2248,6 @@ function SettingsTab({ api, headers }: { api: string; headers: () => Record<stri
         setOllamaBase(d.ollama_base_url)
         setAnthropicKey('')
         setOpenaiKey('')
-        setDefaultModel(d.default_model)
         setRagThreshold(String(d.rag_similarity_threshold))
       })
       .catch(() => setError('Failed to load settings'))
@@ -2211,7 +2272,8 @@ function SettingsTab({ api, headers }: { api: string; headers: () => Record<stri
         anthropic_enabled: anthropicEnabled,
         openai_enabled: openaiEnabled,
         ollama_base_url: ollamaBase,
-        default_model: defaultModel,
+        // No default_model: Models owns it (2026-10-03), and the server
+        // leaves an omitted key as it is.
         // NOT `parseFloat(x) || 0.4`. Zero is a legitimate threshold, the input
         // advertises min="0", and `0 || 0.4` is 0.4 - so typing 0 silently sent
         // 0.4 while the field went on displaying 0. Validated above instead.
@@ -2332,18 +2394,10 @@ function SettingsTab({ api, headers }: { api: string; headers: () => Record<stri
         </div>
       </section>
 
-      {/* Default model */}
+      {/* Default model - shown here, set in Models */}
       <section className="space-y-3">
         <p className="text-xs text-gray-400 font-medium uppercase tracking-widest">Default Model</p>
-        <div>
-          <input
-            value={defaultModel}
-            onChange={e => setDefaultModel(e.target.value)}
-            placeholder="e.g. claude-sonnet-4-6 or qwen2.5-coder:32b"
-            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-500 font-mono"
-          />
-          <p className="text-xs text-gray-600 mt-1">Used when no model is specified in the chat request.</p>
-        </div>
+        <DefaultModelPointer model={settings.default_model} goToModels={goToModels} />
       </section>
 
       {/* API Keys */}
@@ -2418,7 +2472,7 @@ function SettingsTab({ api, headers }: { api: string; headers: () => Record<stri
 
 // ── AdminPanel ─────────────────────────────────────────────────────────────
 
-type Tab = 'trust' | 'users' | 'kb' | 'quarantine' | 'prompt' | 'models' | 'audit' | 'monitoring' | 'backup' | 'queue' | 'settings'
+type Tab = 'trust' | 'users' | 'kb' | 'quarantine' | 'prompt' | 'chat' | 'guest' | 'models' | 'audit' | 'monitoring' | 'backup' | 'queue' | 'settings'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'trust', label: 'Trust' },
@@ -2427,6 +2481,8 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'kb', label: 'Knowledge Base' },
   { id: 'quarantine', label: 'Quarantine' },
   { id: 'prompt', label: 'System Prompt' },
+  { id: 'chat', label: 'Chat Controls' },
+  { id: 'guest', label: 'Guest Access' },
   { id: 'models', label: 'Models' },
   { id: 'audit', label: 'Audit Log' },
   { id: 'monitoring', label: 'Monitoring' },
@@ -2440,8 +2496,8 @@ const TABS: { id: Tab; label: string }[] = [
 const TAB_GROUPS: { label: string | null; tabs: Tab[] }[] = [
   { label: null, tabs: ['trust'] },
   { label: 'Content', tabs: ['kb', 'quarantine', 'prompt', 'queue'] },
-  { label: 'Ops', tabs: ['settings', 'models', 'monitoring', 'backup'] },
-  { label: 'Security', tabs: ['users', 'audit'] },
+  { label: 'Ops', tabs: ['settings', 'models', 'chat', 'monitoring', 'backup'] },
+  { label: 'Security', tabs: ['users', 'guest', 'audit'] },
 ]
 
 export default function AdminPanel({ api, headers, currentUser, onClose, onLogout }: AdminPanelProps) {
@@ -2504,11 +2560,13 @@ export default function AdminPanel({ api, headers, currentUser, onClose, onLogou
         </h1>
         <fieldset className="border-0 p-0 m-0 min-w-0">
         {tab === 'trust'      && <TrustTab api={api} headers={headers} currentUser={currentUser} />}
-        {tab === 'settings'   && <SettingsTab api={api} headers={headers} />}
+        {tab === 'settings'   && <SettingsTab api={api} headers={headers} goToModels={() => setTab('models')} />}
         {tab === 'users'      && <UsersTab api={api} headers={headers} />}
         {tab === 'kb'         && <KBManage api={api} headers={headers} />}
         {tab === 'quarantine' && <QuarantineTab api={api} headers={headers} currentUser={currentUser} />}
         {tab === 'prompt'     && <SystemPromptTab api={api} headers={headers} />}
+        {tab === 'chat'       && <ChatControlsTab api={api} headers={headers} goToModels={() => setTab('models')} />}
+        {tab === 'guest'      && <GuestAccessTab api={api} headers={headers} />}
         {tab === 'models'     && <ModelsTab api={api} headers={headers} />}
         {tab === 'audit'      && <AuditTab api={api} headers={headers} />}
         {tab === 'monitoring' && <MonitoringTab api={api} headers={headers} />}

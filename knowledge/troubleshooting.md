@@ -16,8 +16,8 @@ back instead of them.
 
 The instance is working as designed: it is private by default. Sign in, or
 if you intend anonymous access, enable guest mode BOTH ways - the
-ALLOW_GUEST_MODE=true host environment variable AND the guest toggle in
-admin config. Either one alone keeps the instance closed.
+ALLOW_GUEST_MODE=true host environment variable AND the switch on the admin
+panel's Guest Access tab. Either one alone keeps the instance closed.
 
 ## "Guest limit reached (N messages). Sign in to continue chatting."
 

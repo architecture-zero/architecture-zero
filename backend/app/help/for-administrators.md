@@ -9,15 +9,17 @@ Sign in as an owner or administrator and click Admin at the top of the page. The
 - Trust: the live evaluation numbers behind the public Trust page.
 - Knowledge Base: every ingested document with its department and passage count; upload new documents; remove old ones.
 - Quarantine: uploads withheld by the injection scan. Administrators can review the list; releasing an item is the owner's call.
-- System Prompt: the assistant's standing instructions.
+- System Prompt: the assistant's standing instructions, and the suggestions shown on an empty chat.
 - Ingestion Queue: background ingest jobs, when they are enabled.
-- Settings: guest access, the retrieval default and its switch, whether people may pick a model, branding and the welcome suggestions.
-- Models: which model answers chat and which ones run the evaluations.
+- Settings: the model providers, their API keys, the local model server's address and the retrieval threshold.
+- Models: the default model (set here and nowhere else), which model answers chat and which ones run the evaluations.
+- Chat Controls: what happens when a conversation runs long, whether retrieval is on by default and whether people may switch it, and whether people may pick a model.
 - Monitoring and Backup: health, alerts and backups.
 - Users: accounts, roles, departments, per-account permissions, unlocking and MFA reset.
+- Guest Access: the guest switch, and the record that the host's disk is encrypted.
 - Audit Log: every question answered, who asked and which documents were used.
 
-Settings, Models, Monitoring, Backup and the Audit Log belong to the owner. An administrator runs the content and people tabs.
+The System Prompt, Settings, Models, Chat Controls, Guest Access, Monitoring, Backup and the Audit Log belong to the owner. An administrator runs the Knowledge Base, Quarantine, Ingestion Queue and Users tabs.
 
 ## Roles
 
@@ -40,7 +42,7 @@ Users, then create the account with a username, a password, a role and a departm
 
 ## Guest access
 
-Off by default: visitors see the sign-in screen. Opening it takes two switches: ALLOW_GUEST_MODE in the server environment and the guest toggle under Settings. Guests are bounded per conversation (GUEST_MAX_TURNS), per answer (GUEST_MAX_TOKENS), per request (GUEST_MAX_INPUT_CHARS) and per day across everyone (DEMO_DAILY_GUEST_LIMIT), and they always answer with the instance's default model, or the one GUEST_MODEL names, never one the request picks.
+Off by default: visitors see the sign-in screen. Opening it takes two switches: ALLOW_GUEST_MODE in the server environment and the switch on the Guest Access tab. Guests are bounded per conversation (GUEST_MAX_TURNS), per answer (GUEST_MAX_TOKENS), per request (GUEST_MAX_INPUT_CHARS) and per day across everyone (DEMO_DAILY_GUEST_LIMIT), and they always answer with the instance's default model, or the one GUEST_MODEL names, never one the request picks.
 
 ## Help pages
 
