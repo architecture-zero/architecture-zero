@@ -26,7 +26,7 @@ Under an answer you can also click Copy, rate it with the thumbs up and thumbs d
 ## The left panel
 
 - New Chat starts a fresh conversation.
-- History lists your earlier conversations when you are signed in. The X next to a conversation deletes it.
+- History lists your earlier conversations when you are signed in, grouped by when you last used them: Today, Last 7 days, Older. The pencil next to a conversation renames it (Enter saves, Escape cancels); the X deletes it, after asking once.
 - A model list appears when your administrator lets people choose which AI model answers.
 - Knowledge Base is a switch: on, answers are grounded in the documents; off, the assistant answers from general knowledge and says so. Your administrator can hide this switch, or set the instance to answer from documents only.
 

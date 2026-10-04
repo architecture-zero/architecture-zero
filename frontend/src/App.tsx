@@ -5,6 +5,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import Login from './Login'
 import AdminPanel from './AdminPanel'
+import HistoryList from './HistoryList'
 import Profile from './Profile'
 import { ErrorSurface, actionError, emitError, guardedJson, guardedPoll } from './errorSurface'
 
@@ -55,6 +56,11 @@ interface ChatMessage {
 interface SessionEntry {
   session: string
   first_message?: string
+  // The conversation's name (renamed in the sidebar, or the template's
+  // auto-name from its first prompt) and its last activity, which the list
+  // groups by (2026-10-03).
+  name?: string | null
+  last_at?: string | null
 }
 
 interface SysStatus {
@@ -1028,9 +1034,16 @@ export default function App() {
     setMessages([])
   }
 
-  const deleteSession = async (id: string) => {
+  // Reads the answer (2026-10-03). The row used to go whatever the server said,
+  // so a refused delete - an expired session, a 5xx - came back on the next
+  // poll as though the click had never happened. Resolves true only on a 2xx,
+  // which is what the History list's confirm waits for.
+  const deleteSession = async (id: string): Promise<boolean> => {
     if (id === sessionId) abandonStream()
-    await fetch(`${API}/api/history/${id}`, { method: 'DELETE', headers: authHeaders() })
+    const err = await actionError(
+      fetch(`${API}/api/history/${encodeURIComponent(id)}`, { method: 'DELETE', headers: authHeaders() }),
+      'Deleting the conversation')
+    if (err) { emitError(err); return false }
     setSessionList(prev => prev.filter(s => s.session !== id))
     if (id === sessionId) {
       const newId = crypto.randomUUID()
@@ -1038,6 +1051,20 @@ export default function App() {
       setSessionId(newId)
       setMessages([])
     }
+    return true
+  }
+
+  // The name the sidebar shows. Resolves true only when the server stored it;
+  // a refusal is a toast and the old name stays.
+  const renameSession = async (id: string, name: string): Promise<boolean> => {
+    const err = await actionError(fetch(`${API}/api/sessions/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ name }),
+    }), 'Renaming the conversation')
+    if (err) { emitError(err); return false }
+    setSessionList(prev => prev.map(s => (s.session === id ? { ...s, name } : s)))
+    return true
   }
 
   const handleFeedback = async (msgIndex: number, value: number) => {
@@ -1697,36 +1724,14 @@ export default function App() {
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-5">
             {!isGuest && sessionList.length > 0 && (
-              <div>
-                <p className="text-xs text-gray-500 uppercase tracking-widest mb-2 px-1">History</p>
-                <div className="space-y-0.5">
-                  {sessionList.map(s => (
-                    <div
-                      key={s.session}
-                      className={`group flex items-center rounded-lg text-xs transition-all ${
-                        s.session === sessionId ? '' : 'text-gray-400 hover:bg-gray-800 hover:text-white'
-                      }`}
-                      style={s.session === sessionId ? { backgroundColor: PRIMARY_COLOR, color: ON_PRIMARY } : {}}
-                    >
-                      <button
-                        onClick={() => switchSession(s.session)}
-                        className="flex-1 text-left px-3 py-2 truncate"
-                        title={s.first_message || 'Empty session'}
-                      >
-                        {(s.first_message || 'New conversation').slice(0, 36)}
-                        {(s.first_message || '').length > 36 ? '…' : ''}
-                      </button>
-                      <button
-                        onClick={() => deleteSession(s.session)}
-                        className="opacity-0 group-hover:opacity-100 pr-2 text-gray-500 hover:text-red-400 transition-all flex-shrink-0"
-                        title="Delete conversation"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <HistoryList
+                entries={sessionList}
+                activeId={sessionId}
+                activeStyle={{ backgroundColor: PRIMARY_COLOR, color: ON_PRIMARY }}
+                onSelect={id => switchSession(id)}
+                onRename={renameSession}
+                onDelete={deleteSession}
+              />
             )}
             {allowModelSelection && modelGroups.length > 0 && (
               <div className="space-y-3">

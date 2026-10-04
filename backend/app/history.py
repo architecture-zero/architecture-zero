@@ -81,16 +81,26 @@ def purge_anonymous_sessions(days: int) -> dict:
             text(f"SELECT COUNT(*) FROM ({stale})"), {"cutoff": cutoff}
         ).scalar() or 0
         if not sessions:
-            return {"sessions": 0, "messages": 0, "feedback": 0}
+            return {"sessions": 0, "messages": 0, "feedback": 0, "names": 0}
         feedback = db.execute(
             text(f"DELETE FROM feedback WHERE session_id IN ({stale})"),
+            {"cutoff": cutoff},
+        ).rowcount
+        # The names go too, and before the messages they are matched by
+        # (2026-10-03). A guest session's meta row is named from the guest's
+        # first prompt (the chat route's auto-name), so this purge kept the
+        # first 60 characters of every conversation it aged out.
+        names = db.execute(
+            text(f"DELETE FROM chat_sessions WHERE user_id IS NULL "
+                 f"AND session_id IN ({stale})"),
             {"cutoff": cutoff},
         ).rowcount
         messages = db.execute(
             text(f"DELETE FROM messages WHERE session IN ({stale})"),
             {"cutoff": cutoff},
         ).rowcount
-        return {"sessions": sessions, "messages": messages, "feedback": feedback}
+        return {"sessions": sessions, "messages": messages, "feedback": feedback,
+                "names": names}
 
 
 def _scope_meta(query, session_id: str, user_id: int | None):
@@ -174,6 +184,9 @@ def list_sessions(limit: int = 50, user_id: int | None = None,
             SELECT
                 session,
                 MIN(timestamp) AS started,
+                -- The sidebar groups by this (Today / Last 7 days / Older);
+                -- the order below already sorts by it, through MAX(id).
+                MAX(timestamp) AS last_at,
                 COUNT(*)       AS message_count,
                 (SELECT content FROM messages
                  WHERE session = m.session AND role = 'user' AND {own_sub}

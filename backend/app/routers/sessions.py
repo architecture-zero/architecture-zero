@@ -107,11 +107,29 @@ class SessionUpdateRequest(BaseModel):
     category: str | None = None
 
 
+# A conversation's name as the sidebar shows it (2026-10-03, when the client
+# began renaming): trimmed, never blank, and within the column's 300
+# characters. None still means "leave the name as it is".
+_NAME_MAX = 300
+
+
+def _clean_name(name: str | None) -> str | None:
+    if name is None:
+        return None
+    name = name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="A conversation name cannot be blank")
+    if len(name) > _NAME_MAX:
+        raise HTTPException(status_code=400,
+                            detail=f"A conversation name is at most {_NAME_MAX} characters")
+    return name
+
+
 @router.post("/api/sessions")
 def create_session(request: SessionCreateRequest,
                    current_user: dict = Depends(get_current_user)):
     uid = current_user["id"]
-    upsert_session_meta(request.session_id, name=request.name,
+    upsert_session_meta(request.session_id, name=_clean_name(request.name),
                         category=request.category, user_id=uid)
     return get_session_meta(request.session_id, uid) or {"session_id": request.session_id}
 
@@ -120,10 +138,17 @@ def create_session(request: SessionCreateRequest,
 def update_session(session_id: str, body: SessionUpdateRequest,
                    current_user: dict = Depends(get_current_user)):
     uid = current_user["id"]
-    meta = get_session_meta(session_id, uid)
-    if not meta:
-        raise HTTPException(status_code=404, detail="Session not found")
-    upsert_session_meta(session_id, name=body.name, category=body.category, user_id=uid)
+    name = _clean_name(body.name)
+    # A conversation the caller OWNS may have no meta row yet - the chat route
+    # names a session only on a first turn sent without history - and the
+    # sidebar lists every owned conversation, so a rename 404d on some of the
+    # rows it offered. Ownership is the messages' owner column, the same proof
+    # /api/feedback asks for; another account's id still finds nothing.
+    if not get_session_meta(session_id, uid):
+        from app.history import session_belongs_to
+        if not session_belongs_to(session_id, uid):
+            raise HTTPException(status_code=404, detail="Session not found")
+    upsert_session_meta(session_id, name=name, category=body.category, user_id=uid)
     return get_session_meta(session_id, uid)
 
 

@@ -78,6 +78,8 @@ interface Harness {
   // The trim's answer, held by the test when it wants a regenerate mid-trim.
   setTrim: (r: () => Response | Promise<Response>) => void
   setLogout: (r: () => Response | Promise<Response>) => void
+  // A conversation delete's answer (the History list's confirm, 2026-10-03).
+  setDelete: (r: () => Response | Promise<Response>) => void
 }
 
 /** A promise the test resolves by hand - a request held open. */
@@ -95,6 +97,7 @@ function installFetch(opts: { guestMode?: boolean } = {}): Harness {
   const histories: Record<string, () => Response | Promise<Response>> = {}
   let trimResponder: (() => Response | Promise<Response>) | null = null
   let logoutResponder: (() => Response | Promise<Response>) | null = null
+  let deleteResponder: (() => Response | Promise<Response>) | null = null
   let chatResponder: (init?: RequestInit) => Response | Promise<Response> = () =>
     new Response(sseStream([tok('hi'), DONE]).stream, { status: 200 })
 
@@ -133,7 +136,7 @@ function installFetch(opts: { guestMode?: boolean } = {}): Harness {
     }
     if (url.includes('/api/history/') && method === 'DELETE') {
       deletes.push(url)
-      return json({ status: 'ok' })
+      return deleteResponder ? deleteResponder() : json({ status: 'ok' })
     }
     if (url.includes('/api/history/')) {
       const session = decodeURIComponent(url.split('/api/history/')[1].split('?')[0])
@@ -153,6 +156,7 @@ function installFetch(opts: { guestMode?: boolean } = {}): Harness {
     setHistory: (session, r) => { histories[session] = r },
     setTrim: (r) => { trimResponder = r },
     setLogout: (r) => { logoutResponder = r },
+    setDelete: (r) => { deleteResponder = r },
   }
 }
 
@@ -612,5 +616,34 @@ describe('identity transitions (the 2026-10-02 defensive read)', () => {
     // Only the original turn was ever posted - never the signed-out account's
     // turn again, with or without its token.
     expect(h.chatBodies).toHaveLength(1)
+  })
+})
+
+describe('deleting a conversation from the History list (2026-10-03)', () => {
+  // The row used to go whatever the server said, so a refused delete came back
+  // on the next poll as though the click had never happened.
+  it('a refused delete keeps the conversation listed and says why', async () => {
+    h.setSessions([{ session: 'older-session', first_message: 'The older chat' }])
+    h.setDelete(() => new Response(JSON.stringify({ detail: 'nope' }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    }))
+    await signedInApp()
+    await screen.findByText('The older chat')
+    fireEvent.click(screen.getByRole('button', { name: 'Delete conversation' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(h.deletes).toHaveLength(1))
+    expect(await screen.findByText(/Deleting the conversation failed: nope/)).toBeInTheDocument()
+    expect(screen.getByText('The older chat')).toBeInTheDocument()
+  })
+
+  it('an accepted delete takes it off the list', async () => {
+    h.setSessions([{ session: 'older-session', first_message: 'The older chat' }])
+    await signedInApp()
+    await screen.findByText('The older chat')
+    fireEvent.click(screen.getByRole('button', { name: 'Delete conversation' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(screen.queryByText('The older chat')).toBeNull())
+    expect(h.deletes).toHaveLength(1)
+    expect(h.deletes[0]).toContain('/api/history/older-session')
   })
 })

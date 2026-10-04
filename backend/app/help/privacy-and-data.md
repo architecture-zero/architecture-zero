@@ -11,7 +11,7 @@ The documents themselves stay on the instance's server in both cases. Guests see
 
 ## What is stored
 
-- Your conversations, under your account, so you can return to them from History. Delete one with the X next to it in the History list.
+- Your conversations, under your account, so you can return to them from History, and the name each one carries. Delete one with the X next to it in the History list; its name goes with it.
 - A record of each question for the instance's owner (the audit log): who asked, when, which documents were used, the first 200 characters of the question, and how long the answer took. This is how a wrong answer or an access question gets investigated.
 - The ratings you give with thumbs up and thumbs down.
 

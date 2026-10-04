@@ -35,9 +35,9 @@ from app.audit import log_audit_entry
 from app.closing_stream import ClosingStreamingResponse
 from app.config import get_config, get_system_prompt
 from app.database import query_similar, list_departments, HELP_DEPARTMENT
-from app.history import (save_message, load_history, clear_session,
+from app.history import (save_message, load_history,
                          delete_tail_messages, upsert_session_meta,
-                         get_session_meta)
+                         get_session_meta, delete_session_meta)
 from app.jwt_auth import get_current_user
 from app.logger import log, log_error
 from app.metrics import increment, record_request
@@ -280,7 +280,11 @@ def get_history(session_id: str, current_user: dict = Depends(get_current_user))
 
 @router.delete("/api/history/{session_id}")
 def delete_history(session_id: str, current_user: dict = Depends(get_current_user)):
-    clear_session(session_id, current_user["id"])
+    # The conversation's NAME goes with its messages (2026-10-03). This cleared
+    # the messages alone, so the meta row - named from the conversation's first
+    # prompt by the chat route - outlived every conversation a user deleted.
+    # Owner-scoped like the messages: a guessed id deletes nothing of anyone's.
+    delete_session_meta(session_id, current_user["id"])
     return {"status": "cleared", "session_id": session_id}
 
 
