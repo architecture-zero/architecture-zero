@@ -27,8 +27,11 @@ review queue (GET /api/admin/kb/quarantine) with the exact findings listed.
 Releasing is an Owner-only trust decision: the document re-ingests with
 the block waived but the injection tag preserved, so it stays visibly
 flagged and its content is still handled as data, never instructions.
-Deleting discards it. If the same source later re-ingests normally, stale
-held rows are marked superseded rather than silently lingering.
+Deleting discards it. When a file with the same name is uploaded again to
+the same department and indexes cleanly, the earlier held copy leaves the
+queue as superseded - releasing it later would put the old text back over
+the new one. Only uploads do this, direct or queued; a re-ingest through
+POST /api/ingest leaves an earlier hold of the same source in the queue.
 
 ## Retrieved content is data, not instructions
 
