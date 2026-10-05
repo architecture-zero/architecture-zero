@@ -73,8 +73,9 @@ on a day you update twice - is right once and wrong the next time.)
 
 Stop first, and copy before you pull. The copy is the only way back - see
 "Going back" below - and it is only whole while nothing is writing: the
-databases run in WAL mode and the vector index flushes its tail on a graceful
-stop. Keep `JWT_SECRET_KEY` as it is in `.env`; it is also the key the secrets
+application database runs in WAL mode (its newest commits sit in the -wal file
+until a checkpoint), the vector store's database does not, and the vector
+index flushes its tail on a graceful stop. Keep `JWT_SECRET_KEY` as it is in `.env`; it is also the key the secrets
 in the database are encrypted under.
 
 On its first boot the new version brings the database up to its own shape,
