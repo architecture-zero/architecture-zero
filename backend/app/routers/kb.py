@@ -19,11 +19,13 @@ import json
 import hashlib
 import logging
 import pathlib
+import threading
 import datetime as _dt
 
 from fastapi import (APIRouter, Depends, File, Form, HTTPException, Query,
                      UploadFile)
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from app import jobs
 from app.chunking import chunk_plain
@@ -396,7 +398,32 @@ async def upload_file(
             await file.close()
             raise HTTPException(status_code=413, detail=f"File too large (max {MAX_UPLOAD_MB} MB)")
     data = bytes(buf)
+    # OFF THE EVENT LOOP (2026-10-04). This route is async for the body read
+    # above, and an async route runs ON the event loop - so everything after
+    # the read ran there too: extraction, the scans, and the embed loop, one
+    # model call per chunk. One large upload stalled every other request on
+    # the process until its last chunk landed (measured that day on an
+    # instance running this handler's shape: a file watcher re-ingesting 207
+    # chunks left /api/health unanswered for ~22 minutes). The read stays here
+    # because it awaits; the rest runs on a worker thread.
+    return await run_in_threadpool(_ingest_upload, name, ext, data, department,
+                                   current_user)
 
+
+# One upload writes at a time. On the event loop they were serialized by
+# accident - a blocked loop runs one handler - and off it, two at once would
+# interleave their set diffs against the same index: one prunes what the
+# other just added. The queued path is serial by its single worker
+# (app/jobs.py); this is the same rule for the synchronous one. Extraction and
+# the scans run outside it - they touch no index.
+_UPLOAD_WRITE_LOCK = threading.Lock()
+
+
+def _ingest_upload(name: str, ext: str, data: bytes, department: str,
+                   current_user: dict) -> dict:
+    """Everything upload_file does after the body is read, on a worker thread.
+    What it answers - the quarantine row, an HTTPException, the queued or the
+    ingested payload - reaches the caller unchanged through run_in_threadpool."""
     # Shared extractor - a file type behaves identically whether it arrives
     # by upload or any future batch path.
     from app.text_extract import ExtractError, extract_text
@@ -501,36 +528,39 @@ async def upload_file(
         doc_id = hashlib.md5(f"{department}::{name}::{chunk}".encode(),
                              usedforsecurity=False).hexdigest()
         desired.setdefault(doc_id, (i, chunk))
-    existing = set(get_source_ids(name, department))
-    try:
-        for doc_id, (i, chunk) in desired.items():
-            if doc_id in existing:
-                continue
-            add_document(doc_id, chunk, {"source": name, "chunk": i, **chunk_meta},
-                         department=department)
-    except corpus_scan.QuarantinedContent as q:
-        # Backstop for a pattern that anchors at a chunk boundary and fires
-        # chunk-level-only: drop what this upload added and quarantine the
-        # WHOLE document (full text, not the chunk) instead of 500ing mid-loop.
-        # The previous version stays indexed - nothing was deleted.
-        added = [d for d in desired if d not in existing]
-        if added:
-            delete_documents(added, department)
-        return _write_quarantine_row(name, department, q.trust_tier, text,
-                                     q.findings)
-    # Every chunk of the new version is indexed. Only now do the chunks that
-    # this version no longer contains get dropped.
-    stale = sorted(existing - desired.keys())
-    if stale:
-        delete_documents(stale, department)
-    # The new version is live, so an earlier upload of this file still held
-    # for review is a stale snapshot - releasing it would put the old text
-    # back over this one. It leaves the queue as superseded. Bookkeeping: the
-    # upload IS indexed, so a failure here is logged, never this upload's error.
-    try:
-        resolve_moot_holds(name, department)
-    except Exception as e:
-        log_error("quarantine_supersede_failed", source=name, error=str(e))
+    with _UPLOAD_WRITE_LOCK:
+        existing = set(get_source_ids(name, department))
+        try:
+            for doc_id, (i, chunk) in desired.items():
+                if doc_id in existing:
+                    continue
+                add_document(doc_id, chunk, {"source": name, "chunk": i, **chunk_meta},
+                             department=department)
+        except corpus_scan.QuarantinedContent as q:
+            # Backstop for a pattern that anchors at a chunk boundary and fires
+            # chunk-level-only: drop what this upload added and quarantine the
+            # WHOLE document (full text, not the chunk) instead of 500ing
+            # mid-loop. The previous version stays indexed - nothing was
+            # deleted.
+            added = [d for d in desired if d not in existing]
+            if added:
+                delete_documents(added, department)
+            return _write_quarantine_row(name, department, q.trust_tier, text,
+                                         q.findings)
+        # Every chunk of the new version is indexed. Only now do the chunks
+        # that this version no longer contains get dropped.
+        stale = sorted(existing - desired.keys())
+        if stale:
+            delete_documents(stale, department)
+        # The new version is live, so an earlier upload of this file still
+        # held for review is a stale snapshot - releasing it would put the old
+        # text back over this one. It leaves the queue as superseded.
+        # Bookkeeping: the upload IS indexed, so a failure here is logged,
+        # never this upload's error.
+        try:
+            resolve_moot_holds(name, department)
+        except Exception as e:
+            log_error("quarantine_supersede_failed", source=name, error=str(e))
 
     increment("ingest_total")
     log("ingest_upload", source=name, chunks=len(chunks), ext=ext, department=department)

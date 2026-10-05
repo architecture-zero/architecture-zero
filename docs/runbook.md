@@ -280,7 +280,9 @@ By default an upload is indexed inside the request: `POST /api/ingest/upload`
 returns once the document is chunked and embedded. On a large file over a slow
 embedding backend that is a long-held connection, and a proxy timing out in
 front of it turns a working ingest into an error the caller cannot tell apart
-from a failure.
+from a failure. The work runs on a worker thread, so a long ingest holds only
+its own connection - the rest of the API keeps answering - and uploads write
+to the index one at a time.
 
 Set `ENABLE_ASYNC_JOBS=true` to queue instead. The upload then returns
 immediately with `{"status": "queued", "job_id": ...}` and a worker thread does
