@@ -139,11 +139,22 @@ jobs:
           # unvalidated, which matters to anyone putting path-based rules in a
           # proxy in front of this. The rest are denial-of-service shapes on
           # the same surface.
+          #
+          # ACCEPTED (triaged 2026-10-05) - CVE-2026-85394, python-jose through
+          # 3.5.0: an HS256 token verified against a DER-encoded PUBLIC key when
+          # the decode call leaves its algorithms open (an incomplete fix for
+          # CVE-2024-33663). No fixed release exists. Not exercised here: every
+          # jwt.decode pins exactly one algorithm - HS256 with the server's own
+          # SECRET_KEY, or RS256 with a sign-in provider's fetched key - so a forged
+          # HS256 token never meets a public key. Pinned by
+          # backend/tests/test_jwt_algorithms_pinned.py rather than by this comment;
+          # re-triage the day it fails, or when python-jose ships a fixed release.
           ignore-vulns: |
             CVE-2026-45830
             CVE-2026-45831
             CVE-2026-45833
             PYSEC-2026-1325
+            CVE-2026-85394
             CVE-2025-54121
             CVE-2025-62727
             CVE-2026-48817
