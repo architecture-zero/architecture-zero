@@ -38,7 +38,7 @@ from app.database import query_similar, list_departments, HELP_DEPARTMENT
 from app.history import (save_message, load_history,
                          delete_tail_messages, upsert_session_meta,
                          get_session_meta, delete_session_meta)
-from app.jwt_auth import get_current_user
+from app.jwt_auth import check_permission, require_permission
 from app.logger import log, log_error
 from app.metrics import increment, record_request
 from app.peers import get_peers, query_peer_kb
@@ -270,8 +270,15 @@ def query_kb_for_peer(req: Request, q: str, n: int = Query(8, ge=1, le=20)):
     return {"results": results}
 
 
+# The history routes ask for the scope the taxonomy names for them (AZ-03,
+# 2026-10-07): view_history to read, rename or remove past conversations -
+# /api/sessions/mine already asked for it, so the list refused an account the
+# conversation itself still answered - and chat for the tail delete, which is
+# the chat's own regenerate step. Owner-scoping is unchanged underneath.
+
 @router.get("/api/history/{session_id}")
-def get_history(session_id: str, current_user: dict = Depends(get_current_user)):
+def get_history(session_id: str,
+                current_user: dict = Depends(require_permission("view_history"))):
     # Owner-scoped: private per-user history requires auth AND only returns
     # the caller's own rows - a guessed session id reads nothing.
     return {"session_id": session_id,
@@ -279,7 +286,8 @@ def get_history(session_id: str, current_user: dict = Depends(get_current_user))
 
 
 @router.delete("/api/history/{session_id}")
-def delete_history(session_id: str, current_user: dict = Depends(get_current_user)):
+def delete_history(session_id: str,
+                   current_user: dict = Depends(require_permission("view_history"))):
     # The conversation's NAME goes with its messages (2026-10-03). This cleared
     # the messages alone, so the meta row - named from the conversation's first
     # prompt by the chat route - outlived every conversation a user deleted.
@@ -290,7 +298,7 @@ def delete_history(session_id: str, current_user: dict = Depends(get_current_use
 
 @router.delete("/api/history/{session_id}/tail")
 def delete_history_tail(session_id: str, count: int = Query(1, ge=1),
-                        current_user: dict = Depends(get_current_user)):
+                        current_user: dict = Depends(require_permission("chat"))):
     # Report what was DELETED, not what was ASKED FOR - see delete_tail_messages.
     deleted = delete_tail_messages(session_id, count, current_user["id"])
     return {"status": "ok", "deleted": deleted, "requested": count}
@@ -476,6 +484,13 @@ def _chat_gates(request: ChatRequest, req: Request, current_user: dict | None) -
     # distributed traffic). Tuned high enough that real visitors never reach it.
     if current_user is None and DEMO_DAILY_GUEST_LIMIT > 0:
         check_daily_guest_budget(DEMO_DAILY_GUEST_LIMIT)
+
+    # THE NAMED PERMISSION, asked (AZ-03, outside review 2026-10-06; fixed
+    # 2026-10-07). "chat" is a scope the taxonomy defines and an operator can
+    # take away, and this route never asked for it - an account without it
+    # chatted anyway. A guest keeps its own policy above; the Owner passes.
+    if current_user is not None:
+        check_permission(current_user, "chat")
 
     record_request()
     increment("chat_requests_total")

@@ -237,9 +237,12 @@ REQUIRED_GUARD = {
     ("GET", "/api/health"): "public",
     ("GET", "/api/health/detailed"): "require_owner",
     ("GET", "/api/health/ready"): "public",
-    ("DELETE", "/api/history/{session_id}"): "get_current_user",
-    ("GET", "/api/history/{session_id}"): "get_current_user",
-    ("DELETE", "/api/history/{session_id}/tail"): "get_current_user",
+    # The scopes the taxonomy names for them (AZ-03, 2026-10-07): reading and
+    # removing past conversations is view_history; the tail delete is the
+    # chat's own regenerate step.
+    ("DELETE", "/api/history/{session_id}"): "require_permission:view_history",
+    ("GET", "/api/history/{session_id}"): "require_permission:view_history",
+    ("DELETE", "/api/history/{session_id}/tail"): "require_permission:chat",
     ("POST", "/api/ingest"): "require_permission:manage_kb",
     ("GET", "/api/ingest/departments"): "require_permission:manage_kb",
     ("DELETE", "/api/ingest/source/{source}"): "require_permission:manage_kb",
@@ -265,9 +268,9 @@ REQUIRED_GUARD = {
     # personal history list on the view_analytics route is how members got
     # 403 and operators got other people's conversations.
     ("GET", "/api/sessions/mine"): "require_permission:view_history",
-    ("POST", "/api/sessions"): "get_current_user",
-    ("DELETE", "/api/sessions/{session_id}"): "get_current_user",
-    ("PATCH", "/api/sessions/{session_id}"): "get_current_user",
+    ("POST", "/api/sessions"): "require_permission:chat",
+    ("DELETE", "/api/sessions/{session_id}"): "require_permission:view_history",
+    ("PATCH", "/api/sessions/{session_id}"): "require_permission:view_history",
     ("GET", "/api/settings"): "require_owner",
     ("PUT", "/api/settings"): "require_owner",
     ("GET", "/api/settings/test-ollama"): "require_owner",

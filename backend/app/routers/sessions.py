@@ -125,9 +125,12 @@ def _clean_name(name: str | None) -> str | None:
     return name
 
 
+# Each asks for the scope the taxonomy names (AZ-03, 2026-10-07): starting a
+# conversation is chatting; renaming or removing one is managing your history.
+
 @router.post("/api/sessions")
 def create_session(request: SessionCreateRequest,
-                   current_user: dict = Depends(get_current_user)):
+                   current_user: dict = Depends(require_permission("chat"))):
     uid = current_user["id"]
     upsert_session_meta(request.session_id, name=_clean_name(request.name),
                         category=request.category, user_id=uid)
@@ -136,7 +139,7 @@ def create_session(request: SessionCreateRequest,
 
 @router.patch("/api/sessions/{session_id}")
 def update_session(session_id: str, body: SessionUpdateRequest,
-                   current_user: dict = Depends(get_current_user)):
+                   current_user: dict = Depends(require_permission("view_history"))):
     uid = current_user["id"]
     name = _clean_name(body.name)
     # A conversation the caller OWNS may have no meta row yet - the chat route
@@ -153,6 +156,7 @@ def update_session(session_id: str, body: SessionUpdateRequest,
 
 
 @router.delete("/api/sessions/{session_id}")
-def remove_session(session_id: str, current_user: dict = Depends(get_current_user)):
+def remove_session(session_id: str,
+                   current_user: dict = Depends(require_permission("view_history"))):
     delete_session_meta(session_id, current_user["id"])
     return {"deleted": session_id}
