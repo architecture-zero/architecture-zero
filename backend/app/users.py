@@ -124,6 +124,59 @@ def owner_exists() -> bool:
                                      User.is_active == True).count() > 0  # noqa: E712
 
 
+CLAIM_MARKER = "setup:claimed"
+
+
+class ClaimLost(Exception):
+    """A concurrent claim committed the first Owner first."""
+
+
+def claim_first_owner(username: str, password_hash: str) -> int:
+    """Create the first Owner - exactly once (AZ-04, outside review 2026-10-06;
+    fixed 2026-10-07).
+
+    The setup route checked owner_exists(), verified the claim code, created
+    the account, then burned the code: separate steps with no single winner,
+    so two valid claims that both passed the check made two Owners - and the
+    code is minted per process, so on two workers there are two valid codes.
+    Now the Owner and a durable claim marker (the security_state row
+    CLAIM_MARKER) are written in ONE transaction, and the Owner check is
+    repeated inside it. The marker's primary key is the single winner, held
+    by the database across workers and restarts: the loser's insert fails and
+    its account rolls back with it.
+
+    The marker outlives the claim on purpose. A deployment whose Owners were
+    all removed by hand stays closed until the operator deletes the marker
+    too - claimed once is claimed. Raises ClaimLost to the loser, and
+    IntegrityError when the username is taken.
+    """
+    from sqlalchemy.exc import IntegrityError, OperationalError
+    from app.models import SecurityState
+    with get_session() as db:
+        if db.query(User).filter(User.role == "owner",
+                                 User.is_active == True).first():  # noqa: E712 - owner_exists()'s test
+            raise ClaimLost()
+        db.add(SecurityState(key=CLAIM_MARKER, version=1, expires_at=None,
+                             value=json.dumps({"claimed_at": datetime.now(timezone.utc).isoformat()})))
+        try:
+            db.flush()
+        except IntegrityError:
+            raise ClaimLost()
+        except OperationalError:
+            # SQLite: a claim committed after this transaction's first read,
+            # and a write cannot proceed on that stale snapshot. Lost to that
+            # claim if an Owner exists now; anything else is a real failure.
+            if owner_exists():
+                raise ClaimLost()
+            raise
+        user = User(username=username, password_hash=password_hash, role="owner",
+                    permissions="{}", department="general",
+                    created_at=datetime.utcnow().isoformat())
+        db.add(user)
+        db.flush()          # IntegrityError: the username is taken
+        return user.id
+
+
 def count_active_owners() -> int:
     """Active Owner accounts. Protects the LAST Owner: deactivating or
     demoting it would drop owner_exists() to false and re-open public setup."""
@@ -257,17 +310,51 @@ def _redis_delete_failed(where: str, err: Exception) -> None:
     log("refresh_redis_delete_failed", where=where, error=str(err)[:200])
 
 
-def revoke_refresh_token(token_hash: str):
+def rotate_refresh_token(old_hash: str, user_id: int, new_hash: str,
+                         new_expires_at: str) -> bool:
+    """Consume a live refresh token and store its successor - ONE authoritative
+    step (AZ-01, outside review 2026-10-06; fixed 2026-10-07).
+
+    The refresh route read the token, revoked it unconditionally, then minted
+    and stored a successor, so two requests that both read the live token
+    before either revoked it each got a successor: a single-use credential
+    yielded two, including when a stolen copy raced its owner. Now the consume
+    is one UPDATE whose WHERE requires the row to be live, unexpired and this
+    user's; only the request whose UPDATE changed the row (rowcount 1) stores a
+    successor, in the same transaction. The database decides - a cached record
+    is a lookup aid, never the authority. False tells the loser it lost: the
+    token was already consumed, which the caller treats as reuse."""
+    from sqlalchemy import update
+    now = datetime.now(timezone.utc).isoformat()
+    with get_session() as db:
+        won = db.execute(
+            update(RefreshToken)
+            .where(RefreshToken.token_hash == old_hash,
+                   RefreshToken.user_id == user_id,
+                   RefreshToken.revoked == False,  # noqa: E712
+                   RefreshToken.expires_at > now)
+            .values(revoked=True)).rowcount
+        if won != 1:
+            return False
+        db.add(RefreshToken(user_id=user_id, token_hash=new_hash,
+                            expires_at=new_expires_at))
     from app.redis_client import get_redis
     r = get_redis()
     if r:
         try:
-            r.delete(_rt_redis_key(token_hash))
+            r.delete(_rt_redis_key(old_hash))
         except Exception as e:
-            _redis_delete_failed("revoke_refresh_token", e)
-    with get_session() as db:
-        db.query(RefreshToken).filter(
-            RefreshToken.token_hash == token_hash).update({"revoked": True})
+            _redis_delete_failed("rotate_refresh_token", e)
+        try:
+            ttl = int((datetime.fromisoformat(new_expires_at)
+                       - datetime.now(timezone.utc)).total_seconds())
+            if ttl > 0:
+                r.setex(_rt_redis_key(new_hash), ttl,
+                        json.dumps({"user_id": user_id, "expires_at": new_expires_at,
+                                    "revoked": 0}))
+        except Exception:
+            pass
+    return True
 
 
 def get_refresh_token_any(token_hash: str) -> dict | None:

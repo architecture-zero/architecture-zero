@@ -249,7 +249,9 @@ ingests text, not images.
 
 These protections fire here by design: you cannot deactivate yourself or
 change your own role (another Owner does it), and the LAST active Owner can
-never be deactivated or demoted - removing it would re-open the public
-first-run setup endpoint to anyone. Create a second Owner first if you are
+never be deactivated or demoted - nothing could administer the deployment
+after it, and the first-run setup would not take a new Owner either: since
+2026-10-07 a claimed deployment stays claimed (a durable claim marker is
+written with the first Owner). Create a second Owner first if you are
 rotating the account. Setting a user to the role they already have changes
 nothing: it answers "unchanged" and leaves their explicit permissions alone.

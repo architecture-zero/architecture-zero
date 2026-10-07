@@ -54,13 +54,12 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   flag and setup turns, stamped on the run and added to the band key - the
   same move the corpus fingerprint already makes, one axis over. Until then
   a band can silently span two different exams.
-- **Refresh-token reuse detection - the larger half shipped 2026-09-10.** A
-  replayed rotated token now revokes the whole session family, logged and
-  counted, with the same 401 a garbage token gets (`SECURITY.md` states the
-  control). What remains is the smaller half: the read, the revoke and the
-  mint are still three steps rather than one, so two concurrent refreshes
-  from the same client can both observe a live token for an instant. Wants a
-  compare-and-revoke with a single-use guarantee.
+- ~~**Refresh-token reuse detection**~~ - SHIPPED in two halves: a replayed
+  rotated token revokes the whole session family (2026-09-10), and since
+  2026-10-07 the spend is one compare-and-revoke - a single database update
+  only a live token passes, with the successor stored in the same
+  transaction - so two concurrent refreshes of one token get one successor
+  and the loser is treated as the replay it is (`SECURITY.md` states both).
 - **Readiness that covers the retrieval dependencies** - `/api/health/ready`
   treats only the database as critical; the embedding provider, the vector
   store and the configured answering provider are unchecked or advisory. An

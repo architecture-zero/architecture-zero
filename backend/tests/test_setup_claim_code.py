@@ -120,14 +120,33 @@ def test_burned_code_stops_working_even_if_it_is_still_correct():
 def unclaimed(monkeypatch):
     """Reopen the claim window the session fixture already closed.
 
+    For real since 2026-10-07 (AZ-04): the claim re-checks for an Owner inside
+    its own transaction, so a patched owner_exists() no longer reopens
+    anything - which is the point; this fixture used to make a SECOND Owner
+    beside the suite's on every successful claim, the race itself. The suite's
+    Owner stands down to admin for the test and comes back after; Owners the
+    test made go. (The claim marker goes with the autouse state_store reset.)
+
     Yields the live code. Resets the burn flag on the way out, because a test
     that claims successfully would otherwise leave the gate shut for the next.
     """
-    monkeypatch.setattr(auth_route_mod, "owner_exists", lambda: False)
+    from app.db import get_session
+    from app.models import User
+    with get_session() as db:
+        owners = [u.id for u in db.query(User).filter(User.role == "owner").all()]
+        db.query(User).filter(User.id.in_(owners)).update(
+            {"role": "admin"}, synchronize_session=False)
     monkeypatch.setattr(security, "_claim_code", None)
     monkeypatch.setattr(security, "_claim_code_burned", False)
-    yield security.setup_claim_code()
-    security._claim_code_burned = False
+    try:
+        yield security.setup_claim_code()
+    finally:
+        with get_session() as db:
+            db.query(User).filter(User.role == "owner", User.id.notin_(owners)).delete(
+                synchronize_session=False)
+            db.query(User).filter(User.id.in_(owners)).update(
+                {"role": "owner"}, synchronize_session=False)
+        security._claim_code_burned = False
 
 
 def test_claim_without_the_code_is_refused(client, unclaimed):
@@ -187,16 +206,17 @@ def test_the_throttle_still_runs_first(client, unclaimed, monkeypatch):
     assert codes[-1] == 429
 
 
-def test_the_right_code_claims_the_deployment_and_burns(client, unclaimed):
+def test_the_right_code_claims_the_deployment_and_burns(client, unclaimed, monkeypatch):
     """The happy path, and the receipt that the code is single-use: the second
-    identical request fails on the burn, not on owner_exists (still patched
-    False by the fixture), so this proves the process-local half specifically."""
+    identical request fails on the burn, not on owner_exists (patched False
+    for it here), so this proves the process-local half specifically."""
     r = client.post("/api/auth/setup",
                     json={"username": "rightful", "password": "RightfulPass1",
                           "claim_code": unclaimed})
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "owner created"
 
+    monkeypatch.setattr(auth_route_mod, "owner_exists", lambda: False)
     again = client.post("/api/auth/setup",
                         json={"username": "second", "password": "SecondPass1",
                               "claim_code": unclaimed})

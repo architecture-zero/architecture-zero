@@ -45,8 +45,8 @@ from app.security import (check_setup_rate_limit, check_auth_rate_limit,
                           mark_mfa_pending, mfa_pending_live, clear_mfa_pending,
                           client_ip_from_request, verify_setup_claim_code,
                           burn_setup_claim_code)
-from app.users import (create_user, owner_exists, store_refresh_token,
-                       get_refresh_token, revoke_refresh_token,
+from app.users import (owner_exists, store_refresh_token,
+                       get_refresh_token,
                        revoke_all_user_tokens, get_user_by_id, set_mfa_secret,
                        enable_mfa, increment_failed_attempts,
                        reset_failed_attempts, lock_user, unlock_user,
@@ -481,10 +481,22 @@ def refresh(req: Request):
     # denied this BY ACCIDENT (it raised); the tolerant one must deny it on
     # purpose, and the family dies so the stale token cannot be retried.
     refuse_if_mfa_seed_stranded(user, "refresh", revoke_sessions=True)
-    revoke_refresh_token(hash_token(raw_token))
-    access_token = create_access_token(user["id"], user["username"], user["role"])
+    # ONE consume decides (AZ-01, 2026-10-07): only the request whose update
+    # changed the live row gets a successor. A request that read the same live
+    # token and lost presented a token already rotated - the reuse above, met
+    # at the same instant instead of later - and gets the same answer: every
+    # session in the family dies, the winner's new one included. Rotation
+    # security says so (a thief racing the owner must not keep a successor).
+    from app.users import rotate_refresh_token
     new_raw, expires_at = create_refresh_token(user["id"])
-    store_refresh_token(user["id"], hash_token(new_raw), expires_at)
+    if not rotate_refresh_token(hash_token(raw_token), user["id"],
+                                hash_token(new_raw), expires_at):
+        revoke_all_user_tokens(user["id"])
+        increment("auth_refresh_reuse_total")
+        log("refresh_token_reused", user_id=user["id"], token_id=record.get("id"),
+            race=True)
+        raise HTTPException(status_code=401, detail="Invalid or revoked refresh token")
+    access_token = create_access_token(user["id"], user["username"], user["role"])
     return {"access_token": access_token, "refresh_token": new_raw, "token_type": "bearer"}
 
 
@@ -704,9 +716,17 @@ def setup_admin(request: ClaimDeploymentRequest, req: Request):
     # surfaces as a 500 with a SQL traceback - an operator retyping an
     # existing name reads that as "the server is broken", not "pick another
     # name".
+    #
+    # ONE winner (AZ-04, 2026-10-07): the Owner and the durable claim marker
+    # commit together or not at all, and the Owner check is repeated inside
+    # that transaction - two valid claims racing past the check above used to
+    # make two Owners (users.claim_first_owner says how).
     from sqlalchemy.exc import IntegrityError
+    from app.users import ClaimLost, claim_first_owner
     try:
-        user_id = create_user(request.username, hash_password(request.password), role="owner")
+        user_id = claim_first_owner(request.username, hash_password(request.password))
+    except ClaimLost:
+        raise HTTPException(status_code=403, detail="Owner already exists")
     except IntegrityError:
         raise HTTPException(status_code=409, detail="That username is already taken")
     # Burned only after the user row exists: a failed create means the claim did

@@ -77,10 +77,23 @@ def test_garbage_refresh_token_revokes_nothing(client, admin_headers):
     assert still.status_code == 200, "an unrelated 401 revoked a live session"
 
 
-def test_a_failed_redis_delete_on_revocation_is_logged_not_swallowed(monkeypatch):
-    """The one condition under which a revoked token keeps working for its
-    cache TTL: the Redis key survives the revoke. It must at least be loud."""
+def test_a_failed_redis_delete_on_rotation_is_logged_not_swallowed(client, monkeypatch):
+    """The condition under which a consumed token's cache entry outlives it:
+    the Redis key survives the rotation. The database consume still refuses it
+    (AZ-01), but the stale entry must at least be loud. (This drove
+    revoke_refresh_token until 2026-10-07, when the rotation's one atomic
+    consume replaced it and nothing else called it.)"""
+    from datetime import datetime, timedelta, timezone
+
     from app import users
+    from app.db import get_session
+    from app.jwt_auth import hash_token
+    from app.models import RefreshToken
+
+    raw = _login(client, {"username": "testadmin", "password": "AdminPass1"})["refresh_token"]
+    with get_session() as db:
+        uid = db.query(RefreshToken).filter(
+            RefreshToken.token_hash == hash_token(raw)).one().user_id
 
     class _Boom:
         def delete(self, *a):
@@ -88,6 +101,7 @@ def test_a_failed_redis_delete_on_revocation_is_logged_not_swallowed(monkeypatch
     monkeypatch.setattr("app.redis_client.get_redis", lambda: _Boom())
     seen = []
     monkeypatch.setattr("app.logger.log", lambda event, **kw: seen.append((event, kw)))
-    users.revoke_refresh_token("no-such-hash")
-    assert any(e == "refresh_redis_delete_failed" and kw.get("where") == "revoke_refresh_token"
+    exp = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    assert users.rotate_refresh_token(hash_token(raw), uid, "rotated-under-a-dead-cache", exp)
+    assert any(e == "refresh_redis_delete_failed" and kw.get("where") == "rotate_refresh_token"
                for e, kw in seen), seen

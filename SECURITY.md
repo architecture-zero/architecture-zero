@@ -51,7 +51,10 @@ Particularly interesting, because these are where the interesting failures live:
   claim code minted at boot and printed to the container logs, so reaching the
   endpoint first is no longer enough to take the deployment - you also have to
   have read its logs. Attempts are throttled independently of
-  `ENABLE_RATE_LIMIT`. Reports that get past both are very much in scope.
+  `ENABLE_RATE_LIMIT`. Since 2026-10-07 the first Owner and a durable claim
+  marker are written in one transaction with the Owner check repeated inside
+  it, so two valid claims racing each other make one Owner, across workers and
+  restarts. Reports that get past any of these are very much in scope.
 - **The anonymous auth routes as an oracle or an amplifier.** Since
   2026-09-10 `/api/auth/login`, `/api/auth/mfa/complete` and
   `/api/auth/refresh` are throttled per source address independently of
@@ -73,8 +76,12 @@ Particularly interesting, because these are where the interesting failures live:
 - **A replayed refresh token.** Rotation revokes the token it spends; a
   revoked refresh token presented again is treated as a stolen copy and every
   session in that family is revoked, with the same 401 a garbage token gets.
-  A replay that keeps a session alive, or a response that distinguishes a
-  once-real token from a never-real one, is in scope.
+  Since 2026-10-07 the spend is one database update that only a live token
+  passes, and only the request whose update changed the row gets a successor,
+  so two requests racing one token get one successor and the loser counts as
+  a replay. A replay that keeps a session alive, a race that yields two
+  successors, or a response that distinguishes a once-real token from a
+  never-real one, is in scope.
 
 Out of scope: findings against a deployment's own configuration choices
 (an operator opting into `CORS_ORIGIN=*`, disabling auth for local development,
