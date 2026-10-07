@@ -182,18 +182,19 @@ def _existing_collection(department: str | None = None):
     return _get_collection(department)
 
 
-def _embed(text: str, retries: int = 2) -> list[float]:
+def _embed(text: str, retries: int = 2, timeout: float = 60) -> list[float]:
     """Embed with retry + backoff. One transient slow/failed embedding call
     must not abort a whole-file ingest: a big file rolls the dice hundreds of
     times, so big files die first without the retry. Timeout is per-attempt
-    and sized for a CPU-contended box, not the idle-case latency."""
+    and sized for a CPU-contended box, not the idle-case latency (the lane
+    probe below passes a shorter one: it asks one short sentence)."""
     last_err: Exception | None = None
     for attempt in range(retries + 1):
         try:
             response = requests.post(
                 f"{EMBED_BASE}/api/embeddings",
                 json={"model": EMBED_MODEL, "prompt": text},
-                timeout=60
+                timeout=timeout
             )
             response.raise_for_status()
             return response.json()["embedding"]
@@ -204,6 +205,68 @@ def _embed(text: str, retries: int = 2) -> list[float]:
                             attempt + 1, retries + 1, e)
                 time.sleep(2 * (attempt + 1))
     raise last_err
+
+
+# -- The retrieval lane, proven (AZ-02) ---------------------------------------
+_LANE_PROBE_TEXT = "Is the retrieval lane answering?"
+
+
+def probe_retrieval_lane(rag_only: bool, corpus_expected: bool = False) -> dict:
+    """One pass over what a governed query needs (AZ-02, outside review
+    2026-10-06; fixed 2026-10-07). Readiness proved the database and nothing
+    else, while retrieval gets its embeddings from EMBED_BASE - a separate
+    service that a healthy database, a healthy cloud chat provider or a healthy
+    OLLAMA_BASE says nothing about.
+
+    In order: the vector store answers a read; the embed service answers with
+    a vector through the SAME _embed a query uses; the store accepts that
+    vector for a search. So a missing EMBED_MODEL fails here as it fails every
+    query (the service refuses it), and so does a different model (it answers
+    with a vector of the wrong width, which the search rejects).
+
+    Returns {"state": "ok"}, {"state": "not_required"} when this instance
+    serves no retrieval (no operator documents, RAG_ONLY_MODE off - product
+    help pages are not the operator's corpus, as in count_documents), or
+    {"state": "error", "reason": <code>}. The reason is a fixed code, never
+    exception text: it reaches the Owner's view and the alert.
+
+    corpus_expected (the AZ-02 security read): a deployment whose corpus is
+    never legitimately empty passes True, and an empty store reads error -
+    without it a store that came back empty (a volume not mounted, an index
+    wiped) read "not_required" and readiness stayed green, the gap again.
+    The search asks for distances only, so no corpus text is pulled.
+
+    READ-ONLY on the vector store, by rule: a write-sick HNSW index crashes
+    the process on a write while every read stays green, so a write probe
+    would be the outage it was meant to report. Called from the self-check
+    timer, never from a request (app/self_check.py)."""
+    try:
+        populated = [c for c in client.list_collections()
+                     if c.name != HELP_COLLECTION and c.count() > 0]
+    except Exception:
+        return {"state": "error", "reason": "vector_store_unreadable"}
+    if not populated and corpus_expected:
+        return {"state": "error", "reason": "vector_store_empty"}
+    if not populated and not rag_only:
+        return {"state": "not_required"}
+    try:
+        vector = _embed(_LANE_PROBE_TEXT, retries=1, timeout=15)
+    except requests.HTTPError as e:
+        code = getattr(e.response, "status_code", None)
+        return {"state": "error",
+                "reason": "embed_model_missing" if code == 404 else "embed_refused"}
+    except Exception:
+        return {"state": "error", "reason": "embed_unreachable"}
+    if (not isinstance(vector, list) or not vector
+            or not all(isinstance(x, (int, float)) for x in vector)):
+        return {"state": "error", "reason": "embed_malformed"}
+    if populated:
+        try:
+            populated[0].query(query_embeddings=[vector], n_results=1,
+                               include=["distances"])
+        except Exception:
+            return {"state": "error", "reason": "vector_search_failed"}
+    return {"state": "ok"}
 
 
 def _stem(token: str) -> str:

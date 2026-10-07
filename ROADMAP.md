@@ -110,6 +110,15 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   stopped and nobody signed in, nothing sent. The same probes, and the backup
   and drill heartbeats, now run on a timer from boot through the same alerts;
   the runbook's Monitoring section says what the timer cannot see.
+- ~~**Readiness that proves the retrieval lane**~~ - SHIPPED 2026-10-07
+  (`database.probe_retrieval_lane`, on the self-check timer): readiness
+  proved the database alone while retrieval needs EMBED_BASE, a separate
+  service, so an instance whose every governed question failed read ready.
+  The timer now embeds one sentence through the query's own call and
+  searches with it, read-only; `/api/health/ready` reads the last check,
+  never runs it, and fails on an error or a check older than two intervals
+  plus a minute. The runbook's Monitoring section has the states and the
+  reasons.
 - ~~**An update that takes its own copy first**~~ - SHIPPED 2026-10-02
   (`backend/app/db.py`, "A copy before the first one-way change"): the first
   boot after an update encrypts plaintext second-factor seeds and saved

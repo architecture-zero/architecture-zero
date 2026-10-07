@@ -191,6 +191,40 @@ and restart it; `ss -ltn | grep 11434` should then show `*:11434`, not
 Cloud-only deployments can ignore Ollama health if no local models are
 used.
 
+## Readiness answers 503 with "rag": "error" or "stale"
+
+The retrieval lane failed its last check, or has not been checked lately.
+Retrieval gets its embeddings from EMBED_BASE - a different service from the
+chat model - so the chat can be healthy while every question that needs your
+documents fails. The Owner's Monitoring view (/api/health/detailed) names the
+reason:
+
+- `embed_unreachable` - nothing answered at EMBED_BASE. The same address
+  rules as Ollama above apply: from inside a container, use
+  host.docker.internal or the host's address, and the service must listen
+  beyond 127.0.0.1.
+- `embed_model_missing` - the service answered but does not have
+  EMBED_MODEL (default nomic-embed-text). Pull it there: `ollama pull
+  nomic-embed-text`.
+- `embed_refused` / `embed_malformed` - the service answered with an error
+  or without a vector; its own log says why.
+- `vector_search_failed` - the vector came back but the index would not
+  search with it. Usually EMBED_MODEL changed after the documents were
+  indexed: the new model's vectors are a different width. Set it back, or
+  re-ingest under the new one.
+- `vector_store_unreadable` - the vector store itself could not be read;
+  see the next section.
+- `vector_store_empty` - the store holds no documents on a deployment that
+  declared its corpus is never empty: check that the data volume is
+  mounted where CHROMA_PATH points, then re-ingest.
+- `stale` - no check has finished for more than two intervals of
+  SELF_CHECK_INTERVAL_SECONDS. The backend log's `self_check` lines show
+  whether the timer is running.
+
+The check runs every SELF_CHECK_INTERVAL_SECONDS (default 300), so after a
+fix readiness turns green within one interval; a restart starts it over at
+`pending`.
+
 ## Vectors disappeared after a crash or power loss
 
 The vector index persists on a write threshold, not on close - a hard kill

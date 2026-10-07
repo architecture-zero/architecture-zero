@@ -152,7 +152,8 @@ def test_the_timer_runs_the_pass_with_no_reader(monkeypatch):
     monkeypatch.setattr(self_check, "SELF_CHECK_INTERVAL_SECONDS", 0.01)
     monkeypatch.setattr(self_check, "run_self_check", lambda *a: runs.append(a) or {})
     _drive()
-    assert len(runs) >= 2 and runs[0] == (".", None, None, ("backup", "drill"))
+    # The fifth is the retrieval-lane probe (AZ-02): none wired in this call.
+    assert len(runs) >= 2 and runs[0] == (".", None, None, ("backup", "drill"), None)
 
 
 def test_a_crashing_pass_does_not_stop_the_timer(monkeypatch):
@@ -186,7 +187,8 @@ def test_boot_starts_the_timer_with_what_this_deployment_watches():
     disagree about what is stale."""
     from app import main
     src = inspect.getsource(main.startup_tasks)
-    assert "asyncio.create_task(self_check_loop(_DATA_DIR, _ollama_get, _backup_job_state))" in src
+    assert "_DATA_DIR, _ollama_get, _backup_job_state," in src
+    assert "rag_probe=lambda: probe_retrieval_lane(RAG_ONLY_MODE)" in src   # AZ-02
 
 
 def test_the_detailed_route_runs_the_same_probes():

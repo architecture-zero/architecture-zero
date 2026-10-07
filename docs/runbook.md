@@ -425,7 +425,8 @@ and the admin roster carries the same field per user.
 ## Monitoring
 
 - GET /api/health - liveness (also checks Ollama reachability).
-- GET /api/health/ready - readiness: DB (critical), Redis and Ollama
+- GET /api/health/ready - readiness: DB (critical), the retrieval lane
+  (critical when this instance serves retrieval), Redis and Ollama
   (reported, non-fatal).
 - GET /api/status (authed) - the posture surface: which fail-open controls
   are actually on (rate limiting, injection scan mode, PII mode at ingest
@@ -441,8 +442,9 @@ target port and auth block. The block reads the token from a file
 (`credentials_file: /etc/prometheus/metrics_token`): write the same
 METRICS_TOKEN value there, alone on one line, readable only by the
 Prometheus user. The token itself is never part of the download.
-- GET /api/health/detailed (Owner) - disk, DB latency, provider health;
-  fires configured alerts on disk pressure and Ollama outages.
+- GET /api/health/detailed (Owner) - disk, DB latency, provider health,
+  and the retrieval lane's last check with its reason; fires configured
+  alerts on disk pressure and Ollama outages.
 
 **The instance checks itself (since 2026-10-02).** Every
 `SELF_CHECK_INTERVAL_SECONDS` (default 300; `0` turns it off) a timer inside
@@ -463,13 +465,46 @@ amount:
 - `/api/backup-status` answers 503 when the backup job's heartbeat or the
   restore drill's is missing, stale or failed (Backups, above) - so it
   answers 503 from the first day until both are being written.
-- `/api/health/ready` answers 503 when the database is down, and only then.
+- `/api/health/ready` answers 503 when the database is down, or when this
+  instance serves retrieval and its retrieval lane failed the timer's last
+  check or has not been checked lately (below).
 - `/api/health` answers 200 whatever it finds and puts `"status":
   "degraded"` in the body when Ollama is unreachable - a monitor has to read
   the body to catch that one.
 - Disk pressure reaches no route that needs no session: the detailed route
   shows it, and the self-check's alert raises it. If alerting is off, watch
   the disk from the host.
+
+**The retrieval lane (since 2026-10-07).** Retrieval gets its embeddings from
+`EMBED_BASE`, a separate service from the chat provider, so a healthy
+database and a healthy cloud model used to read ready while every question
+that needs the knowledge base failed. The same timer now checks the lane:
+it embeds one short sentence through the same call a question uses, then
+searches the vector store with that vector - read-only, never a write. A
+missing `EMBED_MODEL` fails there (the service refuses it), and so does a
+different model, whose vector is the wrong width for the index. A failed
+check raises an alert like the others, and `/api/health/ready` answers 503
+until a check passes; its body shows `rag` as `ok`, `error`, `stale`,
+`pending`, `not_required` or `off`, and the Owner's detailed route gives the
+reason (`embed_unreachable`, `embed_model_missing`, `embed_refused`,
+`embed_malformed`, `vector_store_unreadable`, `vector_search_failed`,
+`probe_crashed`, and `vector_store_empty` on a deployment that declares
+its corpus never empty - below).
+
+- The lane is required when the instance has documents of its own to serve
+  (the product help pages do not count) or `RAG_ONLY_MODE` is on. Otherwise
+  it reads `not_required` and asks nothing of the embed service. A
+  deployment whose corpus is never legitimately empty can pass
+  `corpus_expected=True` to the probe in its startup hook (`app/main.py`),
+  and an empty store - a volume not mounted, an index wiped - then reads
+  `error` instead of `not_required`.
+- The readiness route never runs the check itself - it reads the last one.
+  A check older than two intervals plus a minute reads `stale` and fails
+  readiness the same as an error: a lane nobody has checked lately is not
+  known to work. Until the first check, one interval after boot, it reads
+  `pending` and does not fail.
+- `SELF_CHECK_INTERVAL_SECONDS=0` turns the lane check off with the rest of
+  the timer; readiness then shows `off` and stops depending on it.
 
 ## Running the test suite
 

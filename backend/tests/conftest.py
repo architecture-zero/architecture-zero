@@ -50,6 +50,11 @@ from fastapi.testclient import TestClient
 from app.main import app  # triggers all module-level init (DB schema, config seed)
 
 # -- Mock _embed after app.database is imported --------------------------------
+# The real one is kept first, for tests that need the HTTP leg itself (the
+# retrieval-lane probe, AZ-02): the real_embed fixture puts it back for one
+# test, and that test answers requests.post itself.
+import app.database as _database_module  # noqa: E402
+_REAL_EMBED = _database_module._embed
 patch("app.database._embed", return_value=[0.0] * 768).start()
 
 # -- The BATCH leg's socket, closed -------------------------------------------
@@ -115,6 +120,14 @@ def admin_headers(client):
     r = client.post("/api/auth/login", json=_ADMIN)
     assert r.status_code == 200, f"Admin login failed: {r.text}"
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+@pytest.fixture
+def real_embed(monkeypatch):
+    """Puts the unpatched _embed back for one test (AZ-02's lane probe; see
+    the note above the _embed patch). The test answers requests.post itself."""
+    import app.database
+    monkeypatch.setattr(app.database, "_embed", _REAL_EMBED)
 
 
 @pytest.fixture(autouse=True)

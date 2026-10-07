@@ -407,11 +407,16 @@ async def startup_tasks():
     # reads raise - before this, an unwatched box sent nothing. What it
     # watches is passed in here: the data volume, Ollama through the same
     # reader the detailed route uses, and the two heartbeats through the
-    # reader /api/backup-status serves.
+    # reader /api/backup-status serves. And the retrieval lane (AZ-02,
+    # 2026-10-07): embed service plus vector store, read-only, whose last pass
+    # /api/health/ready reads.
     from app.self_check import self_check_loop
-    from app.runtime_config import _DATA_DIR, _ollama_get
+    from app.runtime_config import _DATA_DIR, _ollama_get, RAG_ONLY_MODE
     from app.routers.system import _backup_job_state
-    asyncio.create_task(self_check_loop(_DATA_DIR, _ollama_get, _backup_job_state))
+    from app.database import probe_retrieval_lane
+    asyncio.create_task(self_check_loop(
+        _DATA_DIR, _ollama_get, _backup_job_state,
+        rag_probe=lambda: probe_retrieval_lane(RAG_ONLY_MODE)))
 
 
 @app.on_event("shutdown")
