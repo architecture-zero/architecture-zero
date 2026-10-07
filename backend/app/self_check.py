@@ -33,6 +33,16 @@ inert. A last pass older than two intervals plus a minute reads "stale" and
 fails readiness the same as an error: a lane nobody has proven lately is not
 proven. Before the first pass it reads "pending"; with the timer off, "off".
 
+Ollama and Redis (the AZ-02 security read's Info, 2026-10-07): the
+unauthenticated /api/health and /api/health/ready read Ollama's model list and
+pinged Redis on every hit - an outbound call per anonymous request, across the
+network wherever Ollama runs on another host. Each pass now records what it
+found and those routes read that, as readiness reads the lane: "ok",
+"unreachable" (Ollama) or "error" (Redis), and the same "pending", "stale" and
+"off"; "skipped" where this deployment does not watch it. Neither fails
+readiness: Ollama is one provider among several, and the backend runs without
+Redis.
+
 SELF_CHECK_INTERVAL_SECONDS (default 300; 0 turns the timer off). The first
 run comes one interval after boot, so a restart is not itself an alert.
 SELF_CHECK_BACKUP (default true) - false on a deployment that backs up some
@@ -57,6 +67,18 @@ def ollama_enabled() -> bool:
     return os.getenv("ENABLE_OLLAMA", "true").lower() == "true"
 
 
+def redis_enabled() -> bool:
+    return bool(os.getenv("REDIS_URL", "").strip())
+
+
+# Ollama's and Redis's last pass ({"ok", "at"}) and whether this deployment
+# watches them - what /api/health and /api/health/ready read. Rebound whole.
+_ollama_last: dict | None = None
+_ollama_wired = False
+_redis_last: dict | None = None
+_redis_wired = False
+
+
 def probe_disk(data_dir: str) -> dict:
     """Disk use of the data volume, and the alert over the threshold."""
     try:
@@ -74,16 +96,35 @@ def probe_disk(data_dir: str) -> dict:
 
 
 def probe_ollama(ollama_get) -> dict:
-    """Ollama's model list within 3 s, and the alert when it does not answer."""
+    """Ollama's model list within 3 s, and the alert when it does not answer.
+    Recorded for the health routes."""
+    global _ollama_last
     try:
         t0 = time.perf_counter()
         r = ollama_get("/api/tags", timeout=3)
-        return {"name": "ollama", "ok": r.status_code == 200,
-                "latency_ms": round((time.perf_counter() - t0) * 1000, 2)}
+        result = {"name": "ollama", "ok": r.status_code == 200,
+                  "latency_ms": round((time.perf_counter() - t0) * 1000, 2)}
     except Exception:
         fire_alert("ollama_down", f"Ollama unreachable - {_INSTANCE_NAME}",
                    "Ollama did not respond within 3s. Chat will fail for Ollama models.")
-        return {"name": "ollama", "ok": False, "latency_ms": None}
+        result = {"name": "ollama", "ok": False, "latency_ms": None}
+    _ollama_last = {"ok": result["ok"], "at": time.time()}
+    return result
+
+
+def probe_redis() -> dict:
+    """Redis answers a ping within 2 s. Recorded for the health routes; no
+    alert - the backend falls back to the database without it."""
+    global _redis_last
+    try:
+        import redis as _redis
+        _redis.from_url(os.getenv("REDIS_URL", "").strip(), socket_connect_timeout=2,
+                        socket_timeout=2).ping()
+        ok = True
+    except Exception:
+        ok = False
+    _redis_last = {"ok": ok, "at": time.time()}
+    return {"name": "redis", "ok": ok}
 
 
 def probe_backups(backup_state, kinds=("backup", "drill")) -> dict:
@@ -111,8 +152,24 @@ _rag_wired = False
 _started_at: float | None = None
 
 
-def _rag_stale_after() -> float:
+def _stale_after() -> float:
     return 2 * SELF_CHECK_INTERVAL_SECONDS + 60
+
+
+def _freshness(last: dict | None, wired: bool, now: float) -> str | None:
+    """None when a watched check's last pass is fresh; otherwise the word for
+    why it says nothing now - skipped, off, pending or stale."""
+    if not wired:
+        return "skipped"
+    if SELF_CHECK_INTERVAL_SECONDS <= 0:
+        return "off"
+    if last is None:
+        if _started_at is not None and now - _started_at <= _stale_after():
+            return "pending"
+        return "stale"
+    if now - last["at"] > _stale_after():
+        return "stale"
+    return None
 
 
 def probe_rag(rag_probe) -> dict:
@@ -137,19 +194,31 @@ def probe_rag(rag_probe) -> dict:
 def rag_readiness(now: float | None = None) -> tuple[str, bool]:
     """(the word /api/health/ready shows for the lane, whether it fails
     readiness). Reads the last pass; never probes."""
-    if not _rag_wired:
-        return "skipped", False
-    if SELF_CHECK_INTERVAL_SECONDS <= 0:
-        return "off", False
-    now = time.time() if now is None else now
     last = _rag_last
-    if last is None:
-        if _started_at is not None and now - _started_at <= _rag_stale_after():
-            return "pending", False
-        return "stale", True
-    if now - last["at"] > _rag_stale_after():
-        return "stale", True
+    word = _freshness(last, _rag_wired, time.time() if now is None else now)
+    if word is not None:
+        return word, word == "stale"
     return last["state"], last["state"] == "error"
+
+
+def ollama_readiness(now: float | None = None) -> str:
+    """The word the health routes show for Ollama, from the last pass: ok or
+    unreachable, else skipped/off/pending/stale. Never probes."""
+    last = _ollama_last
+    word = _freshness(last, _ollama_wired, time.time() if now is None else now)
+    if word is not None:
+        return word
+    return "ok" if last["ok"] else "unreachable"
+
+
+def redis_readiness(now: float | None = None) -> str:
+    """The word /api/health/ready shows for Redis, from the last pass: ok or
+    error, else skipped/off/pending/stale. Never probes."""
+    last = _redis_last
+    word = _freshness(last, _redis_wired, time.time() if now is None else now)
+    if word is not None:
+        return word
+    return "ok" if last["ok"] else "error"
 
 
 def rag_status() -> dict:
@@ -190,6 +259,8 @@ def run_self_check(data_dir: str, ollama_get=None, backup_state=None,
     result = {"disk": probe_disk(data_dir)}
     if ollama_get is not None and ollama_enabled():
         result["ollama"] = probe_ollama(ollama_get)
+    if redis_enabled():
+        result["redis"] = probe_redis()
     if backup_state is not None and SELF_CHECK_BACKUP:
         result["backups"] = probe_backups(backup_state, backup_kinds)
     if rag_probe is not None:
@@ -199,6 +270,8 @@ def run_self_check(data_dir: str, ollama_get=None, backup_state=None,
         failing.append("disk")
     if "ollama" in result and not result["ollama"]["ok"]:
         failing.append("ollama")
+    if "redis" in result and not result["redis"]["ok"]:
+        failing.append("redis")
     if result.get("rag", {}).get("state") == "error":
         failing.append("rag")
     for kind, st in result.get("backups", {}).items():
@@ -212,14 +285,16 @@ async def self_check_loop(data_dir: str, ollama_get=None, backup_state=None,
                           backup_kinds=("backup", "drill"), rag_probe=None) -> None:
     """The timer. Started from the startup hook; the probes run off the event
     loop (a blocking disk or HTTP read must never stall a request)."""
-    global _rag_wired, _started_at
+    global _rag_wired, _ollama_wired, _redis_wired, _started_at
     _rag_wired, _started_at = rag_probe is not None, time.time()
+    _ollama_wired = ollama_get is not None and ollama_enabled()
+    _redis_wired = redis_enabled()
     interval = SELF_CHECK_INTERVAL_SECONDS
     if interval <= 0:
         log("self_check_off")
         return
     log("self_check_started", interval_seconds=interval,
-        ollama=ollama_get is not None and ollama_enabled(),
+        ollama=_ollama_wired, redis=_redis_wired,
         backups=backup_state is not None and SELF_CHECK_BACKUP,
         rag=rag_probe is not None)
     while True:

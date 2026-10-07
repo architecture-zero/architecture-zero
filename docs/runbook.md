@@ -424,10 +424,11 @@ and the admin roster carries the same field per user.
 
 ## Monitoring
 
-- GET /api/health - liveness (also checks Ollama reachability).
+- GET /api/health - liveness; its Ollama word is the self-check timer's
+  last pass - the route calls nothing itself.
 - GET /api/health/ready - readiness: DB (critical), the retrieval lane
-  (critical when this instance serves retrieval), Redis and Ollama
-  (reported, non-fatal).
+  (critical when this instance serves retrieval), Redis and Ollama (the
+  timer's last pass, reported, non-fatal).
 - GET /api/status (authed) - the posture surface: which fail-open controls
   are actually on (rate limiting, injection scan mode, PII mode at ingest
   and the output-side PII mode on answers with the types it masks), provider
@@ -504,7 +505,8 @@ its corpus never empty - below).
   known to work. Until the first check, one interval after boot, it reads
   `pending` and does not fail.
 - `SELF_CHECK_INTERVAL_SECONDS=0` turns the lane check off with the rest of
-  the timer; readiness then shows `off` and stops depending on it.
+  the timer; readiness then shows `off` - for the lane, Redis and Ollama
+  alike - and stops depending on the lane.
 
 ## Running the test suite
 

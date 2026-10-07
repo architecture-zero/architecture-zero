@@ -28,9 +28,10 @@ from app.providers import _get_runtime, _ollama_headers, OLLAMA_BASE
 # default while providers.py uses "http://host.docker.internal:11434", and
 # main's mid-file `from app.providers import (... OLLAMA_BASE ...)` rebinds it -
 # so the value every caller actually reads is providers'. Re-declaring it here
-# from main's line would flip /api/health to localhost inside the container,
-# where nothing is listening, and no test would catch it: /api/health is public
-# by design and nothing asserts on its body.
+# from main's line would point _ollama_get - the self-check timer, chat's model
+# list and the Owner's detailed route - at localhost inside the container,
+# where nothing is listening; the public health words would follow a pass
+# later.
 DEFAULT_MODEL               = os.getenv("DEFAULT_MODEL", "qwen3:8b")
 def _env_num(name: str, default: str, cast):
     """Parse a numeric env var, and FAIL LOUDLY BUT LEGIBLY if it is not one.

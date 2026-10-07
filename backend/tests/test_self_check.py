@@ -16,9 +16,15 @@ from app import self_check
 
 @pytest.fixture(autouse=True)
 def _fresh_state(monkeypatch):
-    """The log remembers the last pass's failures; every test starts clean."""
+    """The log remembers the last pass's failures; every test starts clean.
+    And the timer's own state - what it watches, when it started, what each
+    pass found - goes back after each test: the timer tests below start it
+    with nothing wired, and the readiness tests read the boot's wiring."""
     monkeypatch.setattr(self_check, "_last_failing", ())
     monkeypatch.setattr(self_check, "_last_logged", 0.0)
+    for name in ("_rag_wired", "_ollama_wired", "_redis_wired", "_started_at",
+                 "_rag_last", "_ollama_last", "_redis_last"):
+        monkeypatch.setattr(self_check, name, getattr(self_check, name))
 
 
 @pytest.fixture

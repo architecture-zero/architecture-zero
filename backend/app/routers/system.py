@@ -17,17 +17,13 @@ import secrets
 import logging
 import datetime as _dt
 
-import requests
 from fastapi import APIRouter, Depends, Request, Response
 
 from app.database import count_documents
 from app.config import get_config
 from app.jwt_auth import get_current_user, oauth2_scheme, require_owner, require_permission
 from app.agent import get_tool_config
-# OLLAMA_BASE comes from providers, NOT from a copy of main.py's line 50 - the
-# two had different defaults and providers' is the one that was winning.
-from app.providers import (OLLAMA_BASE, OPENAI_COMPAT, compat_key_configured,
-                           get_provider_config)
+from app.providers import OPENAI_COMPAT, compat_key_configured, get_provider_config
 from app.redis_client import redis_status
 from app.security import get_security_config
 from app.metrics import get_last_request_at, get_snapshot, prometheus_text
@@ -58,11 +54,15 @@ def version():
 
 @router.get("/api/health")
 def health():
-    try:
-        requests.get(f"{OLLAMA_BASE}/api/tags", timeout=5)
-        return {"status": "healthy", "ollama": "connected"}
-    except Exception:
+    """Unauthenticated, so it reads the self-check's last pass for Ollama and
+    never calls it (2026-10-07, the AZ-02 security read's Info): "connected",
+    "unreachable" (degraded), or why there is no word - pending, stale, off,
+    skipped."""
+    from app.self_check import ollama_readiness
+    word = ollama_readiness()
+    if word == "unreachable":
         return {"status": "degraded", "ollama": "unreachable"}
+    return {"status": "healthy", "ollama": "connected" if word == "ok" else word}
 
 @router.get("/api/health/ready")
 def health_ready():
@@ -102,33 +102,13 @@ def health_ready():
         logging.getLogger("uvicorn.error").error("readiness: retrieval lane %s", checks["rag"])
         ready = False
 
-    # Redis check (non-critical - optional)
-    _redis_url = os.getenv("REDIS_URL", "")
-    if _redis_url:
-        try:
-            import redis as _redis
-            r = _redis.from_url(_redis_url, socket_connect_timeout=2)
-            r.ping()
-            checks["redis"] = "ok"
-        except Exception as e:
-            logging.getLogger("uvicorn.error").warning("readiness: redis check failed: %s", e)
-            checks["redis"] = "error"
-            # Redis failure is not fatal - backend falls back to DB-only mode
-    else:
-        checks["redis"] = "skipped"
-
-    # Ollama check (non-critical - optional provider)
-    _enable_ollama = os.getenv("ENABLE_OLLAMA", "true").lower() == "true"
-    if _enable_ollama:
-        try:
-            _ollama_get("/api/tags", timeout=3)
-            checks["ollama"] = "ok"
-        except Exception:
-            checks["ollama"] = "unreachable"
-            # Ollama down is degraded, not fatal - cloud providers may still
-            # work
-    else:
-        checks["ollama"] = "skipped"
+    # Redis and Ollama (non-critical: the backend falls back to the database
+    # without Redis, and cloud providers work without Ollama) - the self-check
+    # timer's last pass, never probed here (2026-10-07, the AZ-02 security
+    # read's Info: each anonymous hit pinged Redis and read Ollama's model list).
+    from app.self_check import ollama_readiness, redis_readiness
+    checks["redis"] = redis_readiness()
+    checks["ollama"] = ollama_readiness()
 
     if not ready:
         from fastapi.responses import JSONResponse

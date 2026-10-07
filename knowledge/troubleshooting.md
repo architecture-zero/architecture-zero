@@ -179,8 +179,12 @@ or lower the threshold.
 
 ## Health says "degraded" / Ollama unreachable
 
-/api/health pings the Ollama base URL. Degraded means that ping failed:
-the Ollama server is down, the OLLAMA_BASE address is wrong for your
+/api/health reports the self-check timer's last call to the Ollama base
+URL (the first one interval after boot, then every
+SELF_CHECK_INTERVAL_SECONDS) - it calls nothing itself. Degraded means that
+call failed, and it keeps reading degraded after a fix until the next pass
+(an Owner opening the Monitoring tab checks again at once). The usual
+causes: the Ollama server is down, the OLLAMA_BASE address is wrong for your
 network layout (from inside a container, localhost is the container - use
 host.docker.internal or the host's address), a firewall blocks it, or - the
 usual cause on a Linux host - Ollama is listening on 127.0.0.1 only, which
