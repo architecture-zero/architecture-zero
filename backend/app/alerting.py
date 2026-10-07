@@ -37,7 +37,10 @@ def _webhook(title: str, body: str) -> None:
         _req.post(_WEBHOOK_URL, json={"text": f"*{title}*\n{body}"}, timeout=5)
         log("alert_webhook_sent", title=title)
     except Exception as e:
-        log_error("alert_webhook_failed", error=str(e))
+        # The type only (the AZ-02 security read, 2026-10-07): on a
+        # connection failure urllib3's message carries the request path, and
+        # a Slack- or Discord-style webhook's path IS its credential.
+        log_error("alert_webhook_failed", error=type(e).__name__)
 
 
 def _email(subject: str, body: str) -> None:
