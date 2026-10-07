@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from app.feedback import save_feedback, get_feedback_summary
 from app.history import (get_analytics, list_sessions, upsert_session_meta,
                          get_session_meta, delete_session_meta)
-from app.jwt_auth import get_current_user, require_permission
+from app.jwt_auth import check_permission, get_current_user, require_permission
 from app.logger import log
 
 router = APIRouter()
@@ -132,6 +132,11 @@ def _clean_name(name: str | None) -> str | None:
 def create_session(request: SessionCreateRequest,
                    current_user: dict = Depends(require_permission("chat"))):
     uid = current_user["id"]
+    # An upsert: on a conversation that already has a row it renames and
+    # recategorises - PATCH's capability - so there it asks PATCH's scope too
+    # (the 2026-10-07 security read of AZ-03). Starting one stays "chat".
+    if get_session_meta(request.session_id, uid) is not None:
+        check_permission(current_user, "view_history")
     upsert_session_meta(request.session_id, name=_clean_name(request.name),
                         category=request.category, user_id=uid)
     return get_session_meta(request.session_id, uid) or {"session_id": request.session_id}

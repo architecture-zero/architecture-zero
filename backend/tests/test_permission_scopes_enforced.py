@@ -95,3 +95,18 @@ def test_a_role_preset_and_a_role_change_restore_both(client, admin_headers):
     from app.users import update_user_role
     update_user_role(uid2, "member")
     assert client.get("/api/history/s-member2", headers=h2).status_code == 200
+
+
+def test_re_posting_a_conversation_is_a_rename_and_asks_view_history(client, admin_headers):
+    """POST /api/sessions is an upsert (the 2026-10-07 security read): on a
+    conversation that already has a row it renames it, so an account holding
+    chat alone could rename its conversations past PATCH's scope. Starting
+    one stays chat; re-posting one asks view_history, and changes nothing."""
+    from app.history import get_session_meta
+    h, uid = _account(client, admin_headers, ["chat"])
+    sid = f"s-upsert-{uuid.uuid4().hex[:8]}"
+    r = client.post("/api/sessions", headers=h, json={"session_id": sid, "name": "first"})
+    assert r.status_code == 200, r.text
+    r = client.post("/api/sessions", headers=h, json={"session_id": sid, "name": "renamed"})
+    assert r.status_code == 403 and _detail(r) == _REFUSED_HISTORY, (r.status_code, r.text)
+    assert get_session_meta(sid, uid)["name"] == "first"
