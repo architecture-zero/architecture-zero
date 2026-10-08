@@ -237,6 +237,17 @@ fix readiness turns green within one interval; a restart starts it over at
 `pending`, and the boot check turns it green within seconds if the lane
 works.
 
+## Readiness answers 503 with "crash_loop": "looping (...)"
+
+The backend has booted more than BOOT_LOOP_THRESHOLD times (default 4) on
+the same build within BOOT_LOOP_WINDOW_SECONDS (default an hour). Usually it
+is crashing and Docker keeps restarting it: a climbing
+`docker inspect -f '{{.RestartCount}}' az_backend` confirms it, and
+`docker compose logs backend` shows what ended each run. Fix that, and the
+check clears once the boots age out of the window. If you restarted or
+rebuilt it that many times yourself, wait out the window - and build with
+GIT_SHA so each deploy counts as a new build (docs/runbook.md, Monitoring).
+
 ## Vectors disappeared after a crash or power loss
 
 The vector index persists on a write threshold, not on close - a hard kill

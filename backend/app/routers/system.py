@@ -66,8 +66,8 @@ def health():
 
 @router.get("/api/health/ready")
 def health_ready():
-    """Readiness probe - checks DB, the retrieval lane, Redis and Ollama.
-    Returns 503 if any critical check fails."""
+    """Readiness probe - checks DB, a crash loop, the retrieval lane, Redis and
+    Ollama. Returns 503 if any critical check fails."""
     checks: dict[str, str] = {}
     ready = True
 
@@ -85,6 +85,28 @@ def health_ready():
         logging.getLogger("uvicorn.error").error("readiness: db check failed: %s", e)
         checks["db"] = "error"
         ready = False
+
+    # Crash-loop check (critical; ported from upstream 2026-10-08). Liveness
+    # cannot see a crash loop - a process that dies every few minutes still
+    # answers 200 in between, which is how upstream lost 10.5 hours to 97
+    # restarts with zero alerts on 2026-08-20. Cheap and inert by design: reads
+    # a small JSON file, never touches Chroma, so the probe can never become the
+    # outage (that incident's own finding was that an in-process write probe
+    # WOULD be the segfault).
+    try:
+        from app.boot_history import crash_loop_state
+        _loop = crash_loop_state()
+        if _loop["looping"]:
+            logging.getLogger("uvicorn.error").error(
+                "readiness: crash loop - %s boots of sha %s within %ss",
+                _loop["boots"], _loop["sha"], _loop["window_s"])
+            checks["crash_loop"] = f"looping ({_loop['boots']} boots/{_loop['window_s']}s)"
+            ready = False
+        else:
+            checks["crash_loop"] = "ok"
+    except Exception as e:
+        logging.getLogger("uvicorn.error").warning("readiness: crash-loop check unavailable: %s", e)
+        checks["crash_loop"] = "unavailable"  # fail OPEN - never invent an outage
 
     # Retrieval lane (critical when this instance serves retrieval) - AZ-02,
     # outside review 2026-10-06; fixed 2026-10-07. A healthy database said

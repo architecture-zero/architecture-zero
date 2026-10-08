@@ -1,7 +1,7 @@
 """Application assembly.
 
 After the router split this file builds the app and nothing else: middleware,
-the ten include_router calls, the boot-time side effects, and the four lifecycle
+the ten include_router calls, the boot-time side effects, and the five lifecycle
 hooks. No routes, no models, no handlers, no business logic.
 
 Direction is one-way and enforced by tests/test_module_hygiene.py: main imports
@@ -127,6 +127,23 @@ if _moved:
 if ENABLE_AUDIT_LOG:
     purge_old_entries(AUDIT_RETENTION_DAYS)
 
+
+
+@app.on_event("startup")
+async def _record_boot_on_startup():
+    """Stamp this boot BEFORE anything that can hang or die.
+
+    Registered FIRST deliberately - ahead of startup_tasks, whose background
+    task runs chroma maintenance and the ingest syncs: the steps a sick vector
+    index dies in (upstream lost 10.5 hours to that on 2026-08-20), and a crash
+    loop is only visible if the boot that is about to fail still got counted.
+    Feeds the crash_loop check in /api/health/ready (app/boot_history.py).
+    """
+    try:
+        from app.boot_history import record_boot
+        record_boot()
+    except Exception:
+        pass
 
 
 @app.on_event("startup")

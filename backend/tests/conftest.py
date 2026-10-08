@@ -27,6 +27,10 @@ os.environ["SELF_CHECK_INTERVAL_SECONDS"] = "0"
 # backend/data dir - the chroma CLIENT is mocked below, but path-based code
 # would otherwise touch real files.
 os.environ["CHROMA_PATH"] = tempfile.mkdtemp(prefix="test-chroma-")
+# Every app boot in the suite stamps the boot history (app/boot_history.py),
+# whose default home is /app/data. Left there, a workstation collects the
+# test boots of every run and readiness then reads them as a crash loop.
+os.environ["BOOT_HISTORY_DIR"] = tempfile.mkdtemp(prefix="test-boots-")
 
 from unittest.mock import MagicMock, patch
 import pytest

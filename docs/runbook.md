@@ -426,9 +426,9 @@ and the admin roster carries the same field per user.
 
 - GET /api/health - liveness; its Ollama word is the self-check timer's
   last pass - the route calls nothing itself.
-- GET /api/health/ready - readiness: DB (critical), the retrieval lane
-  (critical when this instance serves retrieval), Redis and Ollama (the
-  timer's last pass, reported, non-fatal).
+- GET /api/health/ready - readiness: DB (critical), a crash loop
+  (critical), the retrieval lane (critical when this instance serves
+  retrieval), Redis and Ollama (the timer's last pass, reported, non-fatal).
 - GET /api/status (authed) - the posture surface: which fail-open controls
   are actually on (rate limiting, injection scan mode, PII mode at ingest
   and the output-side PII mode on answers with the types it masks), provider
@@ -466,7 +466,8 @@ amount:
 - `/api/backup-status` answers 503 when the backup job's heartbeat or the
   restore drill's is missing, stale or failed (Backups, above) - so it
   answers 503 from the first day until both are being written.
-- `/api/health/ready` answers 503 when the database is down, or until a
+- `/api/health/ready` answers 503 when the database is down, while the
+  backend is crash-looping (below), or until a
   recent check of the retrieval lane found it working - or found it not
   needed here: it failed, has not finished its first check (that runs at
   boot), has not been checked lately, or the timer is off (below).
@@ -529,6 +530,34 @@ its corpus never empty - below).
   on wherever an outside monitor reads readiness - and wherever a load
   balancer or orchestrator gates traffic on this route, which would take a
   timer-off instance out of rotation.
+
+**Crash loops (since 2026-10-08).** A backend that dies every few minutes and
+is restarted by Docker still answers between deaths, so liveness - and
+readiness, whose lane check passes again within seconds of each boot - read
+fine while the product keeps falling over. The backend's first startup hook,
+ahead of the startup sync and the index maintenance a sick index dies in,
+stamps each boot into `boot-history.json` in the data directory
+(`BOOT_HISTORY_DIR`, default `BACKUP_STATUS_DIR`, default `/app/data` - the
+`backend/data` volume; the last 50 boots are kept). Readiness counts the
+boots of the running build inside the last `BOOT_LOOP_WINDOW_SECONDS`
+(default 3600); more than `BOOT_LOOP_THRESHOLD` (default 4) and its body
+shows `crash_loop` as `looping (5 boots/3600s)` and it answers 503, while the
+backend log names the build (`readiness: crash loop - ...`). The check only
+reads that small file - it touches no vector store, so it can never be the
+crash - and it fails open: a missing or unreadable file reads as no boots,
+and a check that cannot run shows `unavailable` without failing readiness.
+It clears by itself once the boots age out of the window.
+
+- The build is what tells a crash loop from a busy day of deploys: each
+  deploy is a new build, a loop repeats one. The build is the `GIT_SHA`
+  baked in when the image is built (`GET /api/version` shows it), and the
+  build lines above leave it `unknown`, which makes every build look like
+  the same one. Pass the commit when you build, wherever readiness is
+  watched: `GIT_SHA=$(git rev-parse --short HEAD) docker compose up -d --build`.
+- Restarts without a rebuild - `docker compose restart`, or `docker compose
+  up -d` after an `.env` change - are the same build, so a maintenance hour
+  with five of them reads as a loop too. Expect it, or raise
+  `BOOT_LOOP_THRESHOLD` for that deployment.
 
 ## Running the test suite
 
