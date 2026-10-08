@@ -228,15 +228,28 @@ def test_an_empty_store_where_a_corpus_is_expected_is_not_ready(
         client, monkeypatch, lane, tmp_path):
     """The security read's case: a store that came back empty (a volume not
     mounted, an index wiped) read not_required and readiness stayed green.
-    A deployment that declares its corpus is never empty reads it as an error,
-    without asking the embed service."""
+    A deployment that declares its corpus is never empty reads it as an error
+    once the embed service has answered (asked first since 2026-10-08)."""
     monkeypatch.setattr(db, "client", _Client([]))
     called = []
     monkeypatch.setattr(db, "_embed", lambda *a, **k: called.append(1) or [0.0])
     _timer_pass(str(tmp_path), corpus_expected=True)
     status, checks = _ready(client)
     assert status == 503 and checks["rag"] == "error"
-    assert sc.rag_status()["reason"] == "vector_store_empty" and called == []
+    assert sc.rag_status()["reason"] == "vector_store_empty" and called == [1]
+
+
+def test_an_empty_expected_store_names_a_dead_embed_service_first(
+        client, monkeypatch, lane, real_embed, tmp_path):
+    """A broken embed is also what leaves a store empty: the reason an
+    operator can act on comes first (the 2026-10-08 read - the store's
+    emptiness was reported in its place)."""
+    monkeypatch.setattr(db, "client", _Client([]))
+    monkeypatch.setattr(requests, "post", _refused)
+    _timer_pass(str(tmp_path), corpus_expected=True)
+    status, checks = _ready(client)
+    assert status == 503 and checks["rag"] == "error"
+    assert sc.rag_status()["reason"] == "embed_unreachable"
 
 
 def test_rag_only_mode_requires_the_lane_with_no_corpus(

@@ -77,10 +77,35 @@ def test_the_walk_is_bounded(kd, monkeypatch):
     assert ingest_sync._knowledge_dir_has_documents() is False
 
 
-def test_a_walk_that_fails_counts_as_holding_documents(kd, monkeypatch):
-    def _broken(self, pattern):
-        raise OSError("the mount went away mid-walk")
-    monkeypatch.setattr(ingest_sync.pathlib.Path, "rglob", _broken)
+def test_a_directory_that_cannot_be_listed_counts_as_holding_documents(kd, monkeypatch):
+    """pathlib's rglob swallowed a listing error and read a document in an
+    unreadable directory as none (the 2026-10-08 read); os.walk reports it."""
+    real_walk = ingest_sync.os.walk
+
+    def _walk(top, onerror=None, **kw):
+        onerror(PermissionError(13, "Permission denied", str(kd / "private")))
+        yield from real_walk(top, onerror=onerror, **kw)
+    monkeypatch.setattr(ingest_sync.os, "walk", _walk)
+    assert ingest_sync._knowledge_dir_has_documents() is True
+
+
+def test_a_walk_that_raises_counts_as_holding_documents(kd, monkeypatch):
+    """A tree too deep to walk raised RecursionError, which the probe turned
+    into probe_crashed and hid every other reason."""
+    def _broken(top, onerror=None, **kw):
+        raise RecursionError("too deep")
+        yield  # pragma: no cover - makes this a generator, as os.walk is
+    monkeypatch.setattr(ingest_sync.os, "walk", _broken)
+    assert ingest_sync._knowledge_dir_has_documents() is True
+
+
+def test_a_watched_file_that_cannot_be_read_counts(kd, monkeypatch):
+    """It is the operator's document even when this process cannot read it."""
+    (kd / "faq.md").write_text("How do I reset my password?", encoding="utf-8")
+
+    def _open(path, *a, **k):
+        raise PermissionError(13, "Permission denied", str(path))
+    monkeypatch.setattr(ingest_sync, "open", _open, raising=False)
     assert ingest_sync._knowledge_dir_has_documents() is True
 
 
@@ -106,7 +131,9 @@ def wired_lane_probe(monkeypatch):
     return wired["rag_probe"]
 
 
-def test_an_empty_store_beside_documents_is_an_error(kd, wired_lane_probe):
+def test_an_empty_store_beside_documents_is_an_error(kd, wired_lane_probe, monkeypatch):
+    # The embed service answers (it is asked first since 2026-10-08), so the store is the reason.
+    monkeypatch.setattr(db, "_embed", lambda *a, **k: [0.1] * 768)
     (kd / "faq.md").write_text("How do I reset my password?", encoding="utf-8")
     assert wired_lane_probe() == {"state": "error", "reason": "vector_store_empty"}
 

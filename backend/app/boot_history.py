@@ -61,10 +61,25 @@ def _read() -> list[dict]:
         return []
 
 
+def current_sha() -> str:
+    """This build's GIT_SHA, as both the stamp and the check read it: stripped,
+    "unknown" when absent or blank (a padded value was stamped raw and compared
+    stripped, so no boot ever matched - the 2026-10-08 read)."""
+    return os.getenv("GIT_SHA", "unknown").strip() or "unknown"
+
+
+def _boot_time(entry: dict) -> float | None:
+    """One entry's timestamp, or None for one this module never wrote."""
+    try:
+        return float(entry.get("ts", 0))
+    except (TypeError, ValueError):
+        return None
+
+
 def record_boot(sha: str | None = None, now: float | None = None) -> None:
     """Append this boot. Never raises - a failure here must not stop startup."""
     try:
-        sha = sha if sha is not None else os.getenv("GIT_SHA", "unknown")
+        sha = sha if sha is not None else current_sha()
         entry = {"ts": now if now is not None else time.time(), "sha": sha}
         history = (_read() + [entry])[-KEEP:]
         tmp = _path() + ".tmp"
@@ -83,7 +98,7 @@ def crash_loop_state(now: float | None = None) -> dict:
     docstring for why same-sha is the discriminator. Reports, never raises.
     """
     now = now if now is not None else time.time()
-    sha = os.getenv("GIT_SHA", "unknown").strip() or "unknown"
+    sha = current_sha()
     if sha == "unknown":
         # Built without its commit, every build stamps the same "unknown", so a
         # setup hour of rebuilds would read as one build crash-looping and fail
@@ -93,9 +108,10 @@ def crash_loop_state(now: float | None = None) -> dict:
         return {"looping": False, "watched": False, "boots": 0, "sha": sha,
                 "window_s": WINDOW_SECONDS}
     try:
-        recent = [b for b in _read()
-                  if b.get("sha") == sha and (now - float(b.get("ts", 0))) <= WINDOW_SECONDS]
-        n = len(recent)
+        # Per entry: one this module never wrote (a non-numeric ts) is skipped,
+        # rather than zeroing the whole count (the 2026-10-08 read).
+        stamps = [_boot_time(b) for b in _read() if b.get("sha") == sha]
+        n = sum(1 for t in stamps if t is not None and now - t <= WINDOW_SECONDS)
     except Exception:
         n = 0
     return {"looping": n > LOOP_THRESHOLD, "watched": True, "boots": n, "sha": sha,

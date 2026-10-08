@@ -245,10 +245,12 @@ def probe_retrieval_lane(rag_only: bool, corpus_expected: bool = False) -> dict:
                      if c.name != HELP_COLLECTION and c.count() > 0]
     except Exception:
         return {"state": "error", "reason": "vector_store_unreadable"}
-    if not populated and corpus_expected:
-        return {"state": "error", "reason": "vector_store_empty"}
-    if not populated and not rag_only:
+    if not populated and not rag_only and not corpus_expected:
         return {"state": "not_required"}
+    # The embed service is asked first, even for an empty store a corpus is
+    # expected in: a broken embed is also what leaves a store empty, and its
+    # reason is the one an operator can act on (the 2026-10-08 read - the
+    # store's emptiness used to be reported in its place).
     try:
         vector = _embed(_LANE_PROBE_TEXT, retries=1, timeout=15)
     except requests.HTTPError as e:
@@ -260,6 +262,8 @@ def probe_retrieval_lane(rag_only: bool, corpus_expected: bool = False) -> dict:
     if (not isinstance(vector, list) or not vector
             or not all(isinstance(x, (int, float)) for x in vector)):
         return {"state": "error", "reason": "embed_malformed"}
+    if not populated and corpus_expected:
+        return {"state": "error", "reason": "vector_store_empty"}
     if populated:
         try:
             populated[0].query(query_embeddings=[vector], n_results=1,

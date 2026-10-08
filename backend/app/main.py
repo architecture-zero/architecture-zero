@@ -140,8 +140,15 @@ async def _record_boot_on_startup():
     Feeds the crash_loop check in /api/health/ready (app/boot_history.py).
     """
     try:
-        from app.boot_history import record_boot
+        from app.boot_history import crash_loop_state, record_boot
         record_boot()
+        # One line per boot saying whether the crash-loop check is watching, so
+        # an operator who expects it can see it is off (a build without GIT_SHA
+        # reads "unwatched" otherwise only in an anonymous readiness body - the
+        # 2026-10-08 read).
+        state = crash_loop_state()
+        log("boot_recorded", sha=state["sha"],
+            crash_loop_check="watched" if state["watched"] else "unwatched - built without GIT_SHA")
     except Exception:
         pass
 

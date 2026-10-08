@@ -137,6 +137,46 @@ def test_a_build_without_its_commit_is_unwatched_never_looping(client, store, la
     assert bh.crash_loop_state()["watched"] is False
 
 
+def test_a_padded_sha_is_stamped_and_read_the_same(store, monkeypatch):
+    """A padded GIT_SHA was stamped raw and compared stripped, so no boot ever
+    matched and a real loop read as none (the 2026-10-08 read)."""
+    monkeypatch.setenv("GIT_SHA", " abc1234 ")
+    for i in range(6):
+        bh.record_boot(now=bh.time.time() - i * 60)
+    state = bh.crash_loop_state()
+    assert state["boots"] == 6 and state["looping"] is True
+
+
+def test_one_entry_with_a_bad_timestamp_does_not_zero_the_count(store):
+    now = bh.time.time()
+    _write(store, [{"ts": "not a time", "sha": "abc1234"}]
+           + [{"ts": now - i * 60, "sha": "abc1234"} for i in range(6)])
+    state = bh.crash_loop_state(now=now)
+    assert state["boots"] == 6 and state["looping"] is True
+
+
+def test_a_check_that_cannot_run_shows_unavailable_and_passes(client, store, lane_proven, monkeypatch):
+    """Fail open, never an invented outage - the branch had no test."""
+    def _broken():
+        raise RuntimeError("history unreadable")
+    monkeypatch.setattr(bh, "crash_loop_state", _broken)
+    r = client.get("/api/health/ready")
+    assert r.status_code == 200 and r.json()["checks"]["crash_loop"] == "unavailable"
+
+
+def test_each_boot_says_whether_the_check_is_watching(store, monkeypatch):
+    """An operator who expects the check can see it is off: "unwatched"
+    otherwise shows only in an anonymous readiness body."""
+    import asyncio
+    from app import main
+    lines = []
+    monkeypatch.setattr(main, "log", lambda event, **kw: lines.append((event, kw.get("crash_loop_check"))))
+    asyncio.run(main._record_boot_on_startup())
+    monkeypatch.setenv("GIT_SHA", "unknown")
+    asyncio.run(main._record_boot_on_startup())
+    assert lines == [("boot_recorded", "watched"), ("boot_recorded", "unwatched - built without GIT_SHA")]
+
+
 def test_the_first_startup_hook_stamps_the_boot(store):
     """The def is not the guard, the call is: record_boot runs from a startup
     hook, and from the FIRST one, so a boot that dies later - in the background

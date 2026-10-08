@@ -259,28 +259,40 @@ def _knowledge_dir_has_documents() -> bool:
     It runs on every self-check pass, so it stops at the first document and
     reads a file only until its first non-blank text. A tree with none is
     walked to the end, but never past _DOCUMENT_SCAN_LIMIT entries: a tree that
-    big counts as holding documents, as does a walk that fails - "not
-    required" is found by a complete look, never assumed."""
+    big counts as holding documents, as does any error on the way - a
+    directory that cannot be listed, a watched file that cannot be read, an
+    exception from the walk itself: "not required" is found by a complete,
+    clean look, never assumed. os.walk reports a listing error (pathlib's rglob
+    swallowed it, and read a document in an unreadable directory as none - the
+    2026-10-08 read); symlinked directories are not followed, as before."""
     if not os.path.isdir(KNOWLEDGE_DIR):
         return False
+    failed: list = []
+    seen = 0
     try:
-        for seen, p in enumerate(pathlib.Path(KNOWLEDGE_DIR).rglob("*")):
-            if seen >= _DOCUMENT_SCAN_LIMIT:
+        for root, dirs, files in os.walk(KNOWLEDGE_DIR, onerror=failed.append):
+            if failed:
                 return True
-            if not p.is_file() or p.suffix.lower() not in _WATCHED_EXTS:
-                continue
-            try:
-                with open(p, encoding="utf-8", errors="ignore") as f:
-                    piece = f.read(4096)
-                    while piece:
-                        if piece.strip():
-                            return True
+            seen += len(dirs)
+            for name in files:
+                seen += 1
+                if seen > _DOCUMENT_SCAN_LIMIT:
+                    return True
+                path = os.path.join(root, name)
+                if os.path.splitext(name)[1].lower() not in _WATCHED_EXTS or not os.path.isfile(path):
+                    continue
+                try:
+                    with open(path, encoding="utf-8", errors="ignore") as f:
                         piece = f.read(4096)
-            except OSError:
-                continue   # unreadable: the sync records it as an error, ingests nothing
-    except OSError:
+                        while piece:
+                            if piece.strip():
+                                return True
+                            piece = f.read(4096)
+                except OSError:
+                    return True   # a watched file that cannot be read is still the operator's document
+    except Exception:
         return True
-    return False
+    return bool(failed)
 
 
 def _sync_docs(force: bool = True) -> dict:
