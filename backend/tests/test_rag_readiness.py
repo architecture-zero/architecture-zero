@@ -387,3 +387,70 @@ def test_the_startup_hook_wires_the_lane_probe(client):
     """The conftest runs the timer off, so readiness reads "off" in the rest
     of the suite - but the hook must still have passed the probe in."""
     assert sc._rag_wired is True
+
+# -- The R-AZ-01 security read's follow-ups (2026-10-07) ----------------------
+
+def _drive_loop(monkeypatch, probe, seconds, on_full_pass):
+    """The real timer at a short interval with only the lane wired; the full
+    pass recorded instead of run."""
+    monkeypatch.setattr(sc, "run_self_check", lambda *a: on_full_pass(time.monotonic()) or {})
+
+    async def go():
+        task = asyncio.create_task(sc.self_check_loop(".", None, None, rag_probe=probe))
+        await asyncio.sleep(seconds)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    start = time.monotonic()
+    asyncio.run(go())
+    return start
+
+
+def test_a_boot_pass_that_fails_throughout_does_not_delay_the_first_full_pass(client, monkeypatch, lane):
+    """Awaiting the boot pass in front of the timer pushed the first full pass -
+    and with it every alert of that boot - back by nearly an interval."""
+    monkeypatch.setattr(sc, "SELF_CHECK_INTERVAL_SECONDS", 0.4)
+    monkeypatch.setattr(sc, "BOOT_RETRY_SECONDS", 0.05)
+    full = []
+    start = _drive_loop(monkeypatch, lambda: {"state": "error", "reason": "embed_unreachable"}, 0.7, full.append)
+    assert full, "no full pass at all"
+    assert full[0] - start < 0.6, f"first full pass at {full[0] - start:.2f}s - one interval is 0.4s"
+
+
+def test_a_boot_probe_that_never_returns_does_not_stop_the_timer(client, monkeypatch, lane):
+    monkeypatch.setattr(sc, "SELF_CHECK_INTERVAL_SECONDS", 0.2)
+    release = threading.Event()
+    full = []
+    try:
+        _drive_loop(monkeypatch, lambda: release.wait(10) and {"state": "ok"}, 0.7, full.append)
+    finally:
+        release.set()
+    assert len(full) >= 2, "the timer stopped behind a hung boot probe"
+
+
+def test_an_unknown_probe_state_is_an_error_that_alerts_and_is_not_published(client, monkeypatch, lane):
+    sc.probe_rag(lambda: {"state": "degraded"})
+    status, checks = _ready(client)
+    assert status == 503 and checks["rag"] == "error"
+    assert sc.rag_status()["reason"] == "probe_unknown_state"
+    assert "rag_down" in lane
+
+
+def test_a_pass_from_the_future_reads_stale(client, monkeypatch, lane):
+    """The wall clock stepped back an hour: a pass's age is unknowable then, so
+    it proves nothing."""
+    monkeypatch.setattr(sc, "_rag_last", {"state": "ok", "reason": None, "at": time.time() + 3600})
+    status, checks = _ready(client)
+    assert status == 503 and checks["rag"] == "stale"
+
+
+def test_readiness_logs_a_failing_lane_once_not_per_request(client, monkeypatch, lane):
+    monkeypatch.setattr(sc, "SELF_CHECK_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(sc, "_ready_logged", None, raising=False)
+    lines = []
+    monkeypatch.setattr(sc, "log_error", lambda event, **kw: lines.append((event, kw.get("word"))))
+    for _ in range(4):
+        client.get("/api/health/ready")
+    assert lines == [("readiness_rag_failing", "off")]

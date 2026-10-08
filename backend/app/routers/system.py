@@ -99,10 +99,10 @@ def health_ready():
     # 2026-10-07: pending and off used to pass, so a broken lane read ready).
     # The reason stays in the Owner's /api/health/detailed - this body says
     # pass/fail.
-    from app.self_check import rag_readiness
+    from app.self_check import log_readiness_change, rag_readiness
     checks["rag"], _rag_failing = rag_readiness()
+    log_readiness_change(checks["rag"], _rag_failing)
     if _rag_failing:
-        logging.getLogger("uvicorn.error").error("readiness: retrieval lane %s", checks["rag"])
         ready = False
 
     # Redis and Ollama (non-critical: the backend falls back to the database

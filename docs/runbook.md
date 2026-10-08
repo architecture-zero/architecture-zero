@@ -516,7 +516,9 @@ its corpus never empty - below).
 - `SELF_CHECK_INTERVAL_SECONDS=0` turns the lane check off with the rest of
   the timer; readiness then shows `off` - for the lane, Redis and Ollama
   alike - and answers 503, because nothing proves the lane. Keep the timer
-  on wherever an outside monitor reads readiness.
+  on wherever an outside monitor reads readiness - and wherever a load
+  balancer or orchestrator gates traffic on this route, which would take a
+  timer-off instance out of rotation.
 
 ## Running the test suite
 

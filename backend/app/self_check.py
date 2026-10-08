@@ -186,7 +186,11 @@ def _freshness(last: dict | None, wired: bool, now: float) -> str | None:
         if _started_at is not None and now - _started_at <= _stale_after():
             return "pending"
         return "stale"
-    if now - last["at"] > _stale_after():
+    age = now - last["at"]
+    # A pass from the future means the wall clock stepped back: its age is
+    # unknowable, so it proves nothing (the R-AZ-01 read's Info). Five seconds
+    # of slack keeps an NTP correction from flapping readiness.
+    if age > _stale_after() or age < -5:
         return "stale"
     return None
 
@@ -201,6 +205,10 @@ def probe_rag(rag_probe, alert: bool = True) -> dict:
     except Exception as e:
         log_error("self_check_rag_probe_crashed", error=str(e)[:300])
         state, reason = "error", "probe_crashed"
+    if state not in ("ok", "not_required", "error"):
+        # Fail closed and say so: an unknown word must not reach the public body
+        # or slip past the alert (the R-AZ-01 read's Info).
+        state, reason = "error", "probe_unknown_state"
     if state == "error" and alert:
         fire_alert("rag_down", f"Retrieval lane failing - {_INSTANCE_NAME}",
                    f"The retrieval lane failed its check ({reason}). Answers that "
@@ -220,6 +228,24 @@ def rag_readiness(now: float | None = None) -> tuple[str, bool]:
     if word is not None:
         return word, True
     return last["state"], last["state"] not in ("ok", "not_required")
+
+
+# The lane word the readiness route last logged: it logs a change, not every
+# anonymous request (a timer-off deployment used to log an ERROR per hit).
+_ready_logged: str | None = None
+
+
+def log_readiness_change(word: str, failing: bool) -> None:
+    """The readiness route's log line for the lane - written when its word
+    changes, never per request."""
+    global _ready_logged
+    if word == _ready_logged:
+        return
+    _ready_logged = word
+    if failing:
+        log_error("readiness_rag_failing", word=word)
+    else:
+        log("readiness_rag_ok", word=word)
 
 
 def ollama_readiness(now: float | None = None) -> str:
@@ -307,7 +333,11 @@ async def _boot_lane_pass(rag_probe, interval: float) -> None:
     for its first word (R-AZ-01). Quiet: no alert, however it ends - a cold
     start whose embed service is still loading is not an incident. While it
     fails, it is retried every BOOT_RETRY_SECONDS until it passes or the first
-    regular pass, which alerts as usual, is due."""
+    regular pass, which alerts as usual, is due. It runs as its own task beside
+    the timer, so neither a failing boot pass nor one that never returns delays
+    the first full pass (the R-AZ-01 read: awaiting it in front of the timer
+    pushed every alert of that boot back an interval, and a hung probe stopped
+    the timer for good)."""
     deadline = time.monotonic() + interval
     while True:
         try:
@@ -336,12 +366,15 @@ async def self_check_loop(data_dir: str, ollama_get=None, backup_state=None,
         ollama=_ollama_wired, redis=_redis_wired,
         backups=backup_state is not None and SELF_CHECK_BACKUP,
         rag=rag_probe is not None)
-    if rag_probe is not None:
-        await _boot_lane_pass(rag_probe, interval)
-    while True:
-        await asyncio.sleep(interval)
-        try:
-            await asyncio.to_thread(run_self_check, data_dir, ollama_get, backup_state,
-                                    backup_kinds, rag_probe)
-        except Exception as e:
-            log_error("self_check_crashed", error=str(e)[:300])
+    boot = asyncio.create_task(_boot_lane_pass(rag_probe, interval)) if rag_probe is not None else None
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await asyncio.to_thread(run_self_check, data_dir, ollama_get, backup_state,
+                                        backup_kinds, rag_probe)
+            except Exception as e:
+                log_error("self_check_crashed", error=str(e)[:300])
+    finally:
+        if boot is not None:
+            boot.cancel()

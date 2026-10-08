@@ -60,13 +60,11 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   only a live token passes, with the successor stored in the same
   transaction - so two concurrent refreshes of one token get one successor
   and the loser is treated as the replay it is (`SECURITY.md` states both).
-- **Readiness that covers the retrieval dependencies** - `/api/health/ready`
-  treats only the database as critical; the embedding provider, the vector
-  store and the configured answering provider are unchecked or advisory. An
-  instance therefore reports ready while every retrieval-backed question
-  returns a 500. Documented in the README rather than hidden, but the honest
-  probe is the better answer: per-dependency status, and a 503 when the
-  pieces retrieval actually needs are down.
+- ~~**Readiness that covers the retrieval dependencies**~~ - SHIPPED
+  2026-10-07: see "Readiness that proves the retrieval lane" under Shipped
+  below. (This entry said `/api/health/ready` treated only the database as
+  critical; the answering provider stays advisory - one provider among
+  several.)
 - **Non-root containers** - both images run as root, which trivy flags as
   DS-0002 and which is worth fixing rather than arguing with. The reason it
   is not a one-line change is the data directory: it arrives as a bind mount
@@ -116,9 +114,12 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   service, so an instance whose every governed question failed read ready.
   The timer now embeds one sentence through the query's own call and
   searches with it, read-only; `/api/health/ready` reads the last check,
-  never runs it, and fails on an error or a check older than two intervals
-  plus a minute. The runbook's Monitoring section has the states and the
-  reasons.
+  never runs it, and passes only on a fresh check that found the lane ok or
+  not needed - an error, a check older than two intervals plus a minute
+  (660 s at the default), none finished since boot (the first runs at boot)
+  or the timer off all fail it (since an outside re-review, 2026-10-07,
+  found "pending" and "off" passing). The runbook's Monitoring section has
+  the states and the reasons.
 - ~~**An update that takes its own copy first**~~ - SHIPPED 2026-10-02
   (`backend/app/db.py`, "A copy before the first one-way change"): the first
   boot after an update encrypts plaintext second-factor seeds and saved
