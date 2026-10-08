@@ -123,6 +123,20 @@ def test_readiness_is_green_when_not_looping(client, store, lane_proven):
     assert r.json()["checks"]["crash_loop"] == "ok"
 
 
+def test_a_build_without_its_commit_is_unwatched_never_looping(client, store, lane_proven, monkeypatch):
+    """Built without GIT_SHA, every build stamps "unknown": a stranger's setup
+    hour of rebuilds would read as one build crash-looping and fail readiness
+    for an hour. With no build to tell apart, the check does not watch."""
+    monkeypatch.setenv("GIT_SHA", "unknown")
+    _write(store, [{"ts": bh.time.time() - i * 60, "sha": "unknown"} for i in range(11)])
+    state = bh.crash_loop_state()
+    assert state["looping"] is False and state["watched"] is False
+    r = client.get("/api/health/ready")
+    assert r.status_code == 200 and r.json()["checks"]["crash_loop"] == "unwatched"
+    monkeypatch.delenv("GIT_SHA")
+    assert bh.crash_loop_state()["watched"] is False
+
+
 def test_the_first_startup_hook_stamps_the_boot(store):
     """The def is not the guard, the call is: record_boot runs from a startup
     hook, and from the FIRST one, so a boot that dies later - in the background

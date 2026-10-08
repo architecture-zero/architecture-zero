@@ -561,10 +561,13 @@ It clears by itself once the boots age out of the window.
 
 - The build is what tells a crash loop from a busy day of deploys: each
   deploy is a new build, a loop repeats one. The build is the `GIT_SHA`
-  baked in when the image is built (`GET /api/version` shows it), and the
-  build lines above leave it `unknown`, which makes every build look like
-  the same one. Pass the commit when you build, wherever readiness is
-  watched: `GIT_SHA=$(git rev-parse --short HEAD) docker compose up -d --build`.
+  baked in when the image is built (`GET /api/version` shows it). The
+  build lines above leave it `unknown`, which cannot tell one build from
+  the next, so the check does not watch then: readiness shows
+  `crash_loop: unwatched` and passes, rather than read a setup hour of
+  rebuilds as a loop. To turn it on, pass the commit when you build,
+  wherever readiness is watched:
+  `GIT_SHA=$(git rev-parse --short HEAD) docker compose up -d --build`.
 - Restarts without a rebuild - `docker compose restart`, or `docker compose
   up -d` after an `.env` change - are the same build, so a maintenance hour
   with five of them reads as a loop too. Expect it, or raise

@@ -102,6 +102,9 @@ def health_ready():
                 _loop["boots"], _loop["sha"], _loop["window_s"])
             checks["crash_loop"] = f"looping ({_loop['boots']} boots/{_loop['window_s']}s)"
             ready = False
+        elif not _loop.get("watched", True):
+            # Built without GIT_SHA: no build to tell apart, so not watching.
+            checks["crash_loop"] = "unwatched"
         else:
             checks["crash_loop"] = "ok"
     except Exception as e:

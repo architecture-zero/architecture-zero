@@ -24,9 +24,11 @@ rather than by a number tuned to sit between them.
 
 GIT_SHA is a BUILD ARG here (backend/Dockerfile bakes it into the image; the
 shipped compose file forwards `${GIT_SHA:-unknown}` from the shell that runs
-the build). An image built without it stamps every boot "unknown", so rebuilds
-stop counting as new builds and a busy hour of them reads as a loop: build
-with the commit wherever readiness is watched (docs/runbook.md, Monitoring).
+the build). An image built without it stamps every boot "unknown", which
+cannot tell one build from the next, so then the check does not watch at all
+- readiness shows `crash_loop: unwatched` and passes - rather than read a
+setup hour of rebuilds as a loop: build with the commit wherever readiness is
+watched (docs/runbook.md, Monitoring).
 
 FAIL-OPEN, deliberately: a missing, unreadable or malformed history file reports
 zero, never "unhealthy". A monitoring input that invents outages gets muted by
@@ -75,17 +77,26 @@ def record_boot(sha: str | None = None, now: float | None = None) -> None:
 
 
 def crash_loop_state(now: float | None = None) -> dict:
-    """{'looping': bool, 'boots': int, 'sha': str, 'window_s': int}.
+    """{'looping': bool, 'watched': bool, 'boots': int, 'sha': str, 'window_s': int}.
 
     'boots' counts boots of the CURRENT sha inside the window - see the module
     docstring for why same-sha is the discriminator. Reports, never raises.
     """
     now = now if now is not None else time.time()
-    sha = os.getenv("GIT_SHA", "unknown")
+    sha = os.getenv("GIT_SHA", "unknown").strip() or "unknown"
+    if sha == "unknown":
+        # Built without its commit, every build stamps the same "unknown", so a
+        # setup hour of rebuilds would read as one build crash-looping and fail
+        # readiness for an hour. With no build to tell apart the check does not
+        # watch ('watched' False; readiness shows "unwatched") - fail open,
+        # never an invented outage. Building with GIT_SHA turns it on.
+        return {"looping": False, "watched": False, "boots": 0, "sha": sha,
+                "window_s": WINDOW_SECONDS}
     try:
         recent = [b for b in _read()
                   if b.get("sha") == sha and (now - float(b.get("ts", 0))) <= WINDOW_SECONDS]
         n = len(recent)
     except Exception:
         n = 0
-    return {"looping": n > LOOP_THRESHOLD, "boots": n, "sha": sha, "window_s": WINDOW_SECONDS}
+    return {"looping": n > LOOP_THRESHOLD, "watched": True, "boots": n, "sha": sha,
+            "window_s": WINDOW_SECONDS}
