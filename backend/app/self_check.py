@@ -41,12 +41,25 @@ no-corpus policy, decided by a pass, not assumed). "pending", "off", "skipped"
 broken lane read ready from boot until the first pass, and indefinitely with
 the timer off. So the first lane pass runs at boot, not one interval later; if
 it fails, it is retried quietly every BOOT_RETRY_SECONDS until it passes or
-the first regular pass is due - quietly, because a cold start whose embed
+the first regular pass is near - quietly, because a cold start whose embed
 service is still loading is not an alert; the regular passes alert as before,
 and readiness shows the failure throughout. The oldest pass readiness accepts
 is two intervals plus a minute: 660 s at the default interval - a failure
 shows at the next pass (within one interval), a pass that never finishes
 shows once its predecessor is that old.
+
+Older evidence never replaces newer (R-AZ-02, the outside follow-up review,
+2026-10-08): the boot pass runs beside the timer, so a boot probe that came
+back late landed after a newer timer pass and replaced its "error" with the
+older "ok" - readiness went from 503 to 200 with nothing new proven - and,
+stamped when it finished, the old answer read as fresh. Each pass now takes a
+ticket before it probes: its result is recorded only if no pass that started
+later has been recorded, and it is stamped with when it started, so a late
+answer is as old as its question and one slower than the bound lands stale.
+A failing result dropped that way is logged (self_check_failure_superseded):
+it may have seen a failure the recorded pass missed, and the next pass will
+say. Ollama's and Redis's records keep the same rule (the Owner's detailed
+view probes Ollama beside the timer).
 
 Ollama and Redis (the AZ-02 security read's Info, 2026-10-07): the
 unauthenticated /api/health and /api/health/ready read Ollama's model list and
@@ -70,6 +83,7 @@ none runs the probes and logs what changed, nothing else.
 import asyncio
 import os
 import shutil
+import threading
 import time
 
 from app.alerting import DISK_ALERT_THRESHOLD_PCT, fire as fire_alert
@@ -97,6 +111,39 @@ _ollama_wired = False
 _redis_last: dict | None = None
 _redis_wired = False
 
+# Each recorded probe pass takes a ticket before it probes: its place in line
+# and its start time. Its result is recorded only if no pass that started
+# later has been, stamped with that start (R-AZ-02). The lock makes the claim
+# and the write one step; the probes run in worker threads.
+_record_lock = threading.Lock()
+_tickets_issued = 0
+_newest_recorded = {"rag": 0, "ollama": 0, "redis": 0}
+
+
+def _ticket() -> tuple[int, float]:
+    """A pass's place in line and its start time - taken before it probes."""
+    global _tickets_issued
+    with _record_lock:
+        _tickets_issued += 1
+        return _tickets_issued, time.time()
+
+
+def _claim(kind: str, ticket: int) -> bool:
+    """Called under _record_lock: True, and the record is this pass's to
+    write, when no pass that started later has been recorded."""
+    if ticket <= _newest_recorded[kind]:
+        return False
+    _newest_recorded[kind] = ticket
+    return True
+
+
+def _dropped(kind: str, failing: bool, reason: str | None = None) -> None:
+    """A result that a later-started pass outranked is not recorded. A failing
+    one is logged, outside the lock: it may have seen a failure the recorded
+    pass missed (the R-AZ-02 read's Info)."""
+    if failing:
+        log("self_check_failure_superseded", check=kind, reason=reason)
+
 
 def probe_disk(data_dir: str) -> dict:
     """Disk use of the data volume, and the alert over the threshold."""
@@ -116,8 +163,10 @@ def probe_disk(data_dir: str) -> dict:
 
 def probe_ollama(ollama_get) -> dict:
     """Ollama's model list within 3 s, and the alert when it does not answer.
-    Recorded for the health routes."""
+    Recorded for the health routes, unless a pass that started later already
+    was (R-AZ-02)."""
     global _ollama_last
+    ticket, started = _ticket()
     try:
         t0 = time.perf_counter()
         r = ollama_get("/api/tags", timeout=3)
@@ -127,14 +176,21 @@ def probe_ollama(ollama_get) -> dict:
         fire_alert("ollama_down", f"Ollama unreachable - {_INSTANCE_NAME}",
                    "Ollama did not respond within 3s. Chat will fail for Ollama models.")
         result = {"name": "ollama", "ok": False, "latency_ms": None}
-    _ollama_last = {"ok": result["ok"], "at": time.time()}
+    with _record_lock:
+        recorded = _claim("ollama", ticket)
+        if recorded:
+            _ollama_last = {"ok": result["ok"], "at": started}
+    if not recorded:
+        _dropped("ollama", not result["ok"])
     return result
 
 
 def probe_redis() -> dict:
-    """Redis answers a ping within 2 s. Recorded for the health routes; no
-    alert - the backend falls back to the database without it."""
+    """Redis answers a ping within 2 s. Recorded for the health routes, unless
+    a pass that started later already was; no alert - the backend falls back
+    to the database without it."""
     global _redis_last
+    ticket, started = _ticket()
     try:
         import redis as _redis
         _redis.from_url(os.getenv("REDIS_URL", "").strip(), socket_connect_timeout=2,
@@ -142,7 +198,12 @@ def probe_redis() -> dict:
         ok = True
     except Exception:
         ok = False
-    _redis_last = {"ok": ok, "at": time.time()}
+    with _record_lock:
+        recorded = _claim("redis", ticket)
+        if recorded:
+            _redis_last = {"ok": ok, "at": started}
+    if not recorded:
+        _dropped("redis", not ok)
     return {"name": "redis", "ok": ok}
 
 
@@ -197,8 +258,11 @@ def _freshness(last: dict | None, wired: bool, now: float) -> str | None:
 
 def probe_rag(rag_probe, alert: bool = True) -> dict:
     """One pass of the retrieval-lane probe the startup hook wired; recorded
-    for readiness, and an alert when it fails (not from the quiet boot pass)."""
+    for readiness - stamped with when it started, and only if no pass that
+    started later has been recorded (R-AZ-02) - and an alert when it fails
+    (not from the quiet boot pass)."""
     global _rag_last
+    ticket, started = _ticket()
     try:
         found = rag_probe()
         state, reason = found["state"], found.get("reason")
@@ -214,8 +278,21 @@ def probe_rag(rag_probe, alert: bool = True) -> dict:
                    f"The retrieval lane failed its check ({reason}). Answers that "
                    "need the knowledge base will fail until it recovers - the "
                    "runbook's Monitoring section.")
-    _rag_last = {"state": state, "reason": reason, "at": time.time()}
+    with _record_lock:
+        recorded = _claim("rag", ticket)
+        if recorded:
+            _rag_last = {"state": state, "reason": reason, "at": started}
+    if not recorded:
+        _dropped("rag", state == "error", reason)
     return {"state": state, "reason": reason}
+
+
+def _rag_word(last: dict | None, now: float) -> tuple[str, bool]:
+    """Readiness's word for one recorded pass (or none), and whether it fails."""
+    word = _freshness(last, _rag_wired, now)
+    if word is not None:
+        return word, True
+    return last["state"], last["state"] not in ("ok", "not_required")
 
 
 def rag_readiness(now: float | None = None) -> tuple[str, bool]:
@@ -223,11 +300,7 @@ def rag_readiness(now: float | None = None) -> tuple[str, bool]:
     readiness). Reads the last pass; never probes. Only a fresh pass that found
     the lane ok, or not required here, is ready: pending, off, skipped, stale and
     error all fail (R-AZ-01)."""
-    last = _rag_last
-    word = _freshness(last, _rag_wired, time.time() if now is None else now)
-    if word is not None:
-        return word, True
-    return last["state"], last["state"] not in ("ok", "not_required")
+    return _rag_word(_rag_last, time.time() if now is None else now)
 
 
 # The lane word the readiness route last logged: it logs a change, not every
@@ -270,9 +343,11 @@ def redis_readiness(now: float | None = None) -> str:
 
 def rag_status() -> dict:
     """The Owner's view of the lane: the readiness word plus the last pass's
-    reason and time. Never on an unauthenticated route."""
-    word, failing = rag_readiness()
+    reason and when it started - all from one read of the record, so a pass
+    landing meanwhile cannot mix two passes into one view (the R-AZ-02 read's
+    Info). Never on an unauthenticated route."""
     last = _rag_last
+    word, failing = _rag_word(last, time.time())
     return {"state": word, "failing": failing,
             "reason": last.get("reason") if last else None,
             "checked_at": round(last["at"]) if last else None}
@@ -333,11 +408,13 @@ async def _boot_lane_pass(rag_probe, interval: float) -> None:
     for its first word (R-AZ-01). Quiet: no alert, however it ends - a cold
     start whose embed service is still loading is not an incident. While it
     fails, it is retried every BOOT_RETRY_SECONDS until it passes or the first
-    regular pass, which alerts as usual, is due. It runs as its own task beside
-    the timer, so neither a failing boot pass nor one that never returns delays
-    the first full pass (the R-AZ-01 read: awaiting it in front of the timer
-    pushed every alert of that boot back an interval, and a hung probe stopped
-    the timer for good)."""
+    regular pass, which alerts as usual, is near: no retry starts within one
+    retry period of it, so every boot pass starts before the timer's first
+    (the R-AZ-02 read: a retry starting just after it outranked it). It runs as
+    its own task beside the timer, so neither a failing boot pass nor one that
+    never returns delays the first full pass (the R-AZ-01 read: awaiting it in
+    front of the timer pushed every alert of that boot back an interval, and a
+    hung probe stopped the timer for good)."""
     deadline = time.monotonic() + interval
     while True:
         try:
@@ -345,7 +422,7 @@ async def _boot_lane_pass(rag_probe, interval: float) -> None:
         except Exception as e:
             log_error("self_check_boot_pass_crashed", error=str(e)[:300])
             return
-        if found["state"] != "error" or time.monotonic() + BOOT_RETRY_SECONDS >= deadline:
+        if found["state"] != "error" or time.monotonic() + 2 * BOOT_RETRY_SECONDS >= deadline:
             return
         await asyncio.sleep(BOOT_RETRY_SECONDS)
 

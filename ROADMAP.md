@@ -118,8 +118,11 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   not needed - an error, a check older than two intervals plus a minute
   (660 s at the default), none finished since boot (the first runs at boot)
   or the timer off all fail it (since an outside re-review, 2026-10-07,
-  found "pending" and "off" passing). The runbook's Monitoring section has
-  the states and the reasons.
+  found "pending" and "off" passing). A check's age counts from its start,
+  and one that comes back after a later-started check was recorded is
+  dropped (since its follow-up, 2026-10-08, found a late boot check's old
+  "ok" replacing a newer "error"). The runbook's Monitoring section has the
+  states and the reasons.
 - ~~**An update that takes its own copy first**~~ - SHIPPED 2026-10-02
   (`backend/app/db.py`, "A copy before the first one-way change"): the first
   boot after an update encrypts plaintext second-factor seeds and saved

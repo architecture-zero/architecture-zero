@@ -508,10 +508,20 @@ its corpus never empty - below).
   interval, so a failure shows at the next check and a check that never
   finishes shows once the last one is that old; `pending`, no check finished
   since boot; `skipped`, no check wired; `off`, the timer disabled.
+- A check's age counts from when it started, and a check that comes back
+  after a later-started one has been recorded is dropped (since 2026-10-08:
+  the boot check runs beside the timer, and a late boot check's old `ok` used
+  to replace a newer `error` and read as fresh). A slow check can never read
+  fresher than it is, and one slower than 660 seconds lands `stale`. A
+  dropped check that had found a failure is logged as
+  `self_check_failure_superseded` - the next check will show whether it was
+  real.
 - The first lane check runs at boot, so readiness is green within seconds of
   a start whose lane works. If it fails it is retried every 15 seconds until
-  it passes or the first regular check is due - without an alert, because a
-  cold start whose embed service is still loading is not an incident; the
+  it passes or the first regular check is near (no retry starts within 15
+  seconds of it, so the regular check is always the newer) - without an
+  alert, because a cold start whose embed service is still loading is not an
+  incident; the
   regular checks alert as before, and readiness shows the failure throughout.
 - `SELF_CHECK_INTERVAL_SECONDS=0` turns the lane check off with the rest of
   the timer; readiness then shows `off` - for the lane, Redis and Ollama
