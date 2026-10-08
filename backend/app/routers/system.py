@@ -91,11 +91,14 @@ def health_ready():
     # nothing about the embed service retrieval depends on, so an instance
     # whose every governed query failed read ready. This reads the self-check
     # timer's last pass and never probes here: the probe reaches the embed
-    # service and the vector store, and this route is unauthenticated. An
-    # error or a stale pass fails readiness; "not_required" (no operator
-    # documents, RAG_ONLY_MODE off), "pending" (before the first pass) and
-    # "off" (timer disabled) do not. The reason stays in the Owner's
-    # /api/health/detailed - this body says pass/fail.
+    # service and the vector store, and this route is unauthenticated. Only a
+    # fresh pass that found the lane "ok", or "not_required" (no operator
+    # documents, RAG_ONLY_MODE off), is ready; "pending" (no pass yet - the
+    # first runs at boot), "off" (timer disabled), "skipped" (no probe wired),
+    # "stale" and "error" all fail it (R-AZ-01, the outside re-review,
+    # 2026-10-07: pending and off used to pass, so a broken lane read ready).
+    # The reason stays in the Owner's /api/health/detailed - this body says
+    # pass/fail.
     from app.self_check import rag_readiness
     checks["rag"], _rag_failing = rag_readiness()
     if _rag_failing:

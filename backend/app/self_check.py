@@ -33,6 +33,21 @@ inert. A last pass older than two intervals plus a minute reads "stale" and
 fails readiness the same as an error: a lane nobody has proven lately is not
 proven. Before the first pass it reads "pending"; with the timer off, "off".
 
+Readiness is proof, never its absence (R-AZ-01, the outside re-review,
+2026-10-07): the lane passes readiness only on a fresh pass that found it "ok"
+or "not_required" (no operator documents and RAG_ONLY_MODE off - the documented
+no-corpus policy, decided by a pass, not assumed). "pending", "off", "skipped"
+(no probe wired), "stale" and "error" all fail it. They used to pass, so a
+broken lane read ready from boot until the first pass, and indefinitely with
+the timer off. So the first lane pass runs at boot, not one interval later; if
+it fails, it is retried quietly every BOOT_RETRY_SECONDS until it passes or
+the first regular pass is due - quietly, because a cold start whose embed
+service is still loading is not an alert; the regular passes alert as before,
+and readiness shows the failure throughout. The oldest pass readiness accepts
+is two intervals plus a minute: 660 s at the default interval - a failure
+shows at the next pass (within one interval), a pass that never finishes
+shows once its predecessor is that old.
+
 Ollama and Redis (the AZ-02 security read's Info, 2026-10-07): the
 unauthenticated /api/health and /api/health/ready read Ollama's model list and
 pinged Redis on every hit - an outbound call per anonymous request, across the
@@ -43,8 +58,10 @@ found and those routes read that, as readiness reads the lane: "ok",
 readiness: Ollama is one provider among several, and the backend runs without
 Redis.
 
-SELF_CHECK_INTERVAL_SECONDS (default 300; 0 turns the timer off). The first
-run comes one interval after boot, so a restart is not itself an alert.
+SELF_CHECK_INTERVAL_SECONDS (default 300; 0 turns the timer off - and with it
+the lane's proof, so readiness answers 503 with rag "off"). The first full run
+comes one interval after boot, so a restart is not itself an alert; only the
+lane's quiet boot pass runs before it.
 SELF_CHECK_BACKUP (default true) - false on a deployment that backs up some
 other way and writes no backup-status.json. Alerts leave the box only when a
 channel is configured (ALERT_WEBHOOK_URL, or the SMTP set): an instance with
@@ -59,6 +76,8 @@ from app.alerting import DISK_ALERT_THRESHOLD_PCT, fire as fire_alert
 from app.logger import log, log_error
 
 SELF_CHECK_INTERVAL_SECONDS = int(os.getenv("SELF_CHECK_INTERVAL_SECONDS", "300"))
+# How soon a failing boot pass of the lane is tried again (R-AZ-01).
+BOOT_RETRY_SECONDS = 15
 SELF_CHECK_BACKUP = os.getenv("SELF_CHECK_BACKUP", "true").lower() == "true"
 _INSTANCE_NAME = os.getenv("VITE_INSTANCE_NAME", "Architecture Zero")
 
@@ -172,9 +191,9 @@ def _freshness(last: dict | None, wired: bool, now: float) -> str | None:
     return None
 
 
-def probe_rag(rag_probe) -> dict:
+def probe_rag(rag_probe, alert: bool = True) -> dict:
     """One pass of the retrieval-lane probe the startup hook wired; recorded
-    for readiness, and an alert when it fails."""
+    for readiness, and an alert when it fails (not from the quiet boot pass)."""
     global _rag_last
     try:
         found = rag_probe()
@@ -182,7 +201,7 @@ def probe_rag(rag_probe) -> dict:
     except Exception as e:
         log_error("self_check_rag_probe_crashed", error=str(e)[:300])
         state, reason = "error", "probe_crashed"
-    if state == "error":
+    if state == "error" and alert:
         fire_alert("rag_down", f"Retrieval lane failing - {_INSTANCE_NAME}",
                    f"The retrieval lane failed its check ({reason}). Answers that "
                    "need the knowledge base will fail until it recovers - the "
@@ -193,12 +212,14 @@ def probe_rag(rag_probe) -> dict:
 
 def rag_readiness(now: float | None = None) -> tuple[str, bool]:
     """(the word /api/health/ready shows for the lane, whether it fails
-    readiness). Reads the last pass; never probes."""
+    readiness). Reads the last pass; never probes. Only a fresh pass that found
+    the lane ok, or not required here, is ready: pending, off, skipped, stale and
+    error all fail (R-AZ-01)."""
     last = _rag_last
     word = _freshness(last, _rag_wired, time.time() if now is None else now)
     if word is not None:
-        return word, word == "stale"
-    return last["state"], last["state"] == "error"
+        return word, True
+    return last["state"], last["state"] not in ("ok", "not_required")
 
 
 def ollama_readiness(now: float | None = None) -> str:
@@ -281,6 +302,24 @@ def run_self_check(data_dir: str, ollama_get=None, backup_state=None,
     return result
 
 
+async def _boot_lane_pass(rag_probe, interval: float) -> None:
+    """Prove the retrieval lane at boot, so readiness need not wait an interval
+    for its first word (R-AZ-01). Quiet: no alert, however it ends - a cold
+    start whose embed service is still loading is not an incident. While it
+    fails, it is retried every BOOT_RETRY_SECONDS until it passes or the first
+    regular pass, which alerts as usual, is due."""
+    deadline = time.monotonic() + interval
+    while True:
+        try:
+            found = await asyncio.to_thread(probe_rag, rag_probe, False)
+        except Exception as e:
+            log_error("self_check_boot_pass_crashed", error=str(e)[:300])
+            return
+        if found["state"] != "error" or time.monotonic() + BOOT_RETRY_SECONDS >= deadline:
+            return
+        await asyncio.sleep(BOOT_RETRY_SECONDS)
+
+
 async def self_check_loop(data_dir: str, ollama_get=None, backup_state=None,
                           backup_kinds=("backup", "drill"), rag_probe=None) -> None:
     """The timer. Started from the startup hook; the probes run off the event
@@ -297,6 +336,8 @@ async def self_check_loop(data_dir: str, ollama_get=None, backup_state=None,
         ollama=_ollama_wired, redis=_redis_wired,
         backups=backup_state is not None and SELF_CHECK_BACKUP,
         rag=rag_probe is not None)
+    if rag_probe is not None:
+        await _boot_lane_pass(rag_probe, interval)
     while True:
         await asyncio.sleep(interval)
         try:

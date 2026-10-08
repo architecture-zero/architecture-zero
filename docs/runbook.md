@@ -466,9 +466,10 @@ amount:
 - `/api/backup-status` answers 503 when the backup job's heartbeat or the
   restore drill's is missing, stale or failed (Backups, above) - so it
   answers 503 from the first day until both are being written.
-- `/api/health/ready` answers 503 when the database is down, or when this
-  instance serves retrieval and its retrieval lane failed the timer's last
-  check or has not been checked lately (below).
+- `/api/health/ready` answers 503 when the database is down, or until a
+  recent check of the retrieval lane found it working - or found it not
+  needed here: it failed, has not finished its first check (that runs at
+  boot), has not been checked lately, or the timer is off (below).
 - `/api/health` answers 200 whatever it finds and puts `"status":
   "degraded"` in the body when Ollama is unreachable - a monitor has to read
   the body to catch that one.
@@ -486,7 +487,7 @@ missing `EMBED_MODEL` fails there (the service refuses it), and so does a
 different model, whose vector is the wrong width for the index. A failed
 check raises an alert like the others, and `/api/health/ready` answers 503
 until a check passes; its body shows `rag` as `ok`, `error`, `stale`,
-`pending`, `not_required` or `off`, and the Owner's detailed route gives the
+`pending`, `not_required`, `off` or `skipped`, and the Owner's detailed route gives the
 reason (`embed_unreachable`, `embed_model_missing`, `embed_refused`,
 `embed_malformed`, `vector_store_unreadable`, `vector_search_failed`,
 `probe_crashed`, and `vector_store_empty` on a deployment that declares
@@ -499,14 +500,23 @@ its corpus never empty - below).
   `corpus_expected=True` to the probe in its startup hook (`app/main.py`),
   and an empty store - a volume not mounted, an index wiped - then reads
   `error` instead of `not_required`.
-- The readiness route never runs the check itself - it reads the last one.
-  A check older than two intervals plus a minute reads `stale` and fails
-  readiness the same as an error: a lane nobody has checked lately is not
-  known to work. Until the first check, one interval after boot, it reads
-  `pending` and does not fail.
+- The readiness route never runs the check itself - it reads the last one,
+  and only a check that found the lane `ok` or `not_required` is ready.
+  Everything else fails it (since 2026-10-07; `pending` and `off` used to
+  pass, so a broken lane read ready from boot): `error`; `stale`, a check
+  older than two intervals plus a minute - 660 seconds at the default
+  interval, so a failure shows at the next check and a check that never
+  finishes shows once the last one is that old; `pending`, no check finished
+  since boot; `skipped`, no check wired; `off`, the timer disabled.
+- The first lane check runs at boot, so readiness is green within seconds of
+  a start whose lane works. If it fails it is retried every 15 seconds until
+  it passes or the first regular check is due - without an alert, because a
+  cold start whose embed service is still loading is not an incident; the
+  regular checks alert as before, and readiness shows the failure throughout.
 - `SELF_CHECK_INTERVAL_SECONDS=0` turns the lane check off with the rest of
   the timer; readiness then shows `off` - for the lane, Redis and Ollama
-  alike - and stops depending on the lane.
+  alike - and answers 503, because nothing proves the lane. Keep the timer
+  on wherever an outside monitor reads readiness.
 
 ## Running the test suite
 

@@ -195,7 +195,7 @@ and restart it; `ss -ltn | grep 11434` should then show `*:11434`, not
 Cloud-only deployments can ignore Ollama health if no local models are
 used.
 
-## Readiness answers 503 with "rag": "error" or "stale"
+## Readiness answers 503 with "rag": "error", "stale", "pending" or "off"
 
 The retrieval lane failed its last check, or has not been checked lately.
 Retrieval gets its embeddings from EMBED_BASE - a different service from the
@@ -222,12 +222,20 @@ reason:
   declared its corpus is never empty: check that the data volume is
   mounted where CHROMA_PATH points, then re-ingest.
 - `stale` - no check has finished for more than two intervals of
-  SELF_CHECK_INTERVAL_SECONDS. The backend log's `self_check` lines show
-  whether the timer is running.
+  SELF_CHECK_INTERVAL_SECONDS plus a minute (660 seconds at the default).
+  The backend log's `self_check` lines show whether the timer is running.
+- `pending` - the first check since boot has not finished. It runs at boot
+  and is retried every 15 seconds while it fails; pending for minutes means
+  the check itself is hanging, usually on the embed call (see
+  `embed_unreachable`).
+- `off` - SELF_CHECK_INTERVAL_SECONDS is 0, so nothing checks the lane and
+  readiness cannot vouch for it. Set the interval back (default 300).
+- `skipped` - no lane check was wired: the backend's startup did not finish.
 
 The check runs every SELF_CHECK_INTERVAL_SECONDS (default 300), so after a
 fix readiness turns green within one interval; a restart starts it over at
-`pending`.
+`pending`, and the boot check turns it green within seconds if the lane
+works.
 
 ## Vectors disappeared after a crash or power loss
 

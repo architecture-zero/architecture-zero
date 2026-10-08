@@ -52,6 +52,10 @@ def watched(monkeypatch):
     monkeypatch.setattr(sc, "_redis_wired", True, raising=False)
     monkeypatch.setattr(sc, "_ollama_last", None, raising=False)
     monkeypatch.setattr(sc, "_redis_last", None, raising=False)
+    # The lane proven a moment ago, so readiness's status here is about Ollama
+    # and Redis alone (an unproven lane fails readiness since R-AZ-01).
+    monkeypatch.setattr(sc, "_rag_wired", True, raising=False)
+    monkeypatch.setattr(sc, "_rag_last", {"state": "ok", "reason": None, "at": time.time()}, raising=False)
     monkeypatch.setattr(sc, "_last_failing", ())
     try:
         import app.boot_history as _boot_history

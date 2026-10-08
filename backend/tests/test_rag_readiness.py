@@ -17,8 +17,18 @@ headline and stale tests fail on the code before the fix for the behavioral
 reason (ready, no lane check); the others call the new probe and fail there on
 the missing API; the never-probes test passes on both by design - it pins the
 rule the fix must keep.
+
+R-AZ-01 (the outside re-review, 2026-10-07): readiness is proof, never its
+absence. "pending", "off" and "skipped" used to pass, so a broken lane read
+ready from boot until the first pass, and forever with the timer off; this
+file's own pending and off tests asserted 200. Now only a fresh pass that found
+the lane ok, or not required, is ready, and the first pass runs at boot - its
+tests fail on the code before it (pending, off and unwired answered 200; the
+first pass came one interval in).
 """
+import asyncio
 import inspect
+import threading
 import json
 import time
 
@@ -171,8 +181,9 @@ def test_a_stale_pass_is_not_ready_even_when_it_said_ok(client, monkeypatch, lan
 
 
 def test_before_the_first_pass_pending_then_stale(client, monkeypatch, lane):
+    """No pass yet proves nothing: pending is not ready (R-AZ-01)."""
     status, checks = _ready(client)
-    assert status == 200 and checks["rag"] == "pending"
+    assert status == 503 and checks["rag"] == "pending"
     monkeypatch.setattr(sc, "_started_at", time.time() - _BOUND - 5)
     status, checks = _ready(client)
     assert status == 503 and checks["rag"] == "stale"
@@ -245,10 +256,103 @@ def test_a_crashing_probe_reads_error_not_silence(client, monkeypatch, lane, tmp
     assert sc.rag_status()["reason"] == "probe_crashed" and "rag_down" in lane
 
 
-def test_the_timer_off_reads_off_and_does_not_fail(client, monkeypatch, lane):
+def test_the_timer_off_reads_off_and_is_not_ready(client, monkeypatch, lane):
+    """With the timer off nothing ever proves the lane, so readiness cannot
+    vouch for it - indefinitely green was the gap (R-AZ-01)."""
     monkeypatch.setattr(sc, "SELF_CHECK_INTERVAL_SECONDS", 0)
     status, checks = _ready(client)
-    assert status == 200 and checks["rag"] == "off"
+    assert status == 503 and checks["rag"] == "off"
+
+
+def test_no_wired_probe_is_not_ready(client, monkeypatch, lane):
+    monkeypatch.setattr(sc, "_rag_wired", False)
+    status, checks = _ready(client)
+    assert status == 503 and checks["rag"] == "skipped"
+
+
+def test_the_oldest_pass_accepted_is_two_intervals_and_a_minute(client, monkeypatch, lane):
+    """The documented bound, both sides of it: 660 s at the default interval."""
+    assert sc._stale_after() == 660
+    for age, expected in ((659, 200), (661, 503)):
+        monkeypatch.setattr(sc, "_rag_last", {"state": "ok", "reason": None, "at": time.time() - age})
+        assert _ready(client)[0] == expected, age
+
+
+def _run_loop_until(monkeypatch, probe, done, seconds=5.0):
+    """The real timer at the 300 s interval with only the lane wired, until
+    `done()` or the deadline; then stopped."""
+    async def go():
+        task = asyncio.create_task(sc.self_check_loop(".", None, None, rag_probe=probe))
+        end = time.monotonic() + seconds
+        while time.monotonic() < end and not done():
+            await asyncio.sleep(0.02)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    asyncio.run(go())
+
+
+def test_the_first_lane_pass_runs_at_boot_not_an_interval_later(client, monkeypatch, lane):
+    calls = []
+    _run_loop_until(monkeypatch, lambda: calls.append(1) or {"state": "ok"}, lambda: bool(calls))
+    assert calls, "no pass within seconds of the timer starting at a 300 s interval"
+    status, checks = _ready(client)
+    assert status == 200 and checks["rag"] == "ok"
+
+
+def test_a_dead_embed_service_is_not_ready_from_boot_and_the_boot_pass_is_quiet(
+        client, monkeypatch, lane, real_embed, tmp_path):
+    monkeypatch.setattr(db, "client", _Client([_Col()]))
+    monkeypatch.setattr(requests, "post", _refused)
+    passes = []
+
+    def probe():
+        passes.append(1)
+        return db.probe_retrieval_lane(False)
+    _run_loop_until(monkeypatch, probe, lambda: bool(passes) and sc._rag_last is not None)
+    status, checks = _ready(client)
+    assert status == 503 and checks["rag"] == "error"
+    assert lane == [], "the boot pass alerted"
+
+
+def test_a_failing_boot_pass_is_retried_until_the_lane_comes_up(client, monkeypatch, lane):
+    monkeypatch.setattr(sc, "BOOT_RETRY_SECONDS", 0.01)
+    answers = [{"state": "error", "reason": "embed_unreachable"}] * 2 + [{"state": "ok"}]
+    seen = []
+
+    def probe():
+        seen.append(1)
+        return answers[min(len(seen), len(answers)) - 1]
+    _run_loop_until(monkeypatch, probe, lambda: len(seen) >= 3)
+    assert len(seen) >= 3
+    status, checks = _ready(client)
+    assert status == 200 and checks["rag"] == "ok"
+    assert lane == []
+
+
+def test_a_stalled_boot_pass_is_not_ready(client, monkeypatch, lane):
+    release, started = threading.Event(), threading.Event()
+
+    def probe():
+        started.set()
+        release.wait(5)
+        return {"state": "ok"}
+
+    async def go():
+        task = asyncio.create_task(sc.self_check_loop(".", None, None, rag_probe=probe))
+        await asyncio.to_thread(started.wait, 5)
+        status, checks = await asyncio.to_thread(_ready, client)
+        release.set()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        return status, checks
+    status, checks = asyncio.run(go())
+    assert status == 503 and checks["rag"] == "pending"
 
 
 def test_the_readiness_request_never_probes(client, monkeypatch, lane):
