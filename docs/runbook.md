@@ -491,16 +491,27 @@ until a check passes; its body shows `rag` as `ok`, `error`, `stale`,
 `pending`, `not_required`, `off` or `skipped`, and the Owner's detailed route gives the
 reason (`embed_unreachable`, `embed_model_missing`, `embed_refused`,
 `embed_malformed`, `vector_store_unreadable`, `vector_search_failed`,
-`probe_crashed`, and `vector_store_empty` on a deployment that declares
-its corpus never empty - below).
+`probe_crashed`, and `vector_store_empty` when a corpus is expected and the
+store is empty - below).
 
 - The lane is required when the instance has documents of its own to serve
-  (the product help pages do not count) or `RAG_ONLY_MODE` is on. Otherwise
-  it reads `not_required` and asks nothing of the embed service. A
-  deployment whose corpus is never legitimately empty can pass
-  `corpus_expected=True` to the probe in its startup hook (`app/main.py`),
-  and an empty store - a volume not mounted, an index wiped - then reads
-  `error` instead of `not_required`.
+  (the product help pages do not count), when `KNOWLEDGE_DIR` holds a
+  document the startup sync would ingest, or when `RAG_ONLY_MODE` is on.
+  Otherwise - a client deployment that starts with an empty or missing
+  `KNOWLEDGE_DIR` - it reads `not_required` and asks nothing of the embed
+  service.
+- With a document in `KNOWLEDGE_DIR` (since 2026-10-08: a file at any depth
+  with a type the sync reads, `_WATCHED_EXTS` in `app/ingest_sync.py`, and
+  text that is not blank), an empty store - a volume not mounted, an index
+  wiped, ingestion failing - reads `error` (`vector_store_empty`) instead of
+  `not_required`, which read ready. A first boot reads it too until the
+  startup sync indexes the first document (the shipped corpus counts), and
+  the next check after that turns green. The question is asked on every
+  check, so it stops at the first document and looks at no more than 10,000
+  entries; a tree that big with none among them counts as holding
+  documents. A deployment whose corpus is never legitimately empty, whatever
+  `KNOWLEDGE_DIR` holds, can still pass `corpus_expected=True` to the probe
+  in its startup hook (`app/main.py`).
 - The readiness route never runs the check itself - it reads the last one,
   and only a check that found the lane `ok` or `not_required` is ready.
   Everything else fails it (since 2026-10-07; `pending` and `off` used to

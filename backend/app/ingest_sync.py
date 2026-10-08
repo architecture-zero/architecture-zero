@@ -244,6 +244,45 @@ def _sync_knowledge_dir(force: bool = True) -> dict:
     return results
 
 
+# The most entries one _knowledge_dir_has_documents call looks at.
+_DOCUMENT_SCAN_LIMIT = 10_000
+
+
+def _knowledge_dir_has_documents() -> bool:
+    """Whether KNOWLEDGE_DIR holds a document _sync_knowledge_dir would ingest,
+    by its rule: a file at any depth, a watched suffix, text that is not blank.
+    The startup hook passes this to the retrieval-lane probe as
+    corpus_expected (2026-10-08, filed by the R-AZ-01 read): an empty vector
+    store beside documents waiting to be served is an error, not
+    "not_required". An empty or missing directory still reads not_required.
+
+    It runs on every self-check pass, so it stops at the first document and
+    reads a file only until its first non-blank text. A tree with none is
+    walked to the end, but never past _DOCUMENT_SCAN_LIMIT entries: a tree that
+    big counts as holding documents, as does a walk that fails - "not
+    required" is found by a complete look, never assumed."""
+    if not os.path.isdir(KNOWLEDGE_DIR):
+        return False
+    try:
+        for seen, p in enumerate(pathlib.Path(KNOWLEDGE_DIR).rglob("*")):
+            if seen >= _DOCUMENT_SCAN_LIMIT:
+                return True
+            if not p.is_file() or p.suffix.lower() not in _WATCHED_EXTS:
+                continue
+            try:
+                with open(p, encoding="utf-8", errors="ignore") as f:
+                    piece = f.read(4096)
+                    while piece:
+                        if piece.strip():
+                            return True
+                        piece = f.read(4096)
+            except OSError:
+                continue   # unreadable: the sync records it as an error, ingests nothing
+    except OSError:
+        return True
+    return False
+
+
 def _sync_docs(force: bool = True) -> dict:
     """Ingest the configured root files and all files under docs/ into
     general RAG. force=False (startup) skips unchanged files - see

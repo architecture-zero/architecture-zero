@@ -426,14 +426,19 @@ async def startup_tasks():
     # reader the detailed route uses, and the two heartbeats through the
     # reader /api/backup-status serves. And the retrieval lane (AZ-02,
     # 2026-10-07): embed service plus vector store, read-only, whose last pass
-    # /api/health/ready reads.
+    # /api/health/ready reads. Its corpus is expected while KNOWLEDGE_DIR holds
+    # a document the sync would ingest (2026-10-08), so an empty store beside
+    # one reads error; asked on every pass, so a directory filled or emptied
+    # after boot counts. A client deployment that starts empty stays
+    # not_required.
     from app.self_check import self_check_loop
     from app.runtime_config import _DATA_DIR, _ollama_get, RAG_ONLY_MODE
     from app.routers.system import _backup_job_state
     from app.database import probe_retrieval_lane
+    from app.ingest_sync import _knowledge_dir_has_documents
     asyncio.create_task(self_check_loop(
         _DATA_DIR, _ollama_get, _backup_job_state,
-        rag_probe=lambda: probe_retrieval_lane(RAG_ONLY_MODE)))
+        rag_probe=lambda: probe_retrieval_lane(RAG_ONLY_MODE, corpus_expected=_knowledge_dir_has_documents())))
 
 
 @app.on_event("shutdown")

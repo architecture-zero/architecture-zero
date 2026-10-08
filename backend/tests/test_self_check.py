@@ -194,7 +194,8 @@ def test_boot_starts_the_timer_with_what_this_deployment_watches():
     from app import main
     src = inspect.getsource(main.startup_tasks)
     assert "_DATA_DIR, _ollama_get, _backup_job_state," in src
-    assert "rag_probe=lambda: probe_retrieval_lane(RAG_ONLY_MODE)" in src   # AZ-02
+    assert ("rag_probe=lambda: probe_retrieval_lane(RAG_ONLY_MODE, "
+            "corpus_expected=_knowledge_dir_has_documents())" in src)   # AZ-02; 2026-10-08
 
 
 def test_the_detailed_route_runs_the_same_probes():

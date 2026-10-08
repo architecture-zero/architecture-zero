@@ -115,10 +115,11 @@ def health_ready():
     # timer's last pass and never probes here: the probe reaches the embed
     # service and the vector store, and this route is unauthenticated. Only a
     # fresh pass that found the lane "ok", or "not_required" (no operator
-    # documents, RAG_ONLY_MODE off), is ready; "pending" (no pass yet - the
-    # first runs at boot), "off" (timer disabled), "skipped" (no probe wired),
-    # "stale" and "error" all fail it (R-AZ-01, the outside re-review,
-    # 2026-10-07: pending and off used to pass, so a broken lane read ready).
+    # documents, none waiting in KNOWLEDGE_DIR, RAG_ONLY_MODE off), is ready;
+    # "pending" (no pass yet - the first runs at boot), "off" (timer
+    # disabled), "skipped" (no probe wired), "stale" and "error" all fail it
+    # (R-AZ-01, the outside re-review, 2026-10-07: pending and off used to
+    # pass, so a broken lane read ready).
     # The reason stays in the Owner's /api/health/detailed - this body says
     # pass/fail.
     from app.self_check import log_readiness_change, rag_readiness

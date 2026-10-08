@@ -218,9 +218,12 @@ reason:
   re-ingest under the new one.
 - `vector_store_unreadable` - the vector store itself could not be read;
   see the next section.
-- `vector_store_empty` - the store holds no documents on a deployment that
-  declared its corpus is never empty: check that the data volume is
-  mounted where CHROMA_PATH points, then re-ingest.
+- `vector_store_empty` - the store holds no documents while KNOWLEDGE_DIR
+  holds files to serve (or the deployment declared its corpus is never
+  empty): check that the data volume is mounted where CHROMA_PATH points,
+  and read the backend log's `startup_sync_errors` lines - a failing embed
+  service leaves the store empty too. Then re-ingest. On a first boot it
+  shows until the startup sync has indexed the first document.
 - `stale` - no check has finished for more than two intervals of
   SELF_CHECK_INTERVAL_SECONDS plus a minute (660 seconds at the default).
   The backend log's `self_check` lines show whether the timer is running.

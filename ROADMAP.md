@@ -121,8 +121,12 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   found "pending" and "off" passing). A check's age counts from its start,
   and one that comes back after a later-started check was recorded is
   dropped (since its follow-up, 2026-10-08, found a late boot check's old
-  "ok" replacing a newer "error"). The runbook's Monitoring section has the
-  states and the reasons.
+  "ok" replacing a newer "error"). Not needed means no documents to serve
+  and RAG_ONLY_MODE off - and not while `KNOWLEDGE_DIR` holds a document the
+  startup sync would ingest: an empty store beside it is an error (since
+  2026-10-08; it read not needed, so an unmounted store volume or a wiped
+  index read ready). The runbook's Monitoring section has the states and the
+  reasons.
 - ~~**An update that takes its own copy first**~~ - SHIPPED 2026-10-02
   (`backend/app/db.py`, "A copy before the first one-way change"): the first
   boot after an update encrypts plaintext second-factor seeds and saved
