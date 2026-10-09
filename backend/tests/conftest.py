@@ -102,6 +102,12 @@ def _no_outbound_embed(*args, **kwargs):
 
 patch("app.database.requests.post", side_effect=_no_outbound_embed).start()
 
+# Nor does any test read Anthropic's live model list (a requests.get, which the
+# block above does not cover): the catalog sees no list, so its fallbacks
+# answer, unless a test serves its own. Every Anthropic request asks the
+# catalog how much room its model needs (model_catalog.output_room, 2026-10-09).
+patch("app.model_catalog._fetch_list", return_value=[]).start()
+
 _ADMIN = {"username": "testadmin", "password": "AdminPass1"}
 
 

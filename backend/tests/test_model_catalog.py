@@ -7,6 +7,7 @@ untouched (a pin); the eval JUDGE must be stored as a pin even when a family
 is picked for it - the ruler never moves on its own - while the eval writer
 may follow a family like any other slot, and a run records the version it used.
 """
+import json
 from unittest.mock import patch
 
 import pytest
@@ -263,3 +264,99 @@ def test_the_chat_config_names_the_version_that_answers(client, admin_headers, c
         d = client.get("/api/config", headers=admin_headers).json()
     assert d["chat_model_effective"] == "claude-sonnet-latest"
     assert d["chat_model_resolved"] == "claude-sonnet-5-5"
+
+
+# -- Output room: a model that thinks first still has room to answer ---------
+
+def _thinking(can_switch_off: bool, ceiling: int = 128000) -> dict:
+    """A list entry's capability fields, as Anthropic serves them."""
+    return {"max_tokens": ceiling,
+            "capabilities": {"thinking": {"supported": True, "types": {
+                "adaptive": {"supported": True},
+                "disabled": {"supported": can_switch_off}}}}}
+
+
+@pytest.fixture
+def caps(catalog):
+    """The list with capabilities: the 5.5 models' thinking cannot be switched
+    off (they think unasked), the older models' can (they answer straight away)."""
+    unasked = ("claude-opus-5-5", "claude-sonnet-5-5")
+    catalog["models"] = [dict(m, **_thinking(m["id"] not in unasked)) for m in LIST]
+    return catalog
+
+
+def test_a_model_that_thinks_unasked_gets_room_for_its_thinking(caps):
+    room = model_catalog.THINKING_ROOM
+    assert model_catalog.thinks_unasked("claude-sonnet-5-5")
+    assert model_catalog.output_room("claude-sonnet-5-5", 1024) == 1024 + room
+    assert model_catalog.output_room("claude-opus-latest", 512) == 512 + room
+
+
+def test_a_model_that_answers_straight_away_keeps_its_cap(caps):
+    assert not model_catalog.thinks_unasked("claude-sonnet-4-6")
+    assert model_catalog.output_room("claude-sonnet-4-6", 1024) == 1024
+    assert model_catalog.output_room("claude-haiku-latest", 800) == 800
+    assert model_catalog.output_room("gpt-4o", 1024) == 1024
+    assert model_catalog.output_room("qwen3:8b", 1024) == 1024
+
+
+def test_the_room_stops_at_the_models_own_ceiling(caps):
+    caps["models"] = [dict(m, max_tokens=3000) if m["id"] == "claude-sonnet-5-5" else m
+                      for m in caps["models"]]
+    assert model_catalog.ceiling("claude-sonnet-5-5") == 3000
+    assert model_catalog.output_room("claude-sonnet-5-5", 1024) == 3000
+
+
+def test_without_capabilities_the_fallback_names_the_models_that_think(catalog):
+    # The plain list carries no capabilities; an empty one carries no models.
+    room = model_catalog.THINKING_ROOM
+    assert model_catalog.output_room("claude-sonnet-5-5", 1024) == 1024 + room
+    assert model_catalog.output_room("claude-sonnet-4-6", 1024) == 1024
+    catalog["models"] = []
+    assert model_catalog.output_room("claude-opus-latest", 1024) == 1024 + room
+    assert model_catalog.ceiling("claude-opus-5-5") is None
+
+
+def test_a_cut_answer_is_logged_and_a_whole_one_is_not(monkeypatch):
+    seen = []
+    monkeypatch.setattr("app.logger.log", lambda event, **f: seen.append((event, f)))
+    model_catalog.note_if_cut("end_turn", "claude-sonnet-5-5", 5120)
+    model_catalog.note_if_cut(None, "claude-sonnet-5-5", 5120)
+    assert seen == []
+    model_catalog.note_if_cut("max_tokens", "claude-sonnet-5-5", 5120)
+    assert seen == [("output_cut_at_token_cap", {"model": "claude-sonnet-5-5", "max_tokens": 5120})]
+
+
+def _sse(events):
+    from unittest.mock import MagicMock
+    resp = MagicMock()
+    resp.ok = True
+    resp.iter_lines.return_value = [f"data: {json.dumps(e)}" for e in events]
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
+
+
+def test_both_anthropic_call_sites_send_the_room_and_log_a_cut(caps, monkeypatch):
+    from unittest.mock import MagicMock
+    from app.providers import _anthropic_stream_events, _anthropic_tool_call
+    seen = []
+    monkeypatch.setattr("app.logger.log", lambda event, **f: seen.append(event))
+    room = model_catalog.THINKING_ROOM
+    cut = [{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Where does"}},
+           {"type": "message_delta", "delta": {"stop_reason": "max_tokens"}}]
+    msgs = [{"role": "user", "content": "hi"}]
+    with patch("app.providers.req.post", return_value=_sse(cut)) as post:
+        events = list(_anthropic_stream_events(msgs, "claude-sonnet-5-5", max_tokens=1024))
+    assert post.call_args.kwargs["json"]["max_tokens"] == 1024 + room
+    assert events == [{"type": "text", "text": "Where does"}]
+    assert seen == ["output_cut_at_token_cap"]
+    with patch("app.providers.req.post", return_value=_sse([])) as post:
+        list(_anthropic_stream_events(msgs, "claude-sonnet-4-6", max_tokens=1024))
+    assert post.call_args.kwargs["json"]["max_tokens"] == 1024
+    resp = MagicMock()
+    resp.json.return_value = {"content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn"}
+    with patch("app.providers.req.post", return_value=resp) as post:
+        _anthropic_tool_call(msgs, "claude-opus-5-5", [])
+    assert post.call_args.kwargs["json"]["max_tokens"] == 8192 + room
+    assert seen == ["output_cut_at_token_cap"]

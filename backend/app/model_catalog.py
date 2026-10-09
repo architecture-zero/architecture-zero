@@ -17,6 +17,10 @@ trims the other providers' lists to the newest model of each family. A saved
 value the trimmed list no longer shows stays visible in the admin panel (its
 "(saved)" entry), so trimming never hides a setting.
 
+The list also says which models think before they answer, unasked, and how
+much a model can write: `output_room()` adds room for that thinking to a
+request's max_tokens, so a cap sized for the answer still holds the answer.
+
 Shared verbatim by every backend built from this template; keep it free of
 anything instance-specific (a caller passes its own badge rule).
 """
@@ -207,6 +211,73 @@ def anthropic_all_versions(badge) -> list:
     models = sorted(_anthropic_list(), key=lambda m: m.get("created_at") or "", reverse=True)
     return [{"value": m["id"], "label": m.get("display_name") or m["id"], "badge": badge(m["id"])}
             for m in models if family_of(m["id"])]
+
+
+# -- Output room: what a request's max_tokens has to hold ---------------------
+
+# Room added to a request's max_tokens on a model that thinks before it
+# answers whether or not the request asks it to. The thinking counts against
+# max_tokens, so a cap sized for a model that answers straight away stops one
+# that thinks first in mid-sentence - read live 2026-10-09: a 1024-token
+# answer on Sonnet 5.5 thought first, then ended mid-word (stop_reason
+# "max_tokens"), where Sonnet 4.6 had answered the same cap whole.
+THINKING_ROOM = 4096
+
+# The models that think unasked, read ONLY when Anthropic's list cannot be
+# (no key, an outage) or does not carry the model. The list declares it per
+# model: thinking that cannot be switched off (capabilities.thinking.types.
+# disabled unsupported) is adaptive thinking on every request. Read live
+# 2026-10-09: Opus 5.5 and Sonnet 5.5 think unasked; Sonnet 4.6 and Haiku 4.5
+# do not.
+THINKS_UNASKED_FALLBACK = frozenset({"claude-opus-5-5", "claude-sonnet-5-5"})
+
+
+def _listed(model_id: str) -> dict | None:
+    """The list's entry for one model id, or None."""
+    for m in _anthropic_list():
+        if m["id"] == model_id:
+            return m
+    return None
+
+
+def thinks_unasked(model: str) -> bool:
+    """True when a Claude model (an id or a family alias) thinks before it
+    answers although the request does not ask it to - per the list's
+    capabilities, else THINKS_UNASKED_FALLBACK. False for any model that is
+    not Claude's."""
+    mid = resolve(model)
+    if not family_of(mid):
+        return False
+    thinking = ((_listed(mid) or {}).get("capabilities") or {}).get("thinking")
+    if not isinstance(thinking, dict):
+        return mid in THINKS_UNASKED_FALLBACK
+    types = thinking.get("types") or {}
+    return bool(thinking.get("supported")) and not (types.get("disabled") or {}).get("supported")
+
+
+def ceiling(model: str) -> int | None:
+    """The most output tokens a Claude model can write in one response, as
+    the list declares it; None when the list does not say."""
+    value = (_listed(resolve(model)) or {}).get("max_tokens")
+    return value if isinstance(value, int) and value > 0 else None
+
+
+def output_room(model: str, max_tokens: int) -> int:
+    """The max_tokens a request sends: the caller's own cap, sized for the
+    answer it wants, plus THINKING_ROOM when the model thinks first - held to
+    the model's own ceiling when the list gives one. A model that answers
+    straight away gets the caller's cap unchanged."""
+    if not thinks_unasked(model):
+        return max_tokens
+    top = ceiling(model)
+    return min(max_tokens + THINKING_ROOM, top) if top else max_tokens + THINKING_ROOM
+
+
+def note_if_cut(stop_reason, model: str, max_tokens: int) -> None:
+    """Log a response its token cap ended ("output_cut_at_token_cap"), so an
+    answer stopped mid-sentence is on record instead of silent."""
+    if stop_reason == "max_tokens":
+        _note("output_cut_at_token_cap", model=model, max_tokens=max_tokens)
 
 
 # -- Other providers: the newest of each family -------------------------------

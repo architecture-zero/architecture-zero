@@ -484,7 +484,9 @@ def _anthropic_stream_events(messages: list, model: str, system_prompt: str = ""
     payload: dict = {
         "model": model,
         "messages": merged,
-        "max_tokens": max_tokens,
+        # The caller's cap holds the answer; a model that thinks first gets
+        # room for its thinking on top (model_catalog.output_room).
+        "max_tokens": model_catalog.output_room(model, max_tokens),
         "stream": True,
     }
     if system_blocks:
@@ -494,6 +496,7 @@ def _anthropic_stream_events(messages: list, model: str, system_prompt: str = ""
 
     # index -> {"id", "name", "args_buf"} - one entry per in-flight tool_use block
     tool_blocks: dict[int, dict] = {}
+    stop_reason = None
 
     with req.post("https://api.anthropic.com/v1/messages",
                   headers=_anthropic_headers(), json=payload, stream=True, timeout=300) as resp:
@@ -563,6 +566,11 @@ def _anthropic_stream_events(messages: list, model: str, system_prompt: str = ""
                         args = {}
                     yield {"type": "tool_call", "id": tb["id"], "name": tb["name"], "args": args}
 
+            elif ctype == "message_delta":
+                stop_reason = (chunk.get("delta") or {}).get("stop_reason") or stop_reason
+
+    model_catalog.note_if_cut(stop_reason, model, payload["max_tokens"])
+
 
 def _anthropic_tool_call(messages: list, model: str, tools: list) -> dict:
     """Non-streaming Anthropic call for the agentic tool loop."""
@@ -575,7 +583,7 @@ def _anthropic_tool_call(messages: list, model: str, tools: list) -> dict:
     payload: dict = {
         "model": model,
         "messages": anthropic_messages,
-        "max_tokens": 8192,
+        "max_tokens": model_catalog.output_room(model, 8192),
     }
     if tools:
         payload["tools"] = _to_anthropic_tools(tools)
@@ -591,6 +599,7 @@ def _anthropic_tool_call(messages: list, model: str, tools: list) -> dict:
     resp.raise_for_status()
     data = resp.json()
     _log_anthropic_usage(data.get("usage") or {}, model)
+    model_catalog.note_if_cut(data.get("stop_reason"), model, payload["max_tokens"])
 
     text_parts = []
     tool_calls = []
