@@ -92,24 +92,19 @@ def health_ready():
     # restarts with zero alerts on 2026-08-20. Cheap and inert by design: reads
     # a small JSON file, never touches Chroma, so the probe can never become the
     # outage (that incident's own finding was that an in-process write probe
-    # WOULD be the segfault).
+    # WOULD be the segfault). The word comes from app/boot_history.py, which
+    # also logs it when it changes (never per request): "looping (N boots/Ws)"
+    # fails readiness; "ok", "unwatched" (built without GIT_SHA), "unrecorded"
+    # (this boot's stamp could not be written) and "unavailable" pass - fail
+    # open, but said (the 2026-10-08 read).
     try:
-        from app.boot_history import crash_loop_state
-        _loop = crash_loop_state()
-        if _loop["looping"]:
-            logging.getLogger("uvicorn.error").error(
-                "readiness: crash loop - %s boots of sha %s within %ss",
-                _loop["boots"], _loop["sha"], _loop["window_s"])
-            checks["crash_loop"] = f"looping ({_loop['boots']} boots/{_loop['window_s']}s)"
-            ready = False
-        elif not _loop.get("watched", True):
-            # Built without GIT_SHA: no build to tell apart, so not watching.
-            checks["crash_loop"] = "unwatched"
-        else:
-            checks["crash_loop"] = "ok"
+        from app.boot_history import crash_loop_readiness
+        checks["crash_loop"], _loop_failing = crash_loop_readiness()
     except Exception as e:
         logging.getLogger("uvicorn.error").warning("readiness: crash-loop check unavailable: %s", e)
-        checks["crash_loop"] = "unavailable"  # fail OPEN - never invent an outage
+        checks["crash_loop"], _loop_failing = "unavailable", False  # fail OPEN - never invent an outage
+    if _loop_failing:
+        ready = False
 
     # Retrieval lane (critical when this instance serves retrieval) - AZ-02,
     # outside review 2026-10-06; fixed 2026-10-07. A healthy database said
@@ -292,6 +287,12 @@ def health_detailed(current_user: dict = Depends(require_owner)):
     # The retrieval lane's last pass with its reason (AZ-02). Shown, not
     # re-run: a pass can take half a minute when the embed service is down.
     result["rag"] = rag_status()
+
+    # The crash-loop check's word with what it read (app/boot_history.py), so
+    # an Owner can see when the check is off - "unwatched" or "unrecorded" -
+    # and not only in an anonymous readiness body (the 2026-10-08 read).
+    from app.boot_history import crash_loop_status
+    result["crash_loop"] = crash_loop_status()
 
     # DB response time
     try:

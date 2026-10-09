@@ -251,6 +251,15 @@ check clears once the boots age out of the window. If you restarted or
 rebuilt it that many times yourself, wait out the window - and build with
 GIT_SHA so each deploy counts as a new build (docs/runbook.md, Monitoring).
 
+## Readiness shows "crash_loop": "unrecorded"
+
+This boot's stamp could not be written to `boot-history.json`: the data
+directory (BOOT_HISTORY_DIR, default BACKUP_STATUS_DIR, default /app/data)
+is missing, read-only or full. Readiness still passes, but this process
+cannot count its own restarts, so a crash loop would go unseen. The boot's
+`boot_unrecorded` log line names the directory. Fix the volume's
+permissions or free space, then restart once; the next boot reads `ok`.
+
 ## Vectors disappeared after a crash or power loss
 
 The vector index persists on a write threshold, not on close - a hard kill

@@ -13,6 +13,14 @@ import pytest
 from app import boot_history as bh
 
 
+@pytest.fixture(autouse=True)
+def _a_fresh_boot(monkeypatch):
+    # The module remembers this process's stamp and the word readiness last
+    # logged; each test starts where a fresh boot would.
+    monkeypatch.setattr(bh, "_stamped", None, raising=False)
+    monkeypatch.setattr(bh, "_ready_logged", None, raising=False)
+
+
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     monkeypatch.setattr(bh, "DATA_DIR", str(tmp_path))
@@ -20,6 +28,16 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setattr(bh, "WINDOW_SECONDS", 3600)
     monkeypatch.setenv("GIT_SHA", "abc1234")
     return tmp_path
+
+
+@pytest.fixture
+def logged(monkeypatch):
+    """Every app.logger line from here on, as (level, event, fields)."""
+    from app import logger
+    lines = []
+    monkeypatch.setattr(logger, "log", lambda event, **kw: lines.append(("info", event, kw)))
+    monkeypatch.setattr(logger, "log_error", lambda event, **kw: lines.append(("error", event, kw)))
+    return lines
 
 
 def _write(store, entries):
@@ -91,7 +109,8 @@ def test_missing_history_fails_open(store):
 
 def test_record_boot_never_raises_even_with_an_unusable_dir(monkeypatch, tmp_path):
     monkeypatch.setattr(bh, "DATA_DIR", str(tmp_path / "nope" / "\0bad"))
-    bh.record_boot(sha="abc1234", now=1.0)  # must not raise - startup depends on it
+    # must not raise - startup depends on it - and says it wrote nothing
+    assert bh.record_boot(sha="abc1234", now=1.0) is False
 
 
 @pytest.fixture
@@ -157,24 +176,98 @@ def test_one_entry_with_a_bad_timestamp_does_not_zero_the_count(store):
 
 def test_a_check_that_cannot_run_shows_unavailable_and_passes(client, store, lane_proven, monkeypatch):
     """Fail open, never an invented outage - the branch had no test."""
-    def _broken():
+    def _broken(now=None):
         raise RuntimeError("history unreadable")
     monkeypatch.setattr(bh, "crash_loop_state", _broken)
     r = client.get("/api/health/ready")
     assert r.status_code == 200 and r.json()["checks"]["crash_loop"] == "unavailable"
 
 
-def test_each_boot_says_whether_the_check_is_watching(store, monkeypatch):
+def test_each_boot_says_whether_the_check_is_watching(store, monkeypatch, logged):
     """An operator who expects the check can see it is off: "unwatched"
     otherwise shows only in an anonymous readiness body."""
     import asyncio
     from app import main
-    lines = []
-    monkeypatch.setattr(main, "log", lambda event, **kw: lines.append((event, kw.get("crash_loop_check"))))
     asyncio.run(main._record_boot_on_startup())
     monkeypatch.setenv("GIT_SHA", "unknown")
     asyncio.run(main._record_boot_on_startup())
-    assert lines == [("boot_recorded", "watched"), ("boot_recorded", "unwatched - built without GIT_SHA")]
+    assert [(lvl, ev, kw["crash_loop_check"]) for lvl, ev, kw in logged] == [
+        ("info", "boot_recorded", "watched"),
+        ("info", "boot_recorded", "unwatched - built without GIT_SHA")]
+
+
+def test_a_boot_whose_stamp_cannot_be_written_says_unrecorded_and_passes(
+        client, store, lane_proven, monkeypatch, logged):
+    """An unwritable BOOT_HISTORY_DIR read "ok" forever - the process cannot
+    count its own restarts, and nothing said so (the 2026-10-08 read). Fail
+    open, never silent: readiness passes and says "unrecorded", and the boot's
+    line is an error."""
+    import asyncio
+    from app import main
+    monkeypatch.setattr(bh, "DATA_DIR", str(store / "nope" / "\0bad"))
+    asyncio.run(main._record_boot_on_startup())
+    assert bh.crash_loop_state()["recorded"] is False
+    r = client.get("/api/health/ready")
+    assert r.status_code == 200 and r.json()["checks"]["crash_loop"] == "unrecorded"
+    assert [(lvl, ev) for lvl, ev, _ in logged if ev.startswith("boot_")] == [
+        ("error", "boot_unrecorded")]
+
+
+def test_an_unwritable_dir_without_a_commit_says_both(store, monkeypatch, logged):
+    monkeypatch.setenv("GIT_SHA", "unknown")
+    monkeypatch.setattr(bh, "DATA_DIR", str(store / "nope" / "\0bad"))
+    assert bh.record_boot() is False
+    bh.log_boot()
+    assert [(lvl, ev, kw["crash_loop_check"]) for lvl, ev, kw in logged] == [
+        ("error", "boot_unrecorded", "unwatched - built without GIT_SHA")]
+    assert bh.crash_loop_readiness() == ("unwatched", False)
+
+
+def test_a_loop_the_history_holds_still_fails_when_this_boot_went_unrecorded(store, monkeypatch):
+    """"Unrecorded" is about THIS boot's stamp; the boots the history already
+    holds are still evidence, and a loop among them still fails readiness."""
+    _write(store, [{"ts": bh.time.time() - i * 60, "sha": "abc1234"} for i in range(6)])
+    monkeypatch.setattr(bh, "_stamped", False)
+    assert bh.crash_loop_readiness() == ("looping (6 boots/3600s)", True)
+
+
+def test_readiness_logs_the_crash_loop_word_when_it_changes_never_per_request(
+        client, store, lane_proven, logged):
+    """A looping process logged an ERROR on every anonymous readiness hit,
+    unlike the lane's log-on-change - and the access log already has each hit
+    (the 2026-10-08 read)."""
+    _write(store, [{"ts": bh.time.time() - i * 60, "sha": "abc1234"} for i in range(11)])
+    for _ in range(3):
+        assert client.get("/api/health/ready").status_code == 503
+    _write(store, [])
+    for _ in range(2):
+        assert client.get("/api/health/ready").status_code == 200
+    assert [(lvl, ev, kw.get("word")) for lvl, ev, kw in logged
+            if ev.startswith("readiness_crash_loop")] == [
+        ("error", "readiness_crash_loop_failing", "looping (11 boots/3600s)"),
+        ("info", "readiness_crash_loop", "ok")]
+
+
+def test_the_owner_view_shows_the_crash_loop_word(client, admin_headers, store, monkeypatch):
+    """The check's word was absent from the Owner's detailed view, so an Owner
+    saw "unwatched" or "unrecorded" only in an anonymous body (the 2026-10-08
+    read). One read of the history: the word and the count agree."""
+    _write(store, [{"ts": bh.time.time() - i * 60, "sha": "abc1234"} for i in range(6)])
+    loop = client.get("/api/health/detailed", headers=admin_headers).json()["crash_loop"]
+    assert loop == {"state": "looping (6 boots/3600s)", "failing": True, "watched": True,
+                    "recorded": True, "boots": 6, "threshold": 4, "window_s": 3600,
+                    "sha": "abc1234"}
+    monkeypatch.setattr(bh, "_stamped", False)
+    _write(store, [])
+    loop = client.get("/api/health/detailed", headers=admin_headers).json()["crash_loop"]
+    assert loop["state"] == "unrecorded" and loop["failing"] is False and loop["recorded"] is False
+
+
+def test_the_owner_view_of_a_check_that_cannot_run(monkeypatch):
+    def _broken(now=None):
+        raise RuntimeError("history unreadable")
+    monkeypatch.setattr(bh, "crash_loop_state", _broken)
+    assert bh.crash_loop_status() == {"state": "unavailable", "failing": False}
 
 
 def test_the_first_startup_hook_stamps_the_boot(store):

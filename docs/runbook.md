@@ -553,11 +553,18 @@ stamps each boot into `boot-history.json` in the data directory
 boots of the running build inside the last `BOOT_LOOP_WINDOW_SECONDS`
 (default 3600); more than `BOOT_LOOP_THRESHOLD` (default 4) and its body
 shows `crash_loop` as `looping (5 boots/3600s)` and it answers 503, while the
-backend log names the build (`readiness: crash loop - ...`). The check only
-reads that small file - it touches no vector store, so it can never be the
-crash - and it fails open: a missing or unreadable file reads as no boots,
-and a check that cannot run shows `unavailable` without failing readiness.
-It clears by itself once the boots age out of the window.
+backend log names the build once (`readiness_crash_loop_failing` - the word
+is logged when it changes, not on every hit). The check only reads that
+small file - it touches no vector store, so it can never be the crash - and
+it fails open, but never silently: a missing or unreadable file reads as no
+boots; a boot whose stamp could not be written (the data directory missing,
+read-only or full) shows `unrecorded` and passes, since that process cannot
+see its own restarts; a check that cannot run shows `unavailable` and
+passes. Each boot logs one line saying whether the check watches it
+(`boot_recorded` with `crash_loop_check`, or `boot_unrecorded` as an
+error), and the Owner's `/api/health/detailed` carries the same word with
+the count, the threshold and the build (`crash_loop`). It clears by itself
+once the boots age out of the window.
 
 - The build is what tells a crash loop from a busy day of deploys: each
   deploy is a new build, a loop repeats one. The build is the `GIT_SHA`
