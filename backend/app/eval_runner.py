@@ -151,6 +151,11 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                   use_rag: bool, n_results: int, retrieval_only: bool):
     """Run the eval in a background thread so a large set can't hit the HTTP
     timeout. Writes each EvalResult as it goes and ticks progress."""
+    # The writer is resolved ONCE, here, for every caller - the route already
+    # did, but scripts/eval_retrieval.py hands its model straight to this job:
+    # a family alias must not reach a row as the alias, nor switch versions
+    # mid-run when a release lands. A version passes through unchanged.
+    model = model_catalog.resolve(model)
     _inj_planted = False
     # Everything is inside the try, setup included. Corpus fingerprinting, the
     # judge-instrument pin and the tool lookup all touch the DB or a provider,

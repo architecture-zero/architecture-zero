@@ -160,13 +160,22 @@ def resolve(model: str) -> str:
         rid = newest["id"]
         prev = _last_resolved.get(fam)
         if prev != rid:
-            if prev:
-                logger.warning("model_family_moved family=%s from=%s to=%s", fam, prev, rid)
-            else:
-                logger.info("model_family_resolved family=%s to=%s", fam, rid)
+            _note(("model_family_moved" if prev else "model_family_resolved"),
+                  family=fam, from_model=prev or "", to_model=rid)
             _last_resolved[fam] = rid
         return rid
     return _last_resolved.get(fam) or FAMILY_FALLBACK.get(fam, m)
+
+
+def _note(event: str, **fields) -> None:
+    """Into the app's own structured log (app.logger.log - the file and the
+    console every surface writes), so a family moving is on record where the
+    rest of the app's events are; the module logger only if that import fails."""
+    try:
+        from app.logger import log
+        log(event, **fields)
+    except Exception:
+        logger.warning("%s %s", event, fields)
 
 
 def anthropic_picker_models(badge) -> list:

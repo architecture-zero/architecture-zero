@@ -7,7 +7,6 @@ untouched (a pin); the eval JUDGE must be stored as a pin even when a family
 is picked for it - the ruler never moves on its own - while the eval writer
 may follow a family like any other slot, and a run records the version it used.
 """
-import logging
 from unittest.mock import patch
 
 import pytest
@@ -52,14 +51,25 @@ def test_an_alias_sends_the_newest_model_of_its_family(catalog):
     assert resolve("claude-fable-latest") == "claude-fable-5-1"
 
 
-def test_a_new_release_moves_the_alias_with_no_edit(catalog, caplog):
+def test_a_new_release_moves_the_alias_with_no_edit_and_says_so(catalog, monkeypatch):
+    seen = []
+    monkeypatch.setattr("app.logger.log", lambda event, **f: seen.append((event, f)))
     assert resolve("claude-opus-latest") == "claude-opus-5-5"
     catalog["models"] = [{"id": "claude-opus-5-6", "display_name": "Claude Opus 5.6",
                           "created_at": "2026-11-01T00:00:00Z"}] + LIST
-    with caplog.at_level(logging.WARNING, logger="app.model_catalog"):
-        assert resolve("claude-opus-latest") == "claude-opus-5-6"
-    assert any("model_family_moved" in r.getMessage() and "claude-opus-5-6" in r.getMessage()
-               for r in caplog.records)
+    assert resolve("claude-opus-latest") == "claude-opus-5-6"
+    assert ("model_family_moved", {"family": "opus", "from_model": "claude-opus-5-5",
+                                   "to_model": "claude-opus-5-6"}) in seen
+
+
+def test_the_eval_job_resolves_its_writer_before_anything_reads_it():
+    # scripts/eval_retrieval.py hands its model straight to the job, so the
+    # job resolves it itself - before the first use (supports_tools).
+    import inspect
+    from app import eval_runner
+    src = inspect.getsource(eval_runner._run_eval_job)
+    first = src.index("model = model_catalog.resolve(model)")
+    assert first < src.index("supports_tools(model)")
 
 
 def test_a_pin_and_every_other_value_pass_through_unchanged(catalog):
