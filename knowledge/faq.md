@@ -59,6 +59,16 @@ A short baked-in blocklist also hides local models whose weights are not
 clean to redistribute in a client deployment - a license decision, not a
 capability one.
 
+Cloud providers list only what is current: the newest model of each
+family, never every version a provider still serves, and nothing a chat
+cannot use (embeddings, speech, images). Claude's entries are families -
+"Claude Opus - newest" - so a setting on one follows each new release by
+itself, and the admin's Models tab says which version it is today. A
+setting saved on an older version stays visible, marked "(saved)". The
+eval writer and judge are the exception: picking a family for either
+stores the version it is today, so a new release never moves a
+measurement.
+
 ## What is guest mode?
 
 Anonymous, sign-in-free chat - off by default, and it takes two deliberate

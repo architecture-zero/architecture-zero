@@ -22,6 +22,7 @@ import datetime as _dt
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 
+from app import model_catalog
 from app.audit import get_audit_log, export_audit_csv
 from app.config import get_config, set_config, get_all_config_masked
 from app.jwt_auth import require_owner, require_permission
@@ -260,6 +261,11 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
             # silently rewriting what an operator typed is the smaller cousin of
             # silently discarding it.
             value = json.dumps([s for s in value if s.strip()])
+        elif key in _EVAL_INSTRUMENT_KEYS and isinstance(value, str):
+            # An eval instrument is a pin: a family alias written for one is
+            # stored as the version it resolves to now (model_catalog), so a
+            # new model shipping never moves a measurement.
+            value = model_catalog.resolve(value.strip())
         elif key in _bool_keys:
             # NOT `"true" if value else "false"`. That is Python truthiness on
             # the raw JSON value, so the STRING "false" - and "no", and "0" -
@@ -303,6 +309,14 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
 # eval_writer falls to default_model (run_evals' own chain, NOT via
 # chat_model); judge falls to EVAL_JUDGE_MODEL_DEFAULT.
 
+# The eval writer and judge are measurement instruments: PINS. A family alias
+# ("claude-sonnet-latest") written for either - here or through the config
+# route above - is stored as the version it resolves to at that moment, so a
+# new model shipping never moves a measurement; the other slots keep the alias
+# and follow their family.
+_EVAL_INSTRUMENT_KEYS = ("eval_answer_model", "eval_judge_model")
+
+
 class ModelConfigUpdate(BaseModel):
     default: str | None = None       # "" = reset to DEFAULT_MODEL
     chat: str | None = None          # "" = follow default
@@ -321,14 +335,21 @@ def _model_config_dict() -> dict:
         same_family = _provider_for_model(writer_effective) == _provider_for_model(judge)
     except Exception:
         same_family = False
+    # `resolved` is the version a slot sends right now - a family alias's
+    # newest model, any other value as it is - so the panel can say what
+    # "newest Opus" means today.
+    resolve = model_catalog.resolve
     return {
-        "default": {"value": default, "default": DEFAULT_MODEL,
+        "default": {"value": default, "resolved": resolve(default), "default": DEFAULT_MODEL,
                     "overridden": default != DEFAULT_MODEL},
         "chat": {"value": chat_raw, "effective": chat_raw or default,
+                 "resolved": resolve(chat_raw or default),
                  "default": "", "overridden": chat_raw != ""},
         "eval_writer": {"value": writer_raw, "effective": writer_effective,
+                        "resolved": resolve(writer_effective),
                         "default": "", "overridden": writer_raw != ""},
-        "eval_judge": {"value": judge, "default": EVAL_JUDGE_MODEL_DEFAULT,
+        "eval_judge": {"value": judge, "resolved": resolve(judge),
+                       "default": EVAL_JUDGE_MODEL_DEFAULT,
                        "overridden": judge != EVAL_JUDGE_MODEL_DEFAULT},
         "same_family_warning": same_family,
     }
@@ -347,9 +368,10 @@ def admin_set_model_config(body: ModelConfigUpdate,
     if body.chat is not None:
         set_config("chat_model", body.chat.strip())
     if body.eval_writer is not None:
-        set_config("eval_answer_model", body.eval_writer.strip())
+        set_config("eval_answer_model", model_catalog.resolve(body.eval_writer.strip()))
     if body.eval_judge is not None:
-        set_config("eval_judge_model", body.eval_judge.strip() or EVAL_JUDGE_MODEL_DEFAULT)
+        set_config("eval_judge_model",
+                   model_catalog.resolve(body.eval_judge.strip()) or EVAL_JUDGE_MODEL_DEFAULT)
     log("model_config_update", admin_id=current_user["id"],
         keys=[k for k, v in (("default", body.default), ("chat", body.chat),
                              ("eval_writer", body.eval_writer),

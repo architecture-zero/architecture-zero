@@ -791,6 +791,7 @@ export default function App() {
         guest_mode_enabled?: boolean
       instance_name?: string
       chat_model_effective?: string
+      chat_model_resolved?: string
     }>(fetch(`${API}/api/config`, { headers: authHeaders() }), 'Loading settings')
       .then(d => {
         if (!d) return
@@ -808,7 +809,10 @@ export default function App() {
         // The server's EFFECTIVE model - what actually answers. The backend
         // sends it precisely so a client does not display its own copy and
         // quietly misreport a server-side pin.
-        if (d.chat_model_effective) setEffectiveModel(d.chat_model_effective)
+        // A family alias ("claude-opus-latest") arrives resolved too - the
+        // version answering today is the one named.
+        if (d.chat_model_resolved || d.chat_model_effective)
+          setEffectiveModel(d.chat_model_resolved || d.chat_model_effective || '')
       })
   }, [view])
 

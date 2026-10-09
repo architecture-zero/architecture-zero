@@ -197,8 +197,11 @@ def _snapshot() -> dict:
     # env default. This read the pin or the ENV default, skipping the
     # configured default_model, so a default set in the admin with no pin was
     # recorded as a model that was not answering (2026-10-03).
-    snap["default_model"] = (get_config("chat_model", "").strip()
-                             or _config_or_default("default_model", DEFAULT_MODEL))
+    # A family alias is recorded as the version it answers with right now.
+    from app import model_catalog
+    snap["default_model"] = model_catalog.resolve(
+        get_config("chat_model", "").strip()
+        or _config_or_default("default_model", DEFAULT_MODEL))
     snap["rerank_enabled"] = rerank_enabled()
     snap["rerank_provider"] = rerank_provider()
     snap["rerank_model"] = rerank_model()

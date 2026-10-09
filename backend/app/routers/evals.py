@@ -210,6 +210,11 @@ def run_evals(body: EvalRunRequest, current_user: dict = Depends(require_owner))
     # DEFAULT_MODEL is the last resort for a box with neither config set.
     model = (body.model.strip() or get_config("eval_answer_model", "")
              or _config_or_default("default_model", DEFAULT_MODEL))
+    # A family alias (a blank writer follows default_model, which may be
+    # "newest Opus") is resolved ONCE, here: the run answers with one version
+    # and records that version, never the alias.
+    from app import model_catalog
+    model = model_catalog.resolve(model)
     if not body.retrieval_only:
         # Same-family guard: the judge must not grade its own lab's writer -
         # self-preference bias puts a thumb on every score, and the collision

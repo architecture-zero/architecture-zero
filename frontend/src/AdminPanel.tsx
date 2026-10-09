@@ -1116,7 +1116,9 @@ export function GuestAccessTab({ api, headers }: { api: string; headers: () => R
 // ── Tab: Analytics ─────────────────────────────────────────────────────────
 
 interface ModelGroup { provider: string; label: string; models: { value: string; label: string; badge: string }[] }
-interface ModelSlot { value: string; effective?: string; default: string; overridden: boolean }
+// `resolved` is the version a slot sends right now: a family alias ("Claude
+// Opus - newest") resolved to its newest model, any other value as it is.
+interface ModelSlot { value: string; effective?: string; resolved?: string; default: string; overridden: boolean }
 // `default` is default_model; `chat` is the chat_model pin over it ("" = follow
 // the default) - the server's two keys, both of them shown below.
 interface ModelConfig { default: ModelSlot; chat: ModelSlot; eval_writer: ModelSlot; eval_judge: ModelSlot; same_family_warning: boolean }
@@ -1127,6 +1129,7 @@ function ModelSelect(props: {
   value: string
   onChange: (v: string) => void
   followOption?: string   // label for a "" option (the eval writer's default)
+  savedLabel?: string     // how a value the list does not show is marked (default "saved")
 }) {
   const known = new Set(props.groups.flatMap(g => g.models.map(m => m.value)))
   return (
@@ -1134,7 +1137,7 @@ function ModelSelect(props: {
       className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500 min-w-[260px]">
       {props.followOption !== undefined && <option value="">{props.followOption}</option>}
       {props.value && !known.has(props.value) && (
-        <option value={props.value}>{props.value} (saved)</option>
+        <option value={props.value}>{props.value} ({props.savedLabel || 'saved'})</option>
       )}
       {props.groups.map(g => (
         <optgroup key={g.provider} label={g.label}>
@@ -1218,10 +1221,11 @@ export function ModelsTab({ api, headers }: { api: string; headers: () => Record
     { key: 'chat', label: 'Chat', slot: cfg.chat, followOption: 'Follow the default model',
       desc: 'What visitors get when they do not pick a model.' },
     { key: 'eval_writer', label: 'Eval answer writer', slot: cfg.eval_writer, followOption: 'Follow the default model',
-      desc: 'Pinned per run so a chat-dial change can never silently change what a measurement measures.' },
+      desc: 'Pinned per run so a chat-dial change can never silently change what a measurement measures. Picking a family pins the version it is today.' },
     { key: 'eval_judge', label: 'Eval judge', slot: cfg.eval_judge,
-      desc: 'Grades every answer. Must come from a different company than the writer - the guard blocks same-family runs.' },
+      desc: 'Grades every answer. Must come from a different company than the writer - the guard blocks same-family runs. Picking a family pins the version it is today.' },
   ]
+  const isEval = (k: ModelKey) => k === 'eval_writer' || k === 'eval_judge'
 
   return (
     <div className="space-y-8 max-w-3xl">
@@ -1246,6 +1250,7 @@ export function ModelsTab({ api, headers }: { api: string; headers: () => Record
                 </div>
                 <ModelSelect groups={groups} value={draftVal}
                   followOption={row.followOption}
+                  savedLabel={isEval(row.key) ? 'pinned' : undefined}
                   onChange={v => { setMsg(''); setDraft({ ...draft, [row.key]: v }) }} />
                 {overridden ? (
                   <>
@@ -1268,6 +1273,9 @@ export function ModelsTab({ api, headers }: { api: string; headers: () => Record
               <p className="text-xs text-gray-500 mt-2">{row.desc}
                 {(row.key === 'eval_writer' || row.key === 'chat') && row.slot.effective && draftVal === '' &&
                   ` Currently resolves to ${row.slot.effective}.`}
+                {draftVal === row.slot.value && row.slot.resolved &&
+                  row.slot.resolved !== (draftVal || row.slot.effective) &&
+                  ` That is ${row.slot.resolved} today.`}
               </p>
             </div>
           )

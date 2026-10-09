@@ -29,6 +29,7 @@ from app.security import get_security_config
 from app.metrics import get_last_request_at, get_snapshot, prometheus_text
 from app.alerting import get_config as get_alert_config
 from app import corpus_scan as _corpus_scan
+from app import model_catalog
 from app.runtime_config import (_config_or_default, _ollama_get, DEFAULT_MODEL,
                                 RAG_ONLY_MODE, PII_SCAN_MODE, PII_OUTPUT_MODE,
                                 PII_OUTPUT_REDACT_TYPES, ALLOW_GUEST_MODE,
@@ -252,6 +253,11 @@ def public_config():
         # own copy that silently bypasses the server pins.
         "chat_model_effective":  get_config("chat_model", "").strip()
                                  or _config_or_default("default_model", DEFAULT_MODEL),
+        # The version that answers right now: a family alias ("newest Opus")
+        # resolved, any other value as it is - what the chat screen names.
+        "chat_model_resolved":   model_catalog.resolve(
+            get_config("chat_model", "").strip()
+            or _config_or_default("default_model", DEFAULT_MODEL)),
         # Fallback matches config.py's seeded default. It read "false" until
         # 2026-08-28, when the seed flipped to "true" and this was missed -
         # so a database whose config rows had not been seeded would have

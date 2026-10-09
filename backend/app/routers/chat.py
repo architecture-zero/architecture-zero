@@ -30,6 +30,7 @@ from typing import Literal
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
+from app import model_catalog
 from app.agent import get_active_tools, execute_tool
 from app.audit import log_audit_entry
 from app.closing_stream import ClosingStreamingResponse
@@ -525,6 +526,10 @@ def _chat_gates(request: ChatRequest, req: Request, current_user: dict | None) -
             raise HTTPException(status_code=400, detail=(
                 f"The model '{request.model}' routes to the {_prov} provider, which is "
                 "not enabled on this instance. Pick a model from the list."))
+    # A family alias ("claude-opus-latest" - newest Opus) becomes the version it
+    # resolves to NOW, here at the edge, so everything downstream - the answer,
+    # its stored record, the logs - names the model that actually answered.
+    request.model = model_catalog.resolve(request.model)
 
 
 async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | None,

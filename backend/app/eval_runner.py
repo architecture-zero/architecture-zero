@@ -21,6 +21,7 @@ import time
 import threading
 import datetime as _dt
 
+from app import model_catalog
 from app.agent import get_active_tools, execute_tool
 from app.config import get_system_prompt
 from app.db import get_session
@@ -176,9 +177,12 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
         log("eval_corpus_stamp", run_id=run_id, corpus_fingerprint=corpus_fp)
         # Stamp the JUDGE INSTRUMENT once per run (None on retrieval-only runs -
         # nothing was judged). The trust panel bands only within one instrument
-        # era, so a judge swap can never masquerade as a score movement.
+        # era, so a judge swap can never masquerade as a score movement. A
+        # family alias is stamped as the version it resolves to (the admin
+        # routes store a pin, but an env default could still name a family).
         run_judge_instrument = (None if retrieval_only else
-                                _config_or_default("eval_judge_model", EVAL_JUDGE_MODEL_DEFAULT))
+                                model_catalog.resolve(_config_or_default(
+                                    "eval_judge_model", EVAL_JUDGE_MODEL_DEFAULT)))
 
         # INJECTION COHORT: its questions run LAST, with the poisoned fixture
         # planted into the REAL general collection only for that tail - planted
@@ -393,7 +397,8 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                 else:
                     from app.eval_judge import (judge_answer, judge_faithfulness,
                                                 judge_freshness, judge_honesty)
-                    judge_model = _config_or_default("eval_judge_model", EVAL_JUDGE_MODEL_DEFAULT)
+                    judge_model = model_catalog.resolve(_config_or_default(
+                        "eval_judge_model", EVAL_JUDGE_MODEL_DEFAULT))
                     if q["category"] == "honesty":
                         # Fourth rubric: the honesty cohort's primary verdict
                         # is refuse-vs-fabricate, not correctness - its

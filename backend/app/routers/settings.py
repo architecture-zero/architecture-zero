@@ -21,6 +21,7 @@ import requests
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app import model_catalog
 from app.config import set_config, encrypt_secret
 from app.logger import log
 from app.jwt_auth import get_current_user, require_owner, require_step_up
@@ -148,18 +149,6 @@ def test_ollama_connection(current_user: dict = Depends(require_owner)):
     except Exception as e:
         return {"ok": False, "error": str(e), "base_url": base}
 
-# Fallback list, used only when Anthropic's /v1/models call fails (no key,
-# offline). Live models are discovered dynamically - see
-# _fetch_anthropic_models().
-_ANTHROPIC_FALLBACK = [
-    {"value": "claude-opus-4-8",           "label": "Claude Opus 4.8",   "badge": "Best"},
-    {"value": "claude-sonnet-4-6",         "label": "Claude Sonnet 4.6", "badge": "Smart"},
-    {"value": "claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5",  "badge": "Fast"},
-]
-
-_anthropic_models_cache: dict = {"ts": 0.0, "models": None}
-
-
 def _anthropic_badge(model_id: str) -> str:
     mid = model_id.lower()
     if "opus" in mid:   return "Best"
@@ -169,28 +158,12 @@ def _anthropic_badge(model_id: str) -> str:
 
 
 def _fetch_anthropic_models() -> list:
-    """Live model list from Anthropic's /v1/models, cached 1h. Falls back to
-    a static list when the API is unreachable so the picker is never empty."""
-    import time as _time
-    now = _time.time()
-    cached = _anthropic_models_cache["models"]
-    if cached is not None and now - _anthropic_models_cache["ts"] < 3600:
-        return cached
-    try:
-        from app.providers import _anthropic_headers
-        resp = requests.get("https://api.anthropic.com/v1/models?limit=100",
-                            headers=_anthropic_headers(), timeout=5)
-        resp.raise_for_status()
-        data = resp.json().get("data", [])
-        models = [
-            {"value": m["id"], "label": m.get("display_name", m["id"]),
-             "badge": _anthropic_badge(m["id"])}
-            for m in data
-        ] or _ANTHROPIC_FALLBACK
-    except Exception:
-        models = _ANTHROPIC_FALLBACK
-    _anthropic_models_cache.update(ts=now, models=models)
-    return models
+    """The picker's Anthropic group: one entry per Claude family - its alias,
+    "newest" plus the version it resolves to now - from Anthropic's live list
+    (cached 1h in model_catalog), never every version the key can see. With
+    no list (no key, offline) the catalog's fallback families, so the picker
+    is never empty."""
+    return model_catalog.anthropic_picker_models(_anthropic_badge)
 
 _OPENAI_MODELS = [
     {"value": "gpt-4o",      "label": "GPT-4o",      "badge": "Best"},
@@ -203,6 +176,7 @@ _OPENAI_MODELS = [
 # provider. The LIVE list from _fetch_compat_models is what users normally
 # see.
 _COMPAT_FALLBACK_MODELS: dict = {
+    "openai":   _OPENAI_MODELS,
     "gemini":   [{"value": "gemini-3.6-flash", "label": "Gemini 3.6 Flash", "badge": "Fast"},
                  {"value": "gemini-2.5-pro",   "label": "Gemini 2.5 Pro",   "badge": "Best"}],
     "mistral":  [{"value": "mistral-large-latest", "label": "Mistral Large", "badge": "Best"},
@@ -221,13 +195,17 @@ def _fetch_compat_models(provider: str) -> list:
     1h, falling back to the static seed list above. Mirrors
     _fetch_anthropic_models.
 
-    Two registry-specific rules:
+    Three registry-specific rules:
     - Gemini returns ids prefixed "models/..." - stripped so they round-trip
       through _resolve_model's prefix routing.
     - A provider WITH routing prefixes gets its list filtered to ids matching
       them (drops embedding/image models from mixed lists); a provider
       WITHOUT prefixes (groq) keeps everything, with values namespaced
       "provider:id" so routing works.
+    - The live list is trimmed to the newest model of each family, and the
+      models a chat cannot use are dropped (model_catalog.trim_to_newest) -
+      the picker shows what is current, not every version a provider still
+      serves.
     """
     import time as _time
     now = _time.time()
@@ -239,9 +217,9 @@ def _fetch_compat_models(provider: str) -> list:
         resp = requests.get(f"{_compat_base(provider)}/models",
                             headers=_compat_headers(provider), timeout=5)
         resp.raise_for_status()
-        ids = [m.get("id", "") for m in resp.json().get("data", [])]
-        models = []
-        for mid in ids:
+        models, created = [], {}
+        for row in resp.json().get("data", []):
+            mid = row.get("id", "")
             if provider == "gemini" and mid.startswith("models/"):
                 mid = mid[len("models/"):]
             if not mid:
@@ -253,7 +231,10 @@ def _fetch_compat_models(provider: str) -> list:
             else:
                 value = f"{provider}:{mid}"
             models.append({"value": value, "label": mid, "badge": entry["label"]})
-        models = models or _COMPAT_FALLBACK_MODELS.get(provider, [])
+            if isinstance(row.get("created"), (int, float)):
+                created[value] = row["created"]
+        models = (model_catalog.trim_to_newest(models, created)
+                  or _COMPAT_FALLBACK_MODELS.get(provider, []))
     except Exception:
         models = _COMPAT_FALLBACK_MODELS.get(provider, [])
     _compat_models_cache[provider] = {"ts": now, "models": models}
@@ -309,7 +290,10 @@ def get_available_models():
     if "anthropic" in offered:
         groups.append({"provider": "anthropic", "label": "Anthropic", "models": _fetch_anthropic_models()})
     if "openai" in offered:
-        groups.append({"provider": "openai", "label": "OpenAI", "models": _OPENAI_MODELS})
+        # Live like every registry provider (its static list is the fallback):
+        # a hand-kept list only ever shows the models current when it was written.
+        groups.append({"provider": "openai", "label": "OpenAI",
+                       "models": _fetch_compat_models("openai")})
     # Registry providers appear the moment their key is configured - no
     # enable flag; dormant (unkeyed) providers stay out of the picker
     # entirely.

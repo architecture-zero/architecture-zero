@@ -4,6 +4,8 @@ import logging
 
 import requests as req
 
+from app import model_catalog
+
 logger = logging.getLogger(__name__)
 
 # Multi-provider support - enable any combination via ENABLE_* flags.
@@ -100,7 +102,13 @@ def _resolve_model(model: str) -> tuple[str, str]:
     "deepseek-r1:7b" to DeepSeek, wherever that vendor was keyed - the prompt
     and its retrieved passages with it (fixed 2026-09-30). Names without
     a colon route by the Anthropic / registry prefixes; Ollama is the
-    fallback."""
+    fallback.
+
+    A Claude family alias ("claude-opus-latest") is resolved FIRST, to the
+    newest model of that family the key can use (model_catalog.resolve), so
+    every call through here sends a concrete id; anything else is unchanged
+    by that step."""
+    model = model_catalog.resolve(model)
     if ":" in model:
         head, tail = model.split(":", 1)
         if head in ("anthropic", "ollama"):
