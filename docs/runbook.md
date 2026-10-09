@@ -27,13 +27,22 @@ override was added; the README carries the same note).
    The backend's port is published on loopback only, so the `localhost:8000`
    commands below run on the box itself; from another machine, the same paths
    answer through the frontend's port (`http://<host>:5173/api/health`).
-4. Open http://localhost:8000/api/health - expect status healthy (or
-   degraded if the CHAT endpoint is not up yet, which a cloud-only deployment
-   can ignore). It says nothing about the embedder: that is a separate
+4. Open http://localhost:8000/api/health - expect status healthy. It reads
+   the self-check's last pass and calls nothing, so right after a boot its
+   Ollama word is `pending`: the first full pass comes one
+   `SELF_CHECK_INTERVAL_SECONDS` after boot (300 s by default), and then it
+   says `connected`, or `degraded` / `unreachable` if the CHAT endpoint is
+   not up, which a cloud-only deployment can ignore (`ENABLE_OLLAMA=false`
+   reads `skipped`). It says nothing about the embedder: that is a separate
    endpoint (`EMBED_BASE`, model `nomic-embed-text`) and it is required no
-   matter which provider answers chat. Without it the instance still boots and
-   reports healthy, every ingest fails, and a question asked with retrieval on
-   - the default - answers 500 rather than answering ungrounded.
+   matter which provider answers chat. Without it the instance still boots
+   and `/api/health` reports healthy, every ingest fails, and a question
+   asked with retrieval on - the default - answers 500 rather than answering
+   ungrounded. `/api/health/ready` is the check that sees it: with documents
+   to serve (the shipped `knowledge/` folder counts), its retrieval-lane check
+   runs at boot, and readiness answers 503 (`rag: error`) until the embedder
+   answers and the store holds the documents - Monitoring, below, has the
+   states.
 5. Create the Owner account. This takes a **claim code**, which the backend
    mints at boot and prints to its own logs while the deployment is unclaimed -
    run `docker compose logs backend` and look for the banner. Only someone who

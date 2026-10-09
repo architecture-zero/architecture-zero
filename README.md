@@ -87,7 +87,12 @@ model is swappable for a cloud API; embeddings speak the Ollama dialect to
 `EMBED_BASE` and have no provider seam. With nothing reachable there the
 instance still boots, ingestion fails per file, and any question asked with
 retrieval on - the default - returns a 500 rather than an answer. `/api/health`
-probes only the chat endpoint, so it reports healthy throughout.
+reads only the self-check's last pass against the chat endpoint (it calls nothing
+itself), so it reports healthy throughout. `/api/health/ready` is the check that
+sees it: while the instance has documents to serve (the shipped `knowledge/`
+folder counts), its retrieval-lane check embeds a fixed sentence through
+`EMBED_BASE`, at boot and on every pass, and readiness answers 503 while that
+fails.
 
 ```
 git clone https://github.com/architecture-zero/architecture-zero

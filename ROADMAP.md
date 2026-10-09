@@ -61,8 +61,8 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   transaction - so two concurrent refreshes of one token get one successor
   and the loser is treated as the replay it is (`SECURITY.md` states both).
 - ~~**Readiness that covers the retrieval dependencies**~~ - SHIPPED
-  2026-10-07: see "Readiness that proves the retrieval lane" under Shipped
-  below. (This entry said `/api/health/ready` treated only the database as
+  2026-10-07: see "Readiness that proves the retrieval lane" further down
+  this list. (This entry said `/api/health/ready` treated only the database as
   critical; the answering provider stays advisory - one provider among
   several.)
 - **Non-root containers** - both images run as root, which trivy flags as
