@@ -453,8 +453,9 @@ target port and auth block. The block reads the token from a file
 METRICS_TOKEN value there, alone on one line, readable only by the
 Prometheus user. The token itself is never part of the download.
 - GET /api/health/detailed (Owner) - disk, DB latency, provider health,
-  and the retrieval lane's last check with its reason; fires configured
-  alerts on disk pressure and Ollama outages.
+  the retrieval lane's last check with its reason, and the crash-loop
+  check's word with its count, threshold and build (`crash_loop`); fires
+  configured alerts on disk pressure and Ollama outages.
 
 **The instance checks itself (since 2026-10-02).** Every
 `SELF_CHECK_INTERVAL_SECONDS` (default 300; `0` turns it off) a timer inside
