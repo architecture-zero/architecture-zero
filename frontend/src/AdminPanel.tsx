@@ -1229,11 +1229,11 @@ export function ModelsTab({ api, headers }: { api: string; headers: () => Record
     { key: 'chat', label: 'Chat', slot: cfg.chat, followOption: 'Follow the default model',
       desc: 'What visitors get when they do not pick a model.' },
     { key: 'eval_writer', label: 'Eval answer writer', slot: cfg.eval_writer, followOption: 'Follow the default model',
-      desc: 'Pinned per run so a chat-dial change can never silently change what a measurement measures. Picking a family pins the version it is today.' },
+      desc: 'Answers the eval questions. A family rolls with new releases, so the next run shows what a new model brings; every run records the exact version it used.' },
     { key: 'eval_judge', label: 'Eval judge', slot: cfg.eval_judge,
-      desc: 'Grades every answer. Must come from a different company than the writer - the guard blocks same-family runs. Picking a family pins the version it is today.' },
+      desc: 'Grades every answer - the ruler, so it stays put: picking a family pins the version it is today. Must come from a different company than the writer - the guard blocks same-family runs.' },
   ]
-  const isEval = (k: ModelKey) => k === 'eval_writer' || k === 'eval_judge'
+  const isPinned = (k: ModelKey) => k === 'eval_judge'
 
   // One row per setting - its name on the left, its dropdown on the right - in
   // one list: the dropdowns ARE the catalogue (a second list of every model
@@ -1290,7 +1290,7 @@ export function ModelsTab({ api, headers }: { api: string; headers: () => Record
               <div className="flex items-center gap-2">
                 <ModelSelect groups={groups} value={draftVal}
                   followOption={row.followOption}
-                  savedLabel={isEval(row.key) ? 'pinned' : undefined}
+                  savedLabel={isPinned(row.key) ? 'pinned' : undefined}
                   onChange={v => { setMsg(''); setDraft({ ...draft, [row.key]: v }) }} />
                 {overridden && (
                   <button

@@ -3,8 +3,9 @@ do not, and a picker that lists what is current rather than every version.
 
 A setting on "claude-opus-latest" must send the newest Opus the key lists,
 so a new release moves it with no edit; a concrete id must pass through
-untouched (a pin); the eval writer and judge must be stored as pins even when
-a family is picked for them, so a release never moves a measurement.
+untouched (a pin); the eval JUDGE must be stored as a pin even when a family
+is picked for it - the ruler never moves on its own - while the eval writer
+may follow a family like any other slot, and a run records the version it used.
 """
 import logging
 from unittest.mock import patch
@@ -223,22 +224,25 @@ def test_a_chat_on_an_alias_answers_with_and_records_the_concrete_version(client
     assert r.status_code == 200 and seen["model"] == "claude-opus-5-5"
 
 
-def test_the_eval_slots_store_a_picked_family_as_a_pin(client, admin_headers, catalog):
+def test_the_judge_pins_a_picked_family_and_the_writer_follows_one(client, admin_headers, catalog):
     from app.config import get_config
     r = client.patch("/api/admin/model-config", headers=admin_headers,
                      json={"default": "claude-opus-latest", "eval_judge": "claude-sonnet-latest",
                            "eval_writer": "claude-haiku-latest"})
     assert r.status_code == 200
     assert get_config("default_model", "") == "claude-opus-latest"          # follows its family
-    assert get_config("eval_judge_model", "") == "claude-sonnet-5-5"        # pinned
-    assert get_config("eval_answer_model", "") == "claude-haiku-4-5-20251001"
+    assert get_config("eval_judge_model", "") == "claude-sonnet-5-5"        # the ruler: pinned
+    assert get_config("eval_answer_model", "") == "claude-haiku-latest"     # rolls
     body = r.json()
     assert body["default"]["value"] == "claude-opus-latest"
     assert body["default"]["resolved"] == "claude-opus-5-5"
+    assert body["eval_writer"]["resolved"] == "claude-haiku-4-5-20251001"
     r = client.patch("/api/admin/config", headers=admin_headers,
-                     json={"eval_answer_model": "claude-opus-latest"})
+                     json={"eval_judge_model": "claude-opus-latest",
+                           "eval_answer_model": "claude-sonnet-latest"})
     assert r.status_code == 200
-    assert get_config("eval_answer_model", "") == "claude-opus-5-5"
+    assert get_config("eval_judge_model", "") == "claude-opus-5-5"
+    assert get_config("eval_answer_model", "") == "claude-sonnet-latest"
     client.patch("/api/admin/model-config", headers=admin_headers,
                  json={"default": "", "eval_judge": "", "eval_writer": ""})
 

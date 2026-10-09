@@ -261,10 +261,10 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
             # silently rewriting what an operator typed is the smaller cousin of
             # silently discarding it.
             value = json.dumps([s for s in value if s.strip()])
-        elif key in _EVAL_INSTRUMENT_KEYS and isinstance(value, str):
-            # An eval instrument is a pin: a family alias written for one is
+        elif key in _PINNED_ON_SAVE and isinstance(value, str):
+            # The judge is the ruler, a pin: a family alias written for it is
             # stored as the version it resolves to now (model_catalog), so a
-            # new model shipping never moves a measurement.
+            # new model shipping never moves what a score means.
             value = model_catalog.resolve(value.strip())
         elif key in _bool_keys:
             # NOT `"true" if value else "false"`. That is Python truthiness on
@@ -309,12 +309,14 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
 # eval_writer falls to default_model (run_evals' own chain, NOT via
 # chat_model); judge falls to EVAL_JUDGE_MODEL_DEFAULT.
 
-# The eval writer and judge are measurement instruments: PINS. A family alias
-# ("claude-sonnet-latest") written for either - here or through the config
-# route above - is stored as the version it resolves to at that moment, so a
-# new model shipping never moves a measurement; the other slots keep the alias
-# and follow their family.
-_EVAL_INSTRUMENT_KEYS = ("eval_answer_model", "eval_judge_model")
+# The eval JUDGE is the ruler: a PIN. A family alias ("claude-sonnet-latest")
+# written for it - here or through the config route above - is stored as the
+# version it resolves to at that moment, so a new release never changes what a
+# score means; moving the judge is a deliberate, once-only act (a new era).
+# The eval WRITER may follow a family like any other slot: it rolls with new
+# releases, so the next run shows what a new model brings, and every run
+# records the exact version it used (a run resolves its writer once).
+_PINNED_ON_SAVE = ("eval_judge_model",)
 
 
 class ModelConfigUpdate(BaseModel):
@@ -368,7 +370,7 @@ def admin_set_model_config(body: ModelConfigUpdate,
     if body.chat is not None:
         set_config("chat_model", body.chat.strip())
     if body.eval_writer is not None:
-        set_config("eval_answer_model", model_catalog.resolve(body.eval_writer.strip()))
+        set_config("eval_answer_model", body.eval_writer.strip())
     if body.eval_judge is not None:
         set_config("eval_judge_model",
                    model_catalog.resolve(body.eval_judge.strip()) or EVAL_JUDGE_MODEL_DEFAULT)

@@ -68,9 +68,10 @@ setting saved on an older version stays visible, marked "(saved)". To
 hold a setting on one version - a release that misbehaves, or a
 deployment that must not change - turn on "Show every version" on the
 Models tab and pick that version; it stays until you pick a family again. The
-eval writer and judge are the exception: picking a family for either
-stores the version it is today, so a new release never moves a
-measurement.
+eval judge is the exception: it is the ruler, so picking a family for it
+stores the version it is today, and a new release never changes what a
+score means. The eval writer may follow a family - the next run then
+shows what a new model brings, and every run records the exact version.
 
 ## What is guest mode?
 
