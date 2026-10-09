@@ -1140,7 +1140,7 @@ function ModelSelect(props: {
         <option value={props.value}>{props.value} ({props.savedLabel || 'saved'})</option>
       )}
       {props.groups.map(g => (
-        <optgroup key={g.provider} label={g.label}>
+        <optgroup key={`${g.provider}:${g.label}`} label={g.label}>
           {g.models.map(m => (
             <option key={m.value} value={m.value}>
               {m.label}{m.badge ? ` - ${m.badge}` : ''}
@@ -1165,11 +1165,21 @@ export function ModelsTab({ api, headers }: { api: string; headers: () => Record
   const [draft, setDraft] = useState<Record<ModelKey, string> | null>(null)
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
+  // Off by default: each list shows what is current - one entry per Claude
+  // family ("newest"), the newest model of every other family - never every
+  // version. On, every version the providers list appears too, so a setting
+  // can be PINNED to one: the lever when a new release misbehaves, or for a
+  // deployment that must hold one version.
+  const [allVersions, setAllVersions] = useState(false)
 
   useEffect(() => {
     guardedJson<{ groups?: ModelGroup[] }>(
-      fetch(`${api}/api/models`, { headers: headers() }), 'Loading models')
+      fetch(`${api}/api/models${allVersions ? '?all_versions=true' : ''}`, { headers: headers() }),
+      'Loading models')
       .then(d => { if (d) setGroups(d.groups || []) })
+  }, [api, allVersions])
+
+  useEffect(() => {
     guardedJson<ModelConfig>(
       fetch(`${api}/api/admin/model-config`, { headers: headers() }), 'Loading model config')
       .then(d => {
@@ -1208,8 +1218,6 @@ export function ModelsTab({ api, headers }: { api: string; headers: () => Record
     }
   }
 
-  const flat = groups.flatMap(g => g.models)
-
   if (!cfg || !draft) return <p className="text-xs text-gray-600">Loading model config…</p>
 
   // A "" value means "follow the default model" for the chat pin and the eval
@@ -1227,87 +1235,89 @@ export function ModelsTab({ api, headers }: { api: string; headers: () => Record
   ]
   const isEval = (k: ModelKey) => k === 'eval_writer' || k === 'eval_judge'
 
+  // One row per setting - its name on the left, its dropdown on the right - in
+  // one list: the dropdowns ARE the catalogue (a second list of every model
+  // below them made the tab long and said nothing the dropdowns do not).
   return (
-    <div className="space-y-8 max-w-3xl">
-      <section className="space-y-3">
-        <p className="text-xs text-gray-500 uppercase tracking-widest">Per-feature model pinning</p>
+    <div className="space-y-4 max-w-3xl">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="text-xs text-gray-500 uppercase tracking-widest">Models</p>
+          <p className="text-xs text-gray-500 mt-1">
+            A family ("Claude Opus - newest") moves to each new release by itself; a version stays put.
+          </p>
+        </div>
+        <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer select-none">
+          <input type="checkbox" checked={allVersions}
+            onChange={e => setAllVersions(e.target.checked)} />
+          Show every version (to pin one)
+        </label>
+      </div>
 
-        {cfg.same_family_warning && (
-          <div className="px-4 py-3 rounded-xl border border-amber-500/40 bg-amber-500/10 text-sm text-amber-300">
-            ⚠ The eval writer and judge resolve to the SAME provider family - eval runs
-            will be refused until one changes (or is deliberately overridden per run).
-          </div>
-        )}
+      {cfg.same_family_warning && (
+        <div className="px-4 py-3 rounded-xl border border-amber-500/40 bg-amber-500/10 text-sm text-amber-300">
+          ⚠ The eval writer and judge resolve to the SAME provider family - eval runs
+          will be refused until one changes (or is deliberately overridden per run).
+        </div>
+      )}
 
+      <div className="bg-gray-800/40 border border-gray-700/50 rounded-xl divide-y divide-gray-700/50">
         {rows.map(row => {
           const draftVal = draft[row.key]
           const overridden = row.key === 'eval_writer' ? draftVal !== '' : draftVal !== row.slot.default
           return (
-            <div key={row.key} className="bg-gray-800/40 border border-gray-700/50 rounded-xl px-4 py-3.5">
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="w-44">
+            <div key={row.key} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
                   <p className="text-sm font-medium text-gray-200">{row.label}</p>
+                  {/* "set here", not "overridden from default": an explicit value
+                      can equal the default - the tag marks the setting, and
+                      claiming a difference that may not exist reads as a bug. */}
+                  {overridden ? (
+                    <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300">set here</span>
+                  ) : (
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-700/50 text-gray-500">default</span>
+                  )}
                 </div>
+                <p className="text-xs text-gray-500 mt-0.5">{row.desc}
+                  {(row.key === 'eval_writer' || row.key === 'chat') && row.slot.effective && draftVal === '' &&
+                    ` Currently resolves to ${row.slot.effective}.`}
+                  {draftVal === row.slot.value && row.slot.resolved &&
+                    row.slot.resolved !== (draftVal || row.slot.effective) &&
+                    ` That is ${row.slot.resolved} today.`}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
                 <ModelSelect groups={groups} value={draftVal}
                   followOption={row.followOption}
                   savedLabel={isEval(row.key) ? 'pinned' : undefined}
                   onChange={v => { setMsg(''); setDraft({ ...draft, [row.key]: v }) }} />
-                {overridden ? (
-                  <>
-                    {/* "pinned here", not "overridden from default": an explicit pin
-                        can equal the default value - the badge marks the pin, and
-                        claiming a difference that may not exist reads as a bug. */}
-                    <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300">
-                      pinned here
-                    </span>
-                    <button
-                      onClick={() => { setMsg(''); setDraft({ ...draft, [row.key]: row.key === 'eval_writer' ? '' : row.slot.default }) }}
-                      className="text-xs text-gray-500 hover:text-white underline">
-                      reset
-                    </button>
-                  </>
-                ) : (
-                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-700/50 text-gray-500">default</span>
+                {overridden && (
+                  <button
+                    onClick={() => { setMsg(''); setDraft({ ...draft, [row.key]: row.key === 'eval_writer' ? '' : row.slot.default }) }}
+                    className="text-xs text-gray-500 hover:text-white underline">
+                    reset
+                  </button>
                 )}
               </div>
-              <p className="text-xs text-gray-500 mt-2">{row.desc}
-                {(row.key === 'eval_writer' || row.key === 'chat') && row.slot.effective && draftVal === '' &&
-                  ` Currently resolves to ${row.slot.effective}.`}
-                {draftVal === row.slot.value && row.slot.resolved &&
-                  row.slot.resolved !== (draftVal || row.slot.effective) &&
-                  ` That is ${row.slot.resolved} today.`}
-              </p>
             </div>
           )
         })}
+      </div>
 
-        <div className="flex items-center gap-3">
-          <button onClick={save} disabled={!dirty || saving}
-            className="px-5 py-2 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-40"
-            style={{ backgroundColor: PRIMARY_COLOR }}>
-            {saving ? 'Saving…' : 'Save changes'}
-          </button>
-          {msg && <span className={`text-xs ${msg === 'Saved' ? 'text-emerald-400' : 'text-red-400'}`}>{msg}</span>}
-          {!dirty && !msg && <span className="text-xs text-gray-600">No unsaved changes</span>}
-          {dirty && !msg && <span className="text-xs text-amber-400">Unsaved changes</span>}
-        </div>
-      </section>
-
-      <section className="space-y-2">
-        <p className="text-xs text-gray-500 uppercase tracking-widest">Available models ({flat.length})</p>
-        {flat.length === 0 && <p className="text-xs text-gray-600">No models available. Check provider flags in .env.</p>}
-        {groups.map(g => (
-          <div key={g.provider}>
-            <p className="text-[10px] text-gray-600 uppercase tracking-widest mt-3 mb-1">{g.label}</p>
-            {g.models.map(m => (
-              <div key={m.value} className="px-4 py-2.5 bg-gray-800/50 border border-gray-700/50 rounded-xl flex items-center justify-between mb-1">
-                <p className="text-sm text-gray-300 font-mono">{m.label}</p>
-                {m.badge && <span className="text-xs text-gray-500 bg-gray-700/50 px-2 py-0.5 rounded">{m.badge}</span>}
-              </div>
-            ))}
-          </div>
-        ))}
-      </section>
+      <div className="flex items-center gap-3">
+        <button onClick={save} disabled={!dirty || saving}
+          className="px-5 py-2 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-40"
+          style={{ backgroundColor: PRIMARY_COLOR }}>
+          {saving ? 'Saving…' : 'Save changes'}
+        </button>
+        {msg && <span className={`text-xs ${msg === 'Saved' ? 'text-emerald-400' : 'text-red-400'}`}>{msg}</span>}
+        {!dirty && !msg && <span className="text-xs text-gray-600">No unsaved changes</span>}
+        {dirty && !msg && <span className="text-xs text-amber-400">Unsaved changes</span>}
+      </div>
+      {groups.length === 0 && (
+        <p className="text-xs text-gray-600">No models available. Check provider flags in .env.</p>
+      )}
     </div>
   )
 }

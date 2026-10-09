@@ -129,6 +129,14 @@ def test_namespaced_ids_parse_after_the_namespace_and_sizes_stay_apart():
     assert [m["value"] for m in kept] == ["groq:llama-3.1-8b-instant", "groq:llama-3.3-70b-versatile"]
 
 
+def test_every_version_lists_each_claude_model_newest_first_as_a_pin(catalog):
+    models = model_catalog.anthropic_all_versions(lambda mid: "")
+    assert [m["value"] for m in models] == [
+        "claude-fable-5-1", "claude-sonnet-5-5", "claude-opus-5-5", "claude-opus-4-8",
+        "claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-3-5-sonnet-20241022"]
+    assert models[2]["label"] == "Claude Opus 5.5"
+
+
 # -- The routes ---------------------------------------------------------------
 
 def test_the_models_route_lists_families_not_versions(client, admin_headers, catalog):
@@ -137,6 +145,28 @@ def test_the_models_route_lists_families_not_versions(client, admin_headers, cat
     values = [m["value"] for m in groups[0]["models"]]
     assert values[:3] == ["claude-opus-latest", "claude-sonnet-latest", "claude-haiku-latest"]
     assert "claude-opus-4-8" not in values
+
+
+def test_the_every_version_switch_adds_the_pins_and_the_untrimmed_lists(
+        client, admin_headers, catalog, monkeypatch):
+    import app.routers.settings as s
+    from unittest.mock import MagicMock
+    live = MagicMock()
+    live.raise_for_status.return_value = None
+    live.json.return_value = {"data": [{"id": "models/gemini-2.5-flash"},
+                                       {"id": "models/gemini-3.6-flash"}]}
+    monkeypatch.setattr(s, "offered_providers", lambda: {"anthropic", "gemini"})
+    s._compat_models_cache.clear()
+    with patch("app.routers.settings.requests.get", return_value=live):
+        current = client.get("/api/models", headers=admin_headers).json()["groups"]
+        every = client.get("/api/models?all_versions=true", headers=admin_headers).json()["groups"]
+    s._compat_models_cache.clear()
+    assert [g["label"] for g in current] == ["Anthropic", "Gemini"]
+    assert [m["value"] for m in current[1]["models"]] == ["gemini-3.6-flash"]
+    labels = [g["label"] for g in every]
+    assert labels == ["Anthropic", "Anthropic - every version (pins)", "Gemini"]
+    assert "claude-opus-4-8" in [m["value"] for m in every[1]["models"]]
+    assert [m["value"] for m in every[2]["models"]] == ["gemini-2.5-flash", "gemini-3.6-flash"]
 
 
 def test_a_chat_on_an_alias_answers_with_and_records_the_concrete_version(client, admin_headers, catalog):

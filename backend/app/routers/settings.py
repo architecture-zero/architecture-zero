@@ -190,7 +190,7 @@ _COMPAT_FALLBACK_MODELS: dict = {
 _compat_models_cache: dict = {}  # provider -> {"ts": float, "models": list}
 
 
-def _fetch_compat_models(provider: str) -> list:
+def _fetch_compat_models(provider: str, all_versions: bool = False) -> list:
     """Live model list from an OpenAI-compatible provider's /models, cached
     1h, falling back to the static seed list above. Mirrors
     _fetch_anthropic_models.
@@ -205,14 +205,17 @@ def _fetch_compat_models(provider: str) -> list:
     - The live list is trimmed to the newest model of each family, and the
       models a chat cannot use are dropped (model_catalog.trim_to_newest) -
       the picker shows what is current, not every version a provider still
-      serves.
+      serves. `all_versions` returns the untrimmed list instead (the
+      admin's "show every version" switch, to pin one).
     """
     import time as _time
     now = _time.time()
+    key = "all" if all_versions else "models"
     cached = _compat_models_cache.get(provider)
     if cached is not None and now - cached["ts"] < 3600:
-        return cached["models"]
+        return cached[key]
     entry = OPENAI_COMPAT[provider]
+    everything = None
     try:
         resp = requests.get(f"{_compat_base(provider)}/models",
                             headers=_compat_headers(provider), timeout=5)
@@ -233,12 +236,14 @@ def _fetch_compat_models(provider: str) -> list:
             models.append({"value": value, "label": mid, "badge": entry["label"]})
             if isinstance(row.get("created"), (int, float)):
                 created[value] = row["created"]
+        everything = models or None
         models = (model_catalog.trim_to_newest(models, created)
                   or _COMPAT_FALLBACK_MODELS.get(provider, []))
     except Exception:
         models = _COMPAT_FALLBACK_MODELS.get(provider, [])
-    _compat_models_cache[provider] = {"ts": now, "models": models}
-    return models
+    _compat_models_cache[provider] = {"ts": now, "models": models,
+                                      "all": everything or models}
+    return _compat_models_cache[provider][key]
 
 # Models never offered in the picker for LICENSE reasons - their weights are
 # not clean to redistribute to a client on their own infra. Baked in so they
@@ -264,9 +269,15 @@ def _is_blocked_model(model_name: str) -> bool:
 
 
 @router.get("/api/models", dependencies=[Depends(get_current_user)])
-def get_available_models():
+def get_available_models(all_versions: bool = False):
     """Returns grouped models for all enabled providers. Covered by
-    AuthMiddleware when ENABLE_AUTH=true."""
+    AuthMiddleware when ENABLE_AUTH=true.
+
+    What is current by default: one entry per Claude family and the newest
+    model of each other provider's families. `all_versions=true` - the
+    admin's "show every version" switch - adds every concrete Claude version
+    in its own group and gives the other providers their untrimmed lists, so
+    a setting can be PINNED to one; the chat picker never asks for it."""
     groups = []
     # ONE predicate with the chat route's dispatch gate (ruled 2026-09-21):
     # providers.offered_providers. What the picker shows is dispatchable and
@@ -289,11 +300,14 @@ def get_available_models():
     # configured key activates them, the legacy ENABLE_* flags still can too.
     if "anthropic" in offered:
         groups.append({"provider": "anthropic", "label": "Anthropic", "models": _fetch_anthropic_models()})
+        if all_versions:
+            groups.append({"provider": "anthropic", "label": "Anthropic - every version (pins)",
+                           "models": model_catalog.anthropic_all_versions(_anthropic_badge)})
     if "openai" in offered:
         # Live like every registry provider (its static list is the fallback):
         # a hand-kept list only ever shows the models current when it was written.
         groups.append({"provider": "openai", "label": "OpenAI",
-                       "models": _fetch_compat_models("openai")})
+                       "models": _fetch_compat_models("openai", all_versions)})
     # Registry providers appear the moment their key is configured - no
     # enable flag; dormant (unkeyed) providers stay out of the picker
     # entirely.
@@ -302,5 +316,5 @@ def get_available_models():
             continue
         if name in offered:
             groups.append({"provider": name, "label": entry["label"],
-                           "models": _fetch_compat_models(name)})
+                           "models": _fetch_compat_models(name, all_versions)})
     return {"groups": groups}

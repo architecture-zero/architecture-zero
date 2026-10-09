@@ -290,6 +290,18 @@ describe('Models tab: the default model has its own row', () => {
     await waitFor(() => expect(calls.modelPatches).toEqual([{ default: 'e' }]))
   })
 
+  it('the dropdowns are the only model list, and the switch asks for every version', async () => {
+    installFetch()
+    render(<ModelsTab api="" headers={noHeaders} />)
+    await screen.findByText('Default model')
+    expect(screen.queryByText(/Available models/)).toBeNull()
+    const asked = () => (globalThis.fetch as unknown as { mock: { calls: unknown[][] } })
+      .mock.calls.map(c => String(c[0]))
+    expect(asked().some(u => u.includes('all_versions'))).toBe(false)
+    fireEvent.click(screen.getByLabelText('Show every version (to pin one)'))
+    await waitFor(() => expect(asked()).toContain('/api/models?all_versions=true'))
+  })
+
   it('the chat pin and the eval writer can follow the default model', async () => {
     installFetch()
     render(<ModelsTab api="" headers={noHeaders} />)

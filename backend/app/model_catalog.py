@@ -154,6 +154,16 @@ def anthropic_picker_models(badge) -> list:
     return out
 
 
+def anthropic_all_versions(badge) -> list:
+    """Every Claude version the key lists, newest first, as concrete ids - for
+    the admin's "show every version" switch, where picking one PINS a setting
+    to it (a rollback lever when a new release misbehaves, or a deployment
+    that must hold one version). [] when the list cannot be read."""
+    models = sorted(_anthropic_list(), key=lambda m: m.get("created_at") or "", reverse=True)
+    return [{"value": m["id"], "label": m.get("display_name") or m["id"], "badge": badge(m["id"])}
+            for m in models if family_of(m["id"])]
+
+
 # -- Other providers: the newest of each family -------------------------------
 
 # Models a chat cannot use - embeddings, speech, images, moderation, search -
