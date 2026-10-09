@@ -147,8 +147,10 @@ async def _record_boot_on_startup():
         # stamp could not be written) otherwise show only as a word in an
         # anonymous readiness body (the 2026-10-08 read).
         log_boot()
-    except Exception:
-        pass
+    except Exception as e:
+        # Never stops startup, but said: a module that cannot run leaves the
+        # crash-loop check off (the 2026-10-08 read's L1).
+        log_error("boot_history_unavailable", error=type(e).__name__)
 
 
 @app.on_event("startup")

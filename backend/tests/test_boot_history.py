@@ -19,6 +19,7 @@ def _a_fresh_boot(monkeypatch):
     # logged; each test starts where a fresh boot would.
     monkeypatch.setattr(bh, "_stamped", None, raising=False)
     monkeypatch.setattr(bh, "_ready_logged", None, raising=False)
+    monkeypatch.setattr(bh, "SETTING_ERRORS", [], raising=False)
 
 
 @pytest.fixture
@@ -256,11 +257,104 @@ def test_the_owner_view_shows_the_crash_loop_word(client, admin_headers, store, 
     loop = client.get("/api/health/detailed", headers=admin_headers).json()["crash_loop"]
     assert loop == {"state": "looping (6 boots/3600s)", "failing": True, "watched": True,
                     "recorded": True, "boots": 6, "threshold": 4, "window_s": 3600,
-                    "sha": "abc1234"}
+                    "sha": "abc1234", "setting_errors": []}
     monkeypatch.setattr(bh, "_stamped", False)
+    monkeypatch.setattr(bh, "SETTING_ERRORS", ["BOOT_LOOP_THRESHOLD is below 1 - using 4"])
     _write(store, [])
     loop = client.get("/api/health/detailed", headers=admin_headers).json()["crash_loop"]
     assert loop["state"] == "unrecorded" and loop["failing"] is False and loop["recorded"] is False
+    assert loop["setting_errors"] == ["BOOT_LOOP_THRESHOLD is below 1 - using 4"]
+
+
+def test_the_detailed_view_survives_a_module_that_cannot_load(client, admin_headers, monkeypatch):
+    """The detailed route imported the module unguarded, so a failure there took
+    its disk, retrieval and provider sections down too (the read's L1)."""
+    import sys
+    monkeypatch.setitem(sys.modules, "app.boot_history", None)
+    r = client.get("/api/health/detailed", headers=admin_headers)
+    assert r.status_code == 200
+    assert r.json()["crash_loop"] == {"state": "unavailable", "failing": False}
+    assert "disk" in r.json() and "rag" in r.json()
+
+
+def test_a_boot_whose_check_cannot_run_says_so(store, monkeypatch):
+    """The hook swallowed every failure: a module that could not run left the
+    check off without a line (the read's L1)."""
+    import asyncio
+    from app import main
+    lines = []
+    monkeypatch.setattr(main, "log_error", lambda event, **kw: lines.append((event, kw)))
+
+    def _broken(*a, **k):
+        raise RuntimeError("cannot run")
+    monkeypatch.setattr(bh, "record_boot", _broken)
+    asyncio.run(main._record_boot_on_startup())
+    assert lines == [("boot_history_unavailable", {"error": "RuntimeError"})]
+
+
+def test_a_setting_that_does_not_parse_falls_back_and_is_said(monkeypatch):
+    """A malformed setting failed the module's import: the detailed view answered
+    500 and the boot logged nothing (the read's L1). A threshold of 0 read the
+    first boot as a loop (its I2), so each setting has a floor."""
+    for raw in ("4.0", "four"):
+        monkeypatch.setenv("BOOT_LOOP_THRESHOLD", raw)
+        assert bh._int_setting("BOOT_LOOP_THRESHOLD", 4, 1) == 4
+    monkeypatch.setenv("BOOT_LOOP_WINDOW_SECONDS", "30")
+    assert bh._int_setting("BOOT_LOOP_WINDOW_SECONDS", 3600, 60) == 3600
+    monkeypatch.setenv("BOOT_LOOP_THRESHOLD", "0")
+    assert bh._int_setting("BOOT_LOOP_THRESHOLD", 4, 1) == 4
+    assert bh.SETTING_ERRORS == [
+        "BOOT_LOOP_THRESHOLD is not a whole number - using 4",
+        "BOOT_LOOP_THRESHOLD is not a whole number - using 4",
+        "BOOT_LOOP_WINDOW_SECONDS is below 60 - using 3600",
+        "BOOT_LOOP_THRESHOLD is below 1 - using 4"]
+    monkeypatch.setenv("BOOT_LOOP_THRESHOLD", " ")      # set empty reads as unset
+    assert bh._int_setting("BOOT_LOOP_THRESHOLD", 4, 1) == 4 and len(bh.SETTING_ERRORS) == 4
+    monkeypatch.setenv("BOOT_LOOP_THRESHOLD", "7")
+    assert bh._int_setting("BOOT_LOOP_THRESHOLD", 4, 1) == 7
+
+
+def test_the_module_loads_with_a_malformed_setting_and_an_empty_directory(tmp_path):
+    """The failure was at import, so it is tested at import, in a fresh
+    interpreter: a malformed threshold falls back and is listed, and an empty
+    BOOT_HISTORY_DIR reads as unset - it named no directory (the read's I2)."""
+    import subprocess
+    import sys
+    env = {**os.environ, "BOOT_LOOP_THRESHOLD": "4.0", "BOOT_LOOP_WINDOW_SECONDS": "",
+           "BOOT_HISTORY_DIR": "", "BACKUP_STATUS_DIR": str(tmp_path)}
+    code = ("import json, app.boot_history as b; print(json.dumps("
+            "[b.LOOP_THRESHOLD, b.WINDOW_SECONDS, b.DATA_DIR, b.SETTING_ERRORS]))")
+    backend = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                       env=env, cwd=backend)
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout.strip().splitlines()[-1]) == [
+        4, 3600, str(tmp_path), ["BOOT_LOOP_THRESHOLD is not a whole number - using 4"]]
+
+
+def test_log_boot_says_which_setting_it_ignored(store, monkeypatch, logged):
+    monkeypatch.setattr(bh, "SETTING_ERRORS",
+                        ["BOOT_LOOP_THRESHOLD is not a whole number - using 4"], raising=False)
+    bh.record_boot()
+    bh.log_boot()
+    assert [(lvl, ev) for lvl, ev, _ in logged] == [
+        ("info", "boot_recorded"), ("error", "boot_history_settings_ignored")]
+    assert logged[1][2]["problems"] == "BOOT_LOOP_THRESHOLD is not a whole number - using 4"
+
+
+def test_a_boot_stamped_ahead_of_now_is_not_counted(store):
+    """A clock stepped back kept boots "ahead of now" inside the window until the
+    clock caught up (the read's I1); a few seconds of skew still counts."""
+    now = bh.time.time()
+    _write(store, [{"ts": now + 7200, "sha": "abc1234"} for _ in range(6)]
+           + [{"ts": now + 3, "sha": "abc1234"}])
+    assert bh.crash_loop_state(now=now)["boots"] == 1
+
+
+def test_a_timestamp_that_is_not_finite_is_skipped(store):
+    (store / bh.HISTORY_FILE).write_text(json.dumps(
+        [{"ts": float("inf"), "sha": "abc1234"}] * 6 + [{"ts": float("nan"), "sha": "abc1234"}]))
+    assert bh.crash_loop_state(now=10_000.0)["boots"] == 0
 
 
 def test_the_owner_view_of_a_check_that_cannot_run(monkeypatch):

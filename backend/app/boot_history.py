@@ -40,23 +40,56 @@ be written - an unwritable BOOT_HISTORY_DIR - cannot count its own restarts,
 and it read "ok" forever. It reads "unrecorded" now: still passing, but said -
 in readiness, in the boot's log line and in the Owner's detailed view. The
 readiness word is logged when it changes, never per request (readiness is
-polled, and the access log already has every hit).
+polled, and the access log already has every hit). A setting that does not
+parse falls back to its default and is said the same way, never failing this
+module's import.
 
 The same text on every surface of this stack: a surface's first startup hook
 calls record_boot() and then log_boot(), its readiness route asks
 crash_loop_readiness() and its detailed route crash_loop_status().
 """
 import json
+import math
 import os
 import time
 
-DATA_DIR = os.getenv("BOOT_HISTORY_DIR", os.getenv("BACKUP_STATUS_DIR", "/app/data"))
+# A setting that does not parse, or sits below its floor, falls back to its
+# default and is said - in the boot's line and in the Owner's view - instead
+# of failing this module's import, which took the detailed view down with it
+# and left the boot without a line (the 2026-10-08 read's L1).
+SETTING_ERRORS: list[str] = []
+
+
+def _int_setting(name: str, default: int, floor: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default            # unset, or set empty: the default
+    try:
+        value = int(raw)
+    except ValueError:
+        SETTING_ERRORS.append(f"{name} is not a whole number - using {default}")
+        return default
+    if value < floor:
+        SETTING_ERRORS.append(f"{name} is below {floor} - using {default}")
+        return default
+    return value
+
+
+# An empty value reads as unset here too: it named no directory, so the stamp
+# could never be written.
+DATA_DIR = ((os.getenv("BOOT_HISTORY_DIR") or "").strip()
+            or (os.getenv("BACKUP_STATUS_DIR") or "").strip() or "/app/data")
 HISTORY_FILE = "boot-history.json"
 KEEP = 50
 # ~11 same-sha boots/hour was the incident; 4 deploys in 90 minutes was a normal
-# busy day but they carried four DIFFERENT shas, so they score 1 each here.
-LOOP_THRESHOLD = int(os.getenv("BOOT_LOOP_THRESHOLD", "4"))
-WINDOW_SECONDS = int(os.getenv("BOOT_LOOP_WINDOW_SECONDS", "3600"))
+# busy day but they carried four DIFFERENT shas, so they score 1 each here. A
+# threshold of 0 would read the first boot as a loop, hence the floors.
+LOOP_THRESHOLD = _int_setting("BOOT_LOOP_THRESHOLD", 4, 1)
+WINDOW_SECONDS = _int_setting("BOOT_LOOP_WINDOW_SECONDS", 3600, 60)
+# A boot stamped further ahead of now than this is not counted: a clock stepped
+# back would otherwise keep it inside the window until the clock caught up (the
+# same slack self_check allows a pass from the future).
+FUTURE_SLACK_SECONDS = 5
 
 # Whether THIS process's boot stamp was written: None until record_boot runs.
 _stamped: bool | None = None
@@ -85,11 +118,13 @@ def current_sha() -> str:
 
 
 def _boot_time(entry: dict) -> float | None:
-    """One entry's timestamp, or None for one this module never wrote."""
+    """One entry's timestamp, or None for one this module never wrote: not a
+    number, or not a finite one."""
     try:
-        return float(entry.get("ts", 0))
+        t = float(entry.get("ts", 0))
     except (TypeError, ValueError):
         return None
+    return t if math.isfinite(t) else None
 
 
 def record_boot(sha: str | None = None, now: float | None = None) -> bool:
@@ -133,9 +168,11 @@ def crash_loop_state(now: float | None = None) -> dict:
                 "sha": sha, "window_s": WINDOW_SECONDS}
     try:
         # Per entry: one this module never wrote (a non-numeric ts) is skipped,
-        # rather than zeroing the whole count (the 2026-10-08 read).
+        # rather than zeroing the whole count (the 2026-10-08 read); so is one
+        # stamped ahead of now past the slack (a clock stepped back).
         stamps = [_boot_time(b) for b in _read() if b.get("sha") == sha]
-        n = sum(1 for t in stamps if t is not None and now - t <= WINDOW_SECONDS)
+        n = sum(1 for t in stamps
+                if t is not None and -FUTURE_SLACK_SECONDS <= now - t <= WINDOW_SECONDS)
     except Exception:
         n = 0
     return {"looping": n > LOOP_THRESHOLD, "watched": True, "recorded": recorded,
@@ -196,7 +233,7 @@ def crash_loop_status(now: float | None = None) -> dict:
     return {"state": word, "failing": failing, "watched": state["watched"],
             "recorded": state["recorded"], "boots": state["boots"],
             "threshold": LOOP_THRESHOLD, "window_s": state["window_s"],
-            "sha": state["sha"]}
+            "sha": state["sha"], "setting_errors": list(SETTING_ERRORS)}
 
 
 def log_boot() -> None:
@@ -214,5 +251,7 @@ def log_boot() -> None:
             # This process cannot see its own restarts; readiness says "unrecorded".
             log_error("boot_unrecorded", sha=state["sha"], crash_loop_check=check,
                       reason=f"the boot stamp could not be written in {DATA_DIR}")
+        if SETTING_ERRORS:
+            log_error("boot_history_settings_ignored", problems="; ".join(SETTING_ERRORS))
     except Exception:
         pass

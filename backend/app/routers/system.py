@@ -290,9 +290,13 @@ def health_detailed(current_user: dict = Depends(require_owner)):
 
     # The crash-loop check's word with what it read (app/boot_history.py), so
     # an Owner can see when the check is off - "unwatched" or "unrecorded" -
-    # and not only in an anonymous readiness body (the 2026-10-08 read).
-    from app.boot_history import crash_loop_status
-    result["crash_loop"] = crash_loop_status()
+    # and not only in an anonymous readiness body (the 2026-10-08 read). A module
+    # that cannot load costs this one entry, never the whole view.
+    try:
+        from app.boot_history import crash_loop_status
+        result["crash_loop"] = crash_loop_status()
+    except Exception:
+        result["crash_loop"] = {"state": "unavailable", "failing": False}
 
     # DB response time
     try:

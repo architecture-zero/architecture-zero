@@ -579,6 +579,11 @@ once the boots age out of the window.
   up -d` after an `.env` change - are the same build, so a maintenance hour
   with five of them reads as a loop too. Expect it, or raise
   `BOOT_LOOP_THRESHOLD` for that deployment.
+- A setting that is not a whole number, a threshold below 1 or a window
+  below 60 seconds falls back to its default rather than stopping the
+  check: the boot logs `boot_history_settings_ignored` naming it, and the
+  detailed view lists it under `crash_loop.setting_errors`. Set empty, a
+  setting reads as unset.
 
 ## Running the test suite
 
