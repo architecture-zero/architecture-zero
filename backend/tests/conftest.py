@@ -102,11 +102,23 @@ def _no_outbound_embed(*args, **kwargs):
 
 patch("app.database.requests.post", side_effect=_no_outbound_embed).start()
 
-# Nor does any test read Anthropic's live model list (a requests.get, which the
-# block above does not cover): the catalog sees no list, so its fallbacks
-# answer, unless a test serves its own. Every Anthropic request asks the
-# catalog how much room its model needs (model_catalog.output_room, 2026-10-09).
-patch("app.model_catalog._fetch_list", return_value=[]).start()
+# Nor does any test read Anthropic's live model list - a requests.get, which
+# the block above does not cover. Every Anthropic request asks the catalog how
+# much room its model needs (model_catalog.output_room, 2026-10-09), so a test
+# of any call site would. The list comes only through a test's own stand-in
+# for requests.get (the picker tests serve one); otherwise the catalog sees
+# none and its fallbacks answer.
+import requests as _requests  # noqa: E402
+from app import model_catalog as _model_catalog  # noqa: E402
+
+_real_fetch_list, _real_get = _model_catalog._fetch_list, _requests.get
+
+
+def _model_list_offline():
+    return _real_fetch_list() if _requests.get is not _real_get else []
+
+
+patch("app.model_catalog._fetch_list", side_effect=_model_list_offline).start()
 
 _ADMIN = {"username": "testadmin", "password": "AdminPass1"}
 
