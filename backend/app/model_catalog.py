@@ -23,6 +23,7 @@ anything instance-specific (a caller passes its own badge rule).
 
 import logging
 import re
+import threading
 import time
 
 import requests
@@ -48,6 +49,7 @@ _FAMILY_ORDER = ("opus", "sonnet", "haiku")
 _ALIAS_RE = re.compile(r"^claude-([a-z]+)-latest$")
 
 _list_cache: dict = {"ts": 0.0, "ttl": 0.0, "models": None}
+_refresh_lock = threading.Lock()
 _last_resolved: dict = {}     # family -> the id this process last resolved it to
 
 
@@ -69,26 +71,60 @@ def family_of(model_id: str) -> str:
     return ""
 
 
-def _anthropic_list() -> list:
-    """Anthropic's model list for the configured key - id, display_name,
-    created_at per model - cached an hour; [] when it cannot be read (no key,
-    an outage), and that answer is cached for five minutes so a key-less
-    instance does not ask on every request."""
-    now = time.time()
-    cached = _list_cache["models"]
-    if cached is not None and now - _list_cache["ts"] < _list_cache["ttl"]:
-        return cached
-    models: list = []
+def _fetch_list() -> list:
+    """One read of Anthropic's model list for the configured key - id,
+    display_name, created_at per model; [] when it cannot be read (no key, an
+    outage)."""
     try:
         from app.providers import _anthropic_headers
         resp = requests.get("https://api.anthropic.com/v1/models?limit=100",
                             headers=_anthropic_headers(), timeout=5)
         resp.raise_for_status()
-        models = [m for m in resp.json().get("data", []) if m.get("id")]
+        return [m for m in resp.json().get("data", []) if m.get("id")]
     except Exception:
-        models = []
-    _list_cache.update(ts=now, ttl=CACHE_SECONDS if models else FAILURE_CACHE_SECONDS,
-                       models=models)
+        return []
+
+
+def _store(models: list) -> None:
+    _list_cache.update(ts=time.time(), models=models,
+                       ttl=CACHE_SECONDS if models else FAILURE_CACHE_SECONDS)
+
+
+def _refresh_behind() -> None:
+    """Refresh a STALE list on a thread of its own, one at a time, keeping the
+    stale list if the read fails (and asking again sooner). A chat answers
+    from the list it has meanwhile: the read is a blocking HTTP call, and the
+    chat edge runs inside the server's event loop."""
+    if not _refresh_lock.acquire(blocking=False):
+        return
+
+    def run():
+        try:
+            fresh = _fetch_list()
+            if fresh:
+                _store(fresh)
+            else:
+                _list_cache.update(ts=time.time(), ttl=FAILURE_CACHE_SECONDS)
+        finally:
+            _refresh_lock.release()
+
+    threading.Thread(target=run, name="model-catalog-refresh", daemon=True).start()
+
+
+def _anthropic_list() -> list:
+    """Anthropic's model list - trusted for an hour; once stale, answered from
+    while a fresh copy is read behind (_refresh_behind). Only a process with
+    no list yet - its first use, or every read so far failed (then asked
+    again after five minutes, so a key-less instance does not ask on every
+    request) - reads it inline."""
+    cached = _list_cache["models"]
+    if cached is not None and time.time() - _list_cache["ts"] < _list_cache["ttl"]:
+        return cached
+    if cached:
+        _refresh_behind()
+        return cached
+    models = _fetch_list()
+    _store(models)
     return models
 
 

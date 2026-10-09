@@ -75,6 +75,43 @@ def test_with_no_list_an_alias_keeps_its_last_answer_then_the_fallback(catalog):
     assert resolve("claude-nosuch-latest") == "claude-nosuch-latest"        # the provider refuses it
 
 
+def _wait_for_refresh():
+    import threading
+    for t in threading.enumerate():
+        if t.name == "model-catalog-refresh":
+            t.join(timeout=5)
+
+
+def test_a_stale_list_answers_at_once_and_refreshes_behind(monkeypatch):
+    import time as _t
+    stale = [{"id": "claude-opus-5-5", "display_name": "Claude Opus 5.5"}]
+    fresh = [{"id": "claude-opus-5-6", "display_name": "Claude Opus 5.6"}]
+    monkeypatch.setattr(model_catalog, "_list_cache",
+                        {"ts": _t.time() - 7200, "ttl": 3600, "models": stale})
+    monkeypatch.setattr(model_catalog, "_fetch_list", lambda: fresh)
+    assert model_catalog._anthropic_list() is stale          # no wait for the network
+    _wait_for_refresh()
+    assert model_catalog._anthropic_list() == fresh
+
+
+def test_a_failed_refresh_keeps_the_stale_list_and_asks_again_sooner(monkeypatch):
+    import time as _t
+    stale = [{"id": "claude-opus-5-5"}]
+    monkeypatch.setattr(model_catalog, "_list_cache",
+                        {"ts": _t.time() - 7200, "ttl": 3600, "models": stale})
+    monkeypatch.setattr(model_catalog, "_fetch_list", lambda: [])
+    model_catalog._anthropic_list()
+    _wait_for_refresh()
+    assert model_catalog._list_cache["models"] is stale
+    assert model_catalog._list_cache["ttl"] == model_catalog.FAILURE_CACHE_SECONDS
+
+
+def test_with_no_list_yet_the_first_read_is_inline(monkeypatch):
+    monkeypatch.setattr(model_catalog, "_list_cache", {"ts": 0.0, "ttl": 0.0, "models": None})
+    monkeypatch.setattr(model_catalog, "_fetch_list", lambda: [{"id": "claude-haiku-4-5"}])
+    assert model_catalog._anthropic_list() == [{"id": "claude-haiku-4-5"}]
+
+
 def test_the_dispatch_resolver_sends_the_concrete_id(catalog):
     assert _resolve_model("claude-opus-latest") == ("anthropic", "claude-opus-5-5")
 
