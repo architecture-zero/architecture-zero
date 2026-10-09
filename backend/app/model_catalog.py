@@ -55,10 +55,6 @@ def alias_for(family: str) -> str:
     return f"claude-{family}-latest"
 
 
-def is_alias(model: str) -> bool:
-    return bool(_ALIAS_RE.match((model or "").strip()))
-
-
 def family_of(model_id: str) -> str:
     """The Claude family of an id or an alias - the first word after
     "claude-" that is not a version number, so "claude-opus-5-5" and the

@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from app import model_catalog
-from app.model_catalog import (family_of, is_alias, resolve, anthropic_picker_models,
+from app.model_catalog import (family_of, resolve, anthropic_picker_models,
                                trim_to_newest, FAMILY_FALLBACK)
 from app.providers import _resolve_model
 
@@ -42,12 +42,6 @@ def test_the_family_of_an_id_reads_both_naming_shapes():
     assert family_of("claude-3-5-sonnet-20241022") == "sonnet"
     assert family_of("claude-opus-latest") == "opus"
     assert family_of("gpt-4o") == "" and family_of("") == "" and family_of("qwen3:8b") == ""
-
-
-def test_only_the_latest_shape_is_an_alias():
-    assert is_alias("claude-opus-latest") and is_alias(" claude-sonnet-latest ")
-    assert not is_alias("claude-opus-5-5") and not is_alias("mistral-large-latest")
-    assert not is_alias("")
 
 
 def test_an_alias_sends_the_newest_model_of_its_family(catalog):
