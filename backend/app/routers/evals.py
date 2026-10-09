@@ -203,11 +203,14 @@ def run_evals(body: EvalRunRequest, current_user: dict = Depends(require_owner))
                    "lines appear in the backend logs.")
     run_id = str(_uuid.uuid4())
     run_at = _dt.datetime.utcnow().isoformat()
-    # Answer-model resolution: the eval writer is PINNED via config
-    # (eval_answer_model), independent of the admin chat dial - same
-    # principle as the pinned judge: a measurement instrument must not change
-    # because the chat model did. Explicit per-run model still wins;
-    # DEFAULT_MODEL is the last resort for a box with neither config set.
+    # Answer-model resolution: the eval writer is its OWN config slot
+    # (eval_answer_model), independent of the admin chat dial, so a chat-model
+    # change never silently changes what a measurement measures. It may hold
+    # a family alias (it then rolls with new releases - the next run shows
+    # what a new model brings) or a version (a pin); either way the run
+    # resolves it once, below, and records that version. Explicit per-run
+    # model still wins; DEFAULT_MODEL is the last resort for a box with
+    # neither config set.
     model = (body.model.strip() or get_config("eval_answer_model", "")
              or _config_or_default("default_model", DEFAULT_MODEL))
     # A family alias (a blank writer follows default_model, which may be
