@@ -27,10 +27,23 @@ os.environ["SELF_CHECK_INTERVAL_SECONDS"] = "0"
 # backend/data dir - the chroma CLIENT is mocked below, but path-based code
 # would otherwise touch real files.
 os.environ["CHROMA_PATH"] = tempfile.mkdtemp(prefix="test-chroma-")
-# Every app boot in the suite stamps the boot history (app/boot_history.py),
-# whose default home is /app/data. Left there, a workstation collects the
-# test boots of every run and readiness then reads them as a crash loop.
-os.environ["BOOT_HISTORY_DIR"] = tempfile.mkdtemp(prefix="test-boots-")
+# Every path this app defaults under /app is a real directory on a
+# workstation - C:/app on Windows - and the suite wrote there: each test boot
+# into the boot history (which a later readiness check reads as a crash
+# loop), a rotating 10 MB log, the help sync's state, a model cache. One temp
+# root for all of them (2026-10-08); a value a run sets itself is kept.
+_TEST_APP_ROOT = tempfile.mkdtemp(prefix="test-app-")
+for _sub in ("data", "logs", "models", "chroma"):
+    os.makedirs(os.path.join(_TEST_APP_ROOT, _sub), exist_ok=True)
+_TEST_APP_PATHS = (("DATA_DIR", "data"), ("BACKUP_STATUS_DIR", "data"),
+                   ("BOOT_HISTORY_DIR", "data"), ("HELP_SYNC_STATE_DIR", "data"),
+                   ("EVIDENCE_STATUS_DIR", "data"), ("CHROMA_PATH", "chroma"),
+                   ("HISTORY_DB_PATH", os.path.join("data", "history.db")),
+                   ("LOG_DIR", "logs"), ("FASTEMBED_CACHE", "models"))
+# Named, so a test that runs a host script can hand it a host's environment.
+_TEST_APP_PATH_VARS = tuple(var for var, _ in _TEST_APP_PATHS)
+for _var, _rel in _TEST_APP_PATHS:
+    os.environ.setdefault(_var, os.path.join(_TEST_APP_ROOT, _rel))
 
 from unittest.mock import MagicMock, patch
 import pytest
