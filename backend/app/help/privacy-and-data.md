@@ -7,6 +7,8 @@ The assistant reads passages from your organization's documents and asks an AI m
 - On your organization's own server (a local model). The welcome screen says "Answers come from a model running on this server."
 - At a cloud AI provider your administrator chose. The welcome screen says the assistant is cloud-powered, and only the passages needed for an answer, plus your question and the conversation so far, are sent to that provider.
 
+If your administrator turns on a hosted ranking service - an outside service that puts the candidate passages in order before the answer is written - your question and those candidate passages are also sent to that service. It is off unless turned on.
+
 The documents themselves stay on the instance's server in both cases. Guests see neither line on the welcome screen; ask your administrator which applies.
 
 ## What is stored
