@@ -13,7 +13,7 @@ import chromadb
 from app.rag_config import (
     EMBED_MODEL, VECTOR_WEIGHT, BM25_WEIGHT, BM25_K1, BM25_B, BM25_FETCH,
     RECENCY_HALF_LIFE_DAYS, RECENCY_FLOOR,
-    HNSW_SYNC_THRESHOLD, HNSW_BATCH_SIZE,
+    HNSW_SYNC_THRESHOLD, HNSW_BATCH_SIZE, RERANK_FETCH,
     derive_trust,
 )
 
@@ -210,6 +210,10 @@ def _embed(text: str, retries: int = 2, timeout: float = 60) -> list[float]:
 # -- The retrieval lane, proven (AZ-02) ---------------------------------------
 _LANE_PROBE_TEXT = "Is the retrieval lane answering?"
 
+# The collections the lane probe last found refusing its search - logged when
+# that set changes, not every pass (the self-check's own rule for its log).
+_lane_failed_last: tuple = ()
+
 
 def probe_retrieval_lane(rag_only: bool, corpus_expected: bool = False) -> dict:
     """One pass over what a governed query needs (AZ-02, outside review
@@ -219,16 +223,28 @@ def probe_retrieval_lane(rag_only: bool, corpus_expected: bool = False) -> dict:
     OLLAMA_BASE says nothing about.
 
     In order: the vector store answers a read; the embed service answers with
-    a vector through the SAME _embed a query uses; the store accepts that
-    vector for a search. So a missing EMBED_MODEL fails here as it fails every
-    query (the service refuses it), and so does a different model (it answers
-    with a vector of the wrong width, which the search rejects).
+    a vector through the SAME _embed a query uses; every populated collection
+    accepts that vector for a search. So a missing EMBED_MODEL fails here as it
+    fails every query (the service refuses it), and so does a different model
+    (it answers with a vector of the wrong width, which the search rejects).
+
+    Each collection is searched the way a question searches it (2026-10-09):
+    through _knn, at the k query_similar asks for when the chat lane retrieves
+    (RERANK_FETCH candidates). The probe used to search the first populated
+    collection only, at k=1 - and a derived instance's main collection refused
+    the k a question asked (hnswlib, near the index's size) while k=1 passed:
+    readiness read ready for hours while every question that needed the
+    corpus was refused. A sick collection that is not first in the list was
+    never searched at all. The probe now proves what a question runs, and a
+    collection that fails names itself in the log.
 
     Returns {"state": "ok"}, {"state": "not_required"} when this instance
     serves no retrieval (no operator documents, RAG_ONLY_MODE off - product
     help pages are not the operator's corpus, as in count_documents), or
     {"state": "error", "reason": <code>}. The reason is a fixed code, never
-    exception text: it reaches the Owner's view and the alert.
+    exception text: it reaches the Owner's view and the alert. Once retrieval
+    is required, the help collection is searched with the rest - the help lane
+    reads it at the same k.
 
     corpus_expected (the AZ-02 security read): a deployment whose corpus is
     never legitimately empty passes True, and an empty store reads error -
@@ -240,11 +256,16 @@ def probe_retrieval_lane(rag_only: bool, corpus_expected: bool = False) -> dict:
     the process on a write while every read stays green, so a write probe
     would be the outage it was meant to report. Called from the self-check
     timer, never from a request (app/self_check.py)."""
+    global _lane_failed_last
     try:
-        populated = [c for c in client.list_collections()
-                     if c.name != HELP_COLLECTION and c.count() > 0]
+        searched = []
+        for c in client.list_collections():
+            n = c.count()
+            if n > 0:
+                searched.append((c, n))
     except Exception:
         return {"state": "error", "reason": "vector_store_unreadable"}
+    populated = [c for c, _ in searched if c.name != HELP_COLLECTION]
     if not populated and not rag_only and not corpus_expected:
         return {"state": "not_required"}
     # The embed service is asked first, even for an empty store a corpus is
@@ -264,12 +285,20 @@ def probe_retrieval_lane(rag_only: bool, corpus_expected: bool = False) -> dict:
         return {"state": "error", "reason": "embed_malformed"}
     if not populated and corpus_expected:
         return {"state": "error", "reason": "vector_store_empty"}
-    if populated:
+    k = _fetch_k(RERANK_FETCH)
+    failed = []
+    for col, n in searched:
         try:
-            populated[0].query(query_embeddings=[vector], n_results=1,
-                               include=["distances"])
-        except Exception:
-            return {"state": "error", "reason": "vector_search_failed"}
+            _knn(col, vector, min(k, n), ["distances"], "probe_retrieval_lane")
+        except Exception as e:
+            failed.append((col.name, f"{type(e).__name__}: {str(e)[:160]}"))
+    names = tuple(name for name, _ in failed)
+    if names and names != _lane_failed_last:
+        log.warning("probe_retrieval_lane: the search failed on %s",
+                    "; ".join(f"{name} ({err})" for name, err in failed))
+    _lane_failed_last = names
+    if failed:
+        return {"state": "error", "reason": "vector_search_failed"}
     return {"state": "ok"}
 
 
@@ -633,6 +662,36 @@ def add_documents_batch(entries: list[tuple[str, str, dict]],
     return len(ids)
 
 
+def _fetch_k(n_results: int) -> int:
+    """How many candidates query_similar asks each collection for: twice what
+    its caller keeps, never fewer than ten. The lane probe asks each
+    collection for what the chat lane asks (probe_retrieval_lane), through
+    this same function, so the two cannot drift apart."""
+    return max(n_results * 2, 10)
+
+
+def _knn(col, embedding: list[float], k: int, include: list[str], caller: str) -> dict:
+    """One collection's vector search at k - query_similar and the lane probe
+    both search through here, so the probe proves the search a question runs.
+
+    hnswlib refuses a knn query whose k approaches the index's element count
+    ("Cannot return the results in a contigious 2D array" - typo verbatim): a
+    small HNSW graph is not guaranteed traversable to every node. k halves and
+    the search runs again until it is accepted, rather than losing the
+    collection's whole vector leg (and in query_similar its BM25 leg) - a
+    silent per-collection loss that reads as "no knowledge found". Any other
+    failure, or a refusal at k=1, raises."""
+    while True:
+        try:
+            return col.query(query_embeddings=[embedding], n_results=k, include=include)
+        except Exception as e:
+            if k <= 1 or "contigious 2D array" not in str(e):
+                raise
+            log.warning("%s: %s knn refused k=%d (%s), retrying k=%d",
+                        caller, getattr(col, "name", "?"), k, e, k // 2)
+            k //= 2
+
+
 def query_similar(query: str, n_results: int = 5,
                   department: str | list[str] | None = None,
                   only_department: bool = False) -> list[dict]:
@@ -646,7 +705,7 @@ def query_similar(query: str, n_results: int = 5,
     answered from the operator's documents, and it is the one caller that
     wants exactly one collection."""
     embedding = _embed(query)
-    fetch_k = max(n_results * 2, 10)
+    fetch_k = _fetch_k(n_results)
 
     all_docs: list[str] = []
     all_distances: list[float] = []
@@ -670,29 +729,11 @@ def query_similar(query: str, n_results: int = 5,
             count = col.count()
             if count == 0:
                 continue
-            k = min(fetch_k, count)
-            while True:
-                try:
-                    results = col.query(
-                        query_embeddings=[embedding],
-                        n_results=k,
-                        include=["documents", "distances", "metadatas"]
-                    )
-                    break
-                except Exception as e:
-                    # hnswlib refuses a knn query whose k approaches the
-                    # index's element count ("Cannot return the results in a
-                    # contigious 2D array" - typo verbatim): a small HNSW
-                    # graph is not guaranteed traversable to every node.
-                    # Halve k and retry rather than losing the collection's
-                    # whole vector leg (and, via the continue below, its BM25
-                    # leg) - a silent per-collection loss that reads as "no
-                    # knowledge found".
-                    if k <= 1 or "contigious 2D array" not in str(e):
-                        raise
-                    log.warning("query_similar: %s knn refused k=%d (%s), retrying k=%d",
-                                getattr(col, "name", "?"), k, e, k // 2)
-                    k //= 2
+            # The search halves k on hnswlib's refusal of a k near the
+            # index's size (_knn); any other failure lands in the except
+            # below.
+            results = _knn(col, embedding, min(fetch_k, count),
+                           ["documents", "distances", "metadatas"], "query_similar")
             vector_ids = results["ids"][0] if results.get("ids") else []
             all_docs.extend(results["documents"][0] if results["documents"] else [])
             all_distances.extend(results["distances"][0] if results["distances"] else [])

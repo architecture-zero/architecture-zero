@@ -59,7 +59,7 @@ def watched(monkeypatch):
     monkeypatch.setattr(sc, "_last_failing", ())
     try:
         import app.boot_history as _boot_history
-        monkeypatch.setattr(_boot_history, "crash_loop_state", lambda: {"looping": False})
+        monkeypatch.setattr(_boot_history, "crash_loop_readiness", lambda now=None: ("ok", False))
     except ImportError:
         pass
     fired = []

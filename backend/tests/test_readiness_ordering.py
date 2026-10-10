@@ -42,10 +42,12 @@ def lane(monkeypatch):
     monkeypatch.setattr(sc, "_ollama_last", None, raising=False)
     monkeypatch.setenv("ENABLE_OLLAMA", "false")
     monkeypatch.delenv("REDIS_URL", raising=False)
-    # Where the crash-loop check exists, a workstation's test boots read as a loop.
+    # The crash-loop check is not under test here: its word is fixed at ok. The
+    # route asks crash_loop_readiness since 2026-10-08 - the old stub of
+    # crash_loop_state no longer fit its call, so these tests read "unavailable".
     try:
         import app.boot_history as _boot_history
-        monkeypatch.setattr(_boot_history, "crash_loop_state", lambda: {"looping": False})
+        monkeypatch.setattr(_boot_history, "crash_loop_readiness", lambda now=None: ("ok", False))
     except ImportError:
         pass
     fired = []

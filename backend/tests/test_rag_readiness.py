@@ -25,9 +25,19 @@ file's own pending and off tests asserted 200. Now only a fresh pass that found
 the lane ok, or not required, is ready, and the first pass runs at boot - its
 tests fail on the code before it (pending, off and unwired answered 200; the
 first pass came one interval in).
+
+Every collection, at the k a question asks (2026-10-09): the probe searched the
+first populated collection only, at k=1. A derived instance's main collection
+refused the k a question asked while k=1 passed, so readiness read ready for
+hours while every question that needed the corpus was refused; a sick
+collection anywhere but first was never searched. The tests in that section
+fail on the code before it for the behavioral reason: a sick second collection
+read ready, every search asked for 1, the help collection was never searched,
+and nothing named the failing collection.
 """
 import asyncio
 import inspect
+import logging
 import threading
 import json
 import time
@@ -37,15 +47,23 @@ import requests
 
 from app import database as db
 from app import self_check as sc
+from app.rag_config import RERANK_FETCH
 
 _BOUND = 2 * 300 + 60   # two intervals and a minute, at the 300 s interval
 _HELP = getattr(db, "HELP_COLLECTION", None)
+# The k query_similar asks each collection for when the chat lane retrieves
+# (RERANK_FETCH candidates) - written out, not read from the module under test.
+_SERVING_K = max(RERANK_FETCH * 2, 10)
+_REFUSED = "Cannot return the results in a contigious 2D array. Probably ef or M is too small"
 
 
 class _Col:
-    def __init__(self, name="knowledge_base", n=3, query_error=None):
+    def __init__(self, name="knowledge_base", n=3, query_error=None, max_k=None):
         self.name, self._n, self._query_error = name, n, query_error
-        self.queried, self.included = [], []
+        # hnswlib's refusal of a k near a small index's size, above max_k
+        # (max_k=0: the index refuses every k - dead to search).
+        self._max_k = max_k
+        self.queried, self.included, self.asked = [], [], []
 
     def count(self):
         return self._n
@@ -53,8 +71,11 @@ class _Col:
     def query(self, query_embeddings, n_results, include=None):
         self.queried.append(len(query_embeddings[0]))
         self.included.append(include)
+        self.asked.append(n_results)
         if self._query_error:
             raise self._query_error
+        if self._max_k is not None and n_results > self._max_k:
+            raise RuntimeError(_REFUSED)
         return {"ids": [["x"]]}
 
 
@@ -88,15 +109,16 @@ def lane(monkeypatch):
     monkeypatch.setattr(sc, "_rag_wired", True, raising=False)
     monkeypatch.setattr(sc, "_started_at", time.time(), raising=False)
     monkeypatch.setattr(sc, "_rag_last", None, raising=False)
+    monkeypatch.setattr(db, "_lane_failed_last", (), raising=False)
     monkeypatch.setattr(time, "sleep", lambda s: None)
     # Readiness's other checks must not decide or slow these tests: the chat
     # provider is not under test (its /api/tags read waits out a 3 s timeout
-    # where nothing answers), and where the crash-loop check exists, a
-    # workstation's test boots read as a loop.
+    # where nothing answers), and the crash-loop word is fixed at ok (the route
+    # asks crash_loop_readiness since 2026-10-08).
     monkeypatch.setenv("ENABLE_OLLAMA", "false")
     try:
         import app.boot_history as _boot_history
-        monkeypatch.setattr(_boot_history, "crash_loop_state", lambda: {"looping": False})
+        monkeypatch.setattr(_boot_history, "crash_loop_readiness", lambda now=None: ("ok", False))
     except ImportError:
         pass
     fired = []
@@ -192,8 +214,9 @@ def test_before_the_first_pass_pending_then_stale(client, monkeypatch, lane):
 def test_a_healthy_lane_is_ready_and_searched_with_the_query_legs_vector(
         client, monkeypatch, lane, real_embed, tmp_path):
     col = _Col()
-    # Where product help pages exist they come first and hold the most: they
-    # are not the operator's corpus, so the search must go to the operator's.
+    # Where product help pages exist they come first and hold the most. The
+    # operator's corpus is searched whatever comes first - every populated
+    # collection is (2026-10-09) - and the help collection with the same vector.
     cols = ([_Col(name=_HELP, n=40)] if _HELP else []) + [col]
     monkeypatch.setattr(db, "client", _Client(cols))
     sent = []
@@ -211,17 +234,21 @@ def test_a_healthy_lane_is_ready_and_searched_with_the_query_legs_vector(
     assert timeout == 15   # the probe's own bound, not the ingest's 60
     assert col.queried == [768]
     assert col.included == [["distances"]]   # no corpus text pulled into the probe
+    if _HELP:
+        assert cols[0].queried == [768] and cols[0].included == [["distances"]]
     assert "rag_down" not in lane
 
 
 def test_no_operator_corpus_asks_nothing_of_the_lane(client, monkeypatch, lane, tmp_path):
-    monkeypatch.setattr(db, "client", _Client([_Col(name=_HELP, n=40)] if _HELP else []))
+    cols = [_Col(name=_HELP, n=40)] if _HELP else []
+    monkeypatch.setattr(db, "client", _Client(cols))
     called = []
     monkeypatch.setattr(db, "_embed", lambda *a, **k: called.append(1) or [0.0])
     _timer_pass(str(tmp_path))
     status, checks = _ready(client)
     assert status == 200 and checks["rag"] == "not_required"
     assert called == []
+    assert all(c.asked == [] for c in cols)   # help pages alone: nothing searched
 
 
 def test_an_empty_store_where_a_corpus_is_expected_is_not_ready(
@@ -467,3 +494,115 @@ def test_readiness_logs_a_failing_lane_once_not_per_request(client, monkeypatch,
     for _ in range(4):
         client.get("/api/health/ready")
     assert lines == [("readiness_rag_failing", "off")]
+
+
+# -- Every collection, at the k a question asks (2026-10-09) -------------------
+
+def _vector(monkeypatch, width=8):
+    monkeypatch.setattr(db, "_embed", lambda *a, **k: [0.1] * width)
+
+
+def _search_failures(caplog):
+    return [r.getMessage() for r in caplog.records
+            if r.getMessage().startswith("probe_retrieval_lane: the search failed")]
+
+
+@pytest.mark.parametrize("sick_kw", [
+    {"max_k": 0},
+    {"query_error": RuntimeError("Error executing plan: Internal error: Error finding id")},
+], ids=["dead to search at every k", "a failing segment"])
+def test_a_sick_collection_that_is_not_first_is_not_ready(
+        client, monkeypatch, lane, tmp_path, sick_kw):
+    """The probe searched only the first populated collection, so a department
+    whose index could not search read ready behind a healthy first one."""
+    first, sick = _Col(n=50), _Col(name="kb_finance", n=30, **sick_kw)
+    monkeypatch.setattr(db, "client", _Client([first, sick]))
+    _vector(monkeypatch)
+    _timer_pass(str(tmp_path))
+    status, checks = _ready(client)
+    assert status == 503 and checks["rag"] == "error", checks
+    assert sc.rag_status()["reason"] == "vector_search_failed"
+    assert "rag_down" in lane
+    assert first.asked and sick.asked
+    if "max_k" in sick_kw:
+        # Halved down to k=1 the way a question's search is, then given up.
+        assert sick.asked[-1] == 1 and sick.asked == sorted(sick.asked, reverse=True)
+    assert "kb_finance" not in client.get("/api/health/ready").text
+
+
+def test_each_collection_is_searched_at_the_k_a_question_asks(
+        client, monkeypatch, lane, tmp_path):
+    """query_similar asks each collection for min(fetch_k, its size), fetch_k
+    being the chat lane's; the probe asked every collection for 1."""
+    small = _Col(n=3)
+    mid = _Col(name="kb_ops", n=92)
+    big = _Col(name="kb_sales", n=_SERVING_K * 4)
+    monkeypatch.setattr(db, "client", _Client([small, mid, big]))
+    _vector(monkeypatch)
+    _timer_pass(str(tmp_path))
+    status, checks = _ready(client)
+    assert status == 200 and checks["rag"] == "ok"
+    assert small.asked == [3]
+    assert mid.asked == [min(92, _SERVING_K)]
+    assert big.asked == [_SERVING_K]
+
+
+def test_an_index_that_refuses_the_serving_k_reads_as_a_question_would(
+        client, monkeypatch, lane, tmp_path, caplog):
+    """The incident's index: 92 chunks, refusing a k near its size and
+    accepting half. A question's search halves k and is answered; the probe
+    runs the same search, so it agrees - ready - and the refusal is logged
+    under the probe's own name. With the old k=1 it was never asked at all."""
+    col = _Col(n=92, max_k=46)
+    monkeypatch.setattr(db, "client", _Client([col]))
+    _vector(monkeypatch)
+    k0 = min(92, _SERVING_K)
+    with caplog.at_level(logging.WARNING, logger="database"):
+        _timer_pass(str(tmp_path))
+    status, checks = _ready(client)
+    assert status == 200 and checks["rag"] == "ok"
+    assert col.asked == ([k0, k0 // 2] if k0 > 46 else [k0])
+    if k0 > 46:
+        assert any(r.getMessage().startswith("probe_retrieval_lane: knowledge_base knn refused")
+                   for r in caplog.records)
+
+
+@pytest.mark.skipif(not _HELP, reason="no help collection on this surface")
+def test_the_help_collection_is_searched_once_retrieval_is_required(
+        client, monkeypatch, lane, tmp_path):
+    """The help lane reads the help collection at the chat lane's k, so a help
+    index that cannot search fails the lane too, once there is a corpus to
+    serve. With help pages alone the lane is not required and nothing is
+    searched (test_no_operator_corpus_asks_nothing_of_the_lane)."""
+    help_col, corpus = _Col(name=_HELP, n=40, max_k=0), _Col(n=3)
+    monkeypatch.setattr(db, "client", _Client([help_col, corpus]))
+    _vector(monkeypatch)
+    _timer_pass(str(tmp_path))
+    status, checks = _ready(client)
+    assert status == 503 and checks["rag"] == "error"
+    assert sc.rag_status()["reason"] == "vector_search_failed"
+    assert corpus.asked == [3]
+
+
+def test_a_failing_collection_is_named_in_the_log_once_not_every_pass(
+        client, monkeypatch, lane, tmp_path, caplog):
+    """The reason stays a fixed code (it reaches the alert and the Owner's
+    view); the log says which collection failed and how - when that changes,
+    not every pass."""
+    healthy = _Col(n=50)
+    sick = _Col(name="kb_finance", n=30, query_error=RuntimeError("segment reader failed"))
+    monkeypatch.setattr(db, "client", _Client([healthy, sick]))
+    _vector(monkeypatch)
+    with caplog.at_level(logging.WARNING, logger="database"):
+        for _ in range(3):
+            _timer_pass(str(tmp_path))
+        failures = _search_failures(caplog)
+        assert len(failures) == 1, failures
+        assert "kb_finance" in failures[0] and "segment reader failed" in failures[0]
+        # Recovered, then sick again: a new incident, named again.
+        monkeypatch.setattr(db, "client", _Client([healthy]))
+        _timer_pass(str(tmp_path))
+        monkeypatch.setattr(db, "client", _Client([healthy, sick]))
+        _timer_pass(str(tmp_path))
+    assert len(_search_failures(caplog)) == 2
+    assert sc.rag_status()["reason"] == "vector_search_failed"

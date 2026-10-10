@@ -493,9 +493,15 @@ amount:
 database and a healthy cloud model used to read ready while every question
 that needs the knowledge base failed. The same timer now checks the lane:
 it embeds one short sentence through the same call a question uses, then
-searches the vector store with that vector - read-only, never a write. A
-missing `EMBED_MODEL` fails there (the service refuses it), and so does a
-different model, whose vector is the wrong width for the index. A failed
+searches every populated collection with that vector - at the k a question
+asks each one for, through the same search a question runs - read-only,
+never a write. A missing `EMBED_MODEL` fails there (the service refuses it),
+and so does a different model, whose vector is the wrong width for the
+index; so does a single collection whose index cannot search, which the
+backend log names (`probe_retrieval_lane: the search failed on ...`, once
+per change). Until 2026-10-09 the check searched the first collection only,
+at k=1: a collection that refused a question's larger k read ready, as did
+a sick collection anywhere but first. A failed
 check raises an alert like the others, and `/api/health/ready` answers 503
 until a check passes; its body shows `rag` as `ok`, `error`, `stale`,
 `pending`, `not_required`, `off` or `skipped`, and the Owner's detailed route gives the

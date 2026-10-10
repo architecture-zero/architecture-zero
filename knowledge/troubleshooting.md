@@ -212,10 +212,14 @@ reason:
   nomic-embed-text`.
 - `embed_refused` / `embed_malformed` - the service answered with an error
   or without a vector; its own log says why.
-- `vector_search_failed` - the vector came back but the index would not
-  search with it. Usually EMBED_MODEL changed after the documents were
-  indexed: the new model's vectors are a different width. Set it back, or
-  re-ingest under the new one.
+- `vector_search_failed` - the vector came back but an index would not
+  search with it. Every collection is searched, at the k a question asks,
+  and the backend log's `probe_retrieval_lane: the search failed on` line
+  names each one that failed and why. Every collection failing usually
+  means EMBED_MODEL changed after the documents were indexed: the new
+  model's vectors are a different width. Set it back, or re-ingest under the
+  new one. One collection failing while the others search is that index:
+  rebuild it with the runbook's force-rebuild lever.
 - `vector_store_unreadable` - the vector store itself could not be read;
   see the next section.
 - `vector_store_empty` - the store holds no documents while KNOWLEDGE_DIR
