@@ -27,10 +27,10 @@ tests fail on the code before it (pending, off and unwired answered 200; the
 first pass came one interval in).
 
 Every collection, at the k a question asks (2026-10-09): the probe searched the
-first populated collection only, at k=1. A derived instance's main collection
-refused the k a question asked while k=1 passed, so readiness read ready for
-hours while every question that needed the corpus was refused; a sick
-collection anywhere but first was never searched. The tests in that section
+first populated collection only, at k=1, so a derived instance read ready for
+hours while its main collection refused every question's k (hnswlib, near the
+index's size) - the probe never asked it that - and a sick collection anywhere
+but first was never searched at all. The tests in that section
 fail on the code before it for the behavioral reason: a sick second collection
 read ready, every search asked for 1, the help collection was never searched,
 and nothing named the failing collection.

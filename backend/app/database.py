@@ -231,12 +231,12 @@ def probe_retrieval_lane(rag_only: bool, corpus_expected: bool = False) -> dict:
     Each collection is searched the way a question searches it (2026-10-09):
     through _knn, at the k query_similar asks for when the chat lane retrieves
     (RERANK_FETCH candidates). The probe used to search the first populated
-    collection only, at k=1 - and a derived instance's main collection refused
-    the k a question asked (hnswlib, near the index's size) while k=1 passed:
-    readiness read ready for hours while every question that needed the
-    corpus was refused. A sick collection that is not first in the list was
-    never searched at all. The probe now proves what a question runs, and a
-    collection that fails names itself in the log.
+    collection only, at k=1, so a derived instance read ready for hours while
+    its main collection refused the k every question asked (hnswlib, near the
+    index's size) - the probe never asked it that - and a sick collection
+    that is not first in the list was never searched at all. The probe now
+    proves what a question runs, and a collection that fails names itself in
+    the log.
 
     Returns {"state": "ok"}, {"state": "not_required"} when this instance
     serves no retrieval (no operator documents, RAG_ONLY_MODE off - product
