@@ -533,7 +533,8 @@ def test_a_sick_collection_that_is_not_first_is_not_ready(
 def test_each_collection_is_searched_at_the_k_a_question_asks(
         client, monkeypatch, lane, tmp_path):
     """query_similar asks each collection for min(fetch_k, its size), fetch_k
-    being the chat lane's; the probe asked every collection for 1."""
+    being the chat lane's; the probe asked the first collection for 1 and the
+    others for nothing."""
     small = _Col(n=3)
     mid = _Col(name="kb_ops", n=92)
     big = _Col(name="kb_sales", n=_SERVING_K * 4)
