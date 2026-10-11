@@ -16,7 +16,8 @@
  */
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { GuestAccessTab, SettingsTab, ModelsTab } from '../AdminPanel'
+import { SettingsTab, ModelsTab } from '../AdminPanel'
+import { GuestAccessTab } from '../admin/GuestAccessTab'
 import { ChatControlsTab } from '../admin/ChatControlsTab'
 import { SystemPromptTab } from '../admin/SystemPromptTab'
 
