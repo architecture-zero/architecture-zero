@@ -1,8 +1,5 @@
 import { useState } from 'react'
-import { PRIMARY_COLOR } from './theme'
-
-const INSTANCE_NAME = import.meta.env.VITE_INSTANCE_NAME || 'Architecture Zero'
-const INITIALS = INSTANCE_NAME.split(' ').map((w: string) => w[0]).join('').slice(0, 2).toUpperCase()
+import { PRIMARY_COLOR, INSTANCE_NAME, INITIALS } from './theme'
 
 interface LoginProps {
   api: string

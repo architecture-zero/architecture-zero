@@ -5,10 +5,11 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import Login from './Login'
 import AdminPanel from './AdminPanel'
-import { PRIMARY_COLOR } from './theme'
+import { PRIMARY_COLOR, INSTANCE_NAME, INITIALS, ON_PRIMARY } from './theme'
 import HistoryList from './HistoryList'
 import Profile from './Profile'
 import { ErrorSurface, actionError, emitError, guardedJson, guardedPoll } from './errorSurface'
+import { API, authHeaders, sessionKey, getOrCreateSession } from './api'
 
 // ── Domain types ───────────────────────────────────────────────────────────
 
@@ -121,17 +122,6 @@ interface Analytics {
 }
 
 // ── Constants ──────────────────────────────────────────────────────────────
-
-const INSTANCE_NAME = import.meta.env.VITE_INSTANCE_NAME || 'Architecture Zero'
-const INITIALS = INSTANCE_NAME.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
-
-function contrastColor(hex: string): string {
-  const r = parseInt(hex.slice(1, 3), 16)
-  const g = parseInt(hex.slice(3, 5), 16)
-  const b = parseInt(hex.slice(5, 7), 16)
-  return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.5 ? '#000000' : '#ffffff'
-}
-const ON_PRIMARY = contrastColor(PRIMARY_COLOR)
 
 interface ModelOption {
   value: string
@@ -483,27 +473,6 @@ function Toggle({ enabled, onToggle }: ToggleProps) {
 }
 
 // ── App ────────────────────────────────────────────────────────────────────
-
-const API = import.meta.env.VITE_API_URL || ''
-
-const authHeaders = (): Record<string, string> => {
-  const token = localStorage.getItem('az_jwt_token')
-  return token ? { 'Authorization': `Bearer ${token}` } : {}
-}
-
-function sessionKey(userId?: number) {
-  return userId ? `az_session_id_${userId}` : 'az_session_id'
-}
-
-function getOrCreateSession(userId?: number): string {
-  const key = sessionKey(userId)
-  let id = localStorage.getItem(key)
-  if (!id) {
-    id = crypto.randomUUID()
-    localStorage.setItem(key, id)
-  }
-  return id
-}
 
 interface AuthUser {
   id: number
