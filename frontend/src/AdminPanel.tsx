@@ -91,14 +91,6 @@ interface AdminConfig {
   primary_color?: string
 }
 
-interface Analytics {
-  total_sessions: number
-  total_requests: number
-  requests_today: number
-  top_model: string | null
-  feedback: { total: number; thumbs_up: number; thumbs_down: number }
-}
-
 // ── Props ──────────────────────────────────────────────────────────────────
 
 interface AdminPanelProps {
@@ -1113,7 +1105,7 @@ export function GuestAccessTab({ api, headers }: { api: string; headers: () => R
   )
 }
 
-// ── Tab: Analytics ─────────────────────────────────────────────────────────
+// ── Tab: Models ────────────────────────────────────────────────────────────
 
 interface ModelGroup { provider: string; label: string; models: { value: string; label: string; badge: string }[] }
 // `resolved` is the version a slot sends right now: a family alias ("Claude
@@ -1322,7 +1314,7 @@ export function ModelsTab({ api, headers }: { api: string; headers: () => Record
   )
 }
 
-// ── Tab: PII Safety ────────────────────────────────────────────────────────
+// ── Tab: Audit Log ─────────────────────────────────────────────────────────
 
 interface AuditEntry {
   id: number
@@ -1985,7 +1977,7 @@ docker compose up -d backend`}</pre>
   )
 }
 
-// ── Tab: Evals ─────────────────────────────────────────────────────────────
+// ── Tab: Trust ─────────────────────────────────────────────────────────────
 
 interface TrustBand { low: number; high: number; runs: number }
 
@@ -2265,6 +2257,8 @@ function TrustTab({ api, headers, currentUser }: {
     </div>
   )
 }
+
+// ── Tab: Settings ──────────────────────────────────────────────────────────
 
 interface ProviderSettings {
   ollama_enabled: boolean
