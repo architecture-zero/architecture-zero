@@ -16,7 +16,8 @@
  */
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { ChatControlsTab, GuestAccessTab, SettingsTab, ModelsTab } from '../AdminPanel'
+import { GuestAccessTab, SettingsTab, ModelsTab } from '../AdminPanel'
+import { ChatControlsTab } from '../admin/ChatControlsTab'
 import { SystemPromptTab } from '../admin/SystemPromptTab'
 
 const json = (body: unknown, status = 200) =>
