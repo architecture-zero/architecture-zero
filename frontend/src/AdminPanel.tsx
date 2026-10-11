@@ -1,7 +1,23 @@
+// The admin shell.
+//
+// After the tab split (2026-10-10) this file lays out the admin surface and
+// nothing else: the sidebar (the tabs and their groups) and which tab
+// component renders for which id. Every tab lives in its own file under
+// src/admin/, with the shapes it alone reads; what more than one tab shares
+// is there too (stepUp.tsx, settingsControls.tsx) and the accent color is
+// src/theme.ts. The backend's routers/ shape (app/main.py assembles, the
+// routers hold the routes), carried to the client.
+//
+// Direction is one-way and enforced by __tests__/adminHygiene.test.ts: this
+// file imports the tabs; nothing under src/admin/ imports it or another tab.
 import { useState } from 'react'
 import { PRIMARY_COLOR } from './theme'
+// The tabs, in the sidebar's order (TABS below).
+import { TrustTab } from './admin/TrustTab'
+import { SettingsTab } from './admin/SettingsTab'
 import { UsersTab } from './admin/UsersTab'
 import { KBManage } from './admin/KBManage'
+import { QuarantineTab } from './admin/QuarantineTab'
 import { SystemPromptTab } from './admin/SystemPromptTab'
 import { ChatControlsTab } from './admin/ChatControlsTab'
 import { GuestAccessTab } from './admin/GuestAccessTab'
@@ -10,13 +26,6 @@ import { AuditTab } from './admin/AuditTab'
 import { MonitoringTab } from './admin/MonitoringTab'
 import { BackupTab } from './admin/BackupTab'
 import { IngestQueueTab } from './admin/IngestQueueTab'
-import { TrustTab } from './admin/TrustTab'
-import { SettingsTab } from './admin/SettingsTab'
-import { QuarantineTab } from './admin/QuarantineTab'
-
-// ── Types ──────────────────────────────────────────────────────────────────
-
-// ── Props ──────────────────────────────────────────────────────────────────
 
 interface AdminPanelProps {
   api: string
