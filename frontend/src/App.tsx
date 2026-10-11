@@ -2,42 +2,18 @@ import { useState, useRef, useEffect } from 'react'
 import Login from './Login'
 import AdminPanel from './AdminPanel'
 import { PRIMARY_COLOR, INSTANCE_NAME, ON_PRIMARY } from './theme'
-import HistoryList from './HistoryList'
 import Profile from './Profile'
 import { ErrorSurface, actionError, emitError, guardedJson, guardedPoll } from './errorSurface'
 import { API, authHeaders, sessionKey, getOrCreateSession } from './api'
-import { Toggle } from './chat/Toggle'
 import { TypingIndicator } from './chat/TypingIndicator'
-import type { ChatMessage } from './chat/types'
+import type { ChatMessage, SessionEntry, SysStatus, Analytics, ModelGroup } from './chat/types'
 import { Message } from './chat/Message'
 import { useChatStream, GUEST_TURN_LIMIT } from './chat/useChatStream'
+import { Sidebar } from './chat/Sidebar'
 
 // ── Domain types ───────────────────────────────────────────────────────────
 
 
-
-interface SessionEntry {
-  session: string
-  first_message?: string
-  // The conversation's name (renamed in the sidebar, or the template's
-  // auto-name from its first prompt) and its last activity, which the list
-  // groups by (2026-10-03).
-  name?: string | null
-  last_at?: string | null
-}
-
-interface SysStatus {
-  ollama: string
-  rag_documents: number
-  auth_enabled?: boolean
-  rag_only_mode?: boolean
-  agent_tools?: { agent_enabled: boolean }
-  provider?: { provider: string }
-  // Optional on purpose: /api/status requires a login on this backend, so the
-  // boot decision never reads it from here (it comes from /api/auth/config),
-  // and a backend predating this key must not become a type error.
-  needs_setup?: boolean
-}
 
 // The WHOLE redirect decision, extracted so it is testable without stubbing
 // window.location, which jsdom makes non-configurable. Only the navigation is
@@ -72,29 +48,7 @@ interface AuthConfig {
   help_enabled?: boolean
 }
 
-interface Analytics {
-  total_sessions: number
-  requests_today: number
-  feedback?: {
-    total: number
-    thumbs_up: number
-    thumbs_down: number
-  }
-}
-
 // ── Constants ──────────────────────────────────────────────────────────────
-
-interface ModelOption {
-  value: string
-  label: string
-  badge: string
-}
-
-interface ModelGroup {
-  provider: string
-  label: string
-  models: ModelOption[]
-}
 
 const DEFAULT_SUGGESTIONS = [
   'What can you help me with?',
@@ -719,137 +673,28 @@ export default function App() {
 
       {/* Sidebar */}
       {sidebarOpen && (
-        <aside className="w-64 bg-gray-900 border-r border-gray-800 flex flex-col flex-shrink-0">
-          <div className="p-5 border-b border-gray-800">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl flex items-center justify-center font-bold text-sm" style={{ backgroundColor: PRIMARY_COLOR, color: ON_PRIMARY }}>{initials}</div>
-              <div>
-                <p className="font-semibold text-sm leading-tight">{instanceName}</p>
-                <p className="text-xs text-gray-500">Secure AI over your knowledge base</p>
-              </div>
-            </div>
-          </div>
-
-
-          <div className="p-3 border-b border-gray-800">
-            <button
-              onClick={newChat}
-              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 border border-gray-700 hover:border-gray-600 transition-all"
-            >
-              <span className="text-base font-light">+</span> New Chat
-            </button>
-          </div>
-          <div className="flex-1 overflow-y-auto p-3 space-y-5">
-            {!isGuest && sessionList.length > 0 && (
-              <HistoryList
-                entries={sessionList}
-                activeId={sessionId}
-                activeStyle={{ backgroundColor: PRIMARY_COLOR, color: ON_PRIMARY }}
-                onSelect={id => switchSession(id)}
-                onRename={renameSession}
-                onDelete={deleteSession}
-              />
-            )}
-            {allowModelSelection && modelGroups.length > 0 && (
-              <div className="space-y-3">
-                {modelGroups.map(group => (
-                  <div key={group.provider}>
-                    <p className="text-xs text-gray-500 uppercase tracking-widest mb-1 px-1">{group.label}</p>
-                    <div className="space-y-1">
-                      {group.models.map((m: ModelOption) => (
-                        <button
-                          key={m.value}
-                          onClick={() => { setModel(m.value); setModelTouched(true) }}
-                          className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm transition-all ${
-                            model === m.value ? '' : 'text-gray-400 hover:bg-gray-800 hover:text-white'
-                          }`}
-                          style={model === m.value ? { backgroundColor: PRIMARY_COLOR, color: ON_PRIMARY } : {}}
-                        >
-                          <span className="truncate text-left">{m.label}</span>
-                          <span className={`text-xs px-1.5 py-0.5 rounded ml-2 flex-shrink-0 ${
-                            model === m.value ? 'bg-blue-500/60 text-blue-100' : 'bg-gray-700 text-gray-400'
-                          }`}>{m.badge}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-            {allowRagToggle && (
-              <div>
-                <p className="text-xs text-gray-500 uppercase tracking-widest mb-2 px-1">Knowledge Base</p>
-                <div className={`flex items-center justify-between px-3 py-2.5 rounded-lg border text-sm transition-all ${
-                  useRag ? 'bg-blue-600/10 border-blue-500/40 text-blue-300' : 'bg-gray-800/50 border-gray-700 text-gray-400'
-                }`}>
-                  <span>RAG Mode</span>
-                  <Toggle enabled={useRag} onToggle={() => { setUseRag(!useRag); setRagTouched(true) }} />
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="p-4 border-t border-gray-800 space-y-2">
-            {(() => {
-              const _prov = sysStatus?.provider?.provider ?? 'ollama'
-              const _cloud = _prov !== 'ollama'
-              const _ok = _cloud ? !!sysStatus : sysStatus?.ollama === 'connected'
-              const _label = _cloud ? 'connected' : (sysStatus?.ollama ?? '…')
-              return (
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className={`w-2 h-2 rounded-full ${_ok ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
-                    <span className="text-xs text-gray-500 capitalize">{_prov}</span>
-                  </div>
-                  <span className={`text-xs ${_ok ? 'text-green-500' : 'text-red-400'}`}>{_label}</span>
-                </div>
-              )
-            })()}
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-gray-500" title="Answers are grounded in this many documents - the assistant won't make things up beyond them">RAG Docs</span>
-              <span className="text-xs text-gray-400">{sysStatus?.rag_documents ?? '…'}</span>
-            </div>
-            {sysStatus?.auth_enabled && (
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-gray-500">Auth</span>
-                <span className="text-xs text-blue-400">enabled</span>
-              </div>
-            )}
-            {sysStatus?.rag_only_mode && (
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-gray-500" title="Strict grounding: if the answer isn't in the documents, the assistant says so instead of guessing">RAG Only</span>
-                <span className="text-xs text-orange-400">enforced</span>
-              </div>
-            )}
-            {sysStatus?.agent_tools?.agent_enabled && (
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-gray-500">Agent Tools</span>
-                <span className="text-xs text-yellow-400">active</span>
-              </div>
-            )}
-            {analytics && (
-              <>
-                <div className="border-t border-gray-800 my-1" />
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-500">Sessions</span>
-                  <span className="text-xs text-gray-400">{analytics.total_sessions}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-500">Requests today</span>
-                  <span className="text-xs text-gray-400">{analytics.requests_today}</span>
-                </div>
-                {analytics.feedback && analytics.feedback.total > 0 && (
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-500">Feedback</span>
-                    <span className="text-xs text-gray-400">
-                      👍 {analytics.feedback.thumbs_up} · 👎 {analytics.feedback.thumbs_down}
-                    </span>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        </aside>
+        <Sidebar
+          initials={initials}
+          instanceName={instanceName}
+          newChat={newChat}
+          isGuest={isGuest}
+          sessionList={sessionList}
+          sessionId={sessionId}
+          switchSession={switchSession}
+          renameSession={renameSession}
+          deleteSession={deleteSession}
+          allowModelSelection={allowModelSelection}
+          modelGroups={modelGroups}
+          model={model}
+          setModel={setModel}
+          setModelTouched={setModelTouched}
+          allowRagToggle={allowRagToggle}
+          useRag={useRag}
+          setUseRag={setUseRag}
+          setRagTouched={setRagTouched}
+          sysStatus={sysStatus}
+          analytics={analytics}
+        />
       )}
 
       {/* Main */}
