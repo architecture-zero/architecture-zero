@@ -39,9 +39,9 @@ Operational notes:
 - The full report is ALSO written to /tmp/eval_retrieval-last-report.txt
   inside the container, so a dead pipe (slept laptop, dropped ssh) cannot
   lose the numbers: `docker compose exec backend cat` it back.
-- Importing app.main costs real memory (the model stack rides along). It
-  must not start schedulers at import time - background jobs belong in
-  startup events, which only fire under the real server.
+- This imports app.eval_runner and app.runtime_config, never app.main: the
+  app's import-time steps and its memory stay out of the probe's process.
+  Schedulers belong in startup events, which only fire under the real server.
 """
 import argparse
 import math
