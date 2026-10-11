@@ -83,7 +83,8 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
   // answer kept running, kept holding the guards, and (before the identity
   // check in sendCore) wrote into whichever transcript was loaded next.
   //
-  // DECLARED HERE, ABOVE THE EARLY RETURNS, AND THAT PLACEMENT IS THE FIX.
+  // DECLARED IN THIS HOOK, WHICH THE SHELL CALLS ABOVE ITS EARLY RETURNS, AND
+  // THAT PLACEMENT IS THE FIX.
   // It used to sit below `if (view === 'admin') return ...`, so the statement
   // initialising it was never reached while the Admin panel was open - and
   // handleLogout, which the panel's own Sign out button calls, hit the

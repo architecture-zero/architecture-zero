@@ -1,6 +1,7 @@
-// The transcript's shapes: a tool call the agent made and the bubble it sits
-// under - read by the shell, the stream hook and the Message component (the App
-// split, 2026-10-11).
+// The chat screen's shapes, each read by more than one file after the App
+// split (2026-10-11): the transcript's (a tool call the agent made, the bubble
+// it sits under), the sidebar's (a conversation, the status row, the analytics,
+// the model groups) and the header's (the signed-in account, the view).
 export interface ToolCall {
   name: string
   result: string

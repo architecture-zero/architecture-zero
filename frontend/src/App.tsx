@@ -1,3 +1,15 @@
+// The chat client's shell.
+//
+// After the App split (2026-10-11) this file holds the shell and nothing else:
+// which view is on screen, who is signed in (the boot read, sign-in, guest,
+// sign-out, the identity ticket), the conversation list and its handlers, the
+// help lane's switch, and the screen's composition. The pieces live under
+// src/chat/: the stream and its guards in useChatStream.ts, the sidebar, the
+// header and the composer as components, the bubble and its parts, and the
+// shapes in types.ts. The brand is src/theme.ts; the API client src/api.ts.
+//
+// Direction is one-way and enforced by __tests__/chatHygiene.test.ts: the
+// shell imports the pieces; nothing under src/chat/ imports the shell.
 import { useState, useRef, useEffect } from 'react'
 import Login from './Login'
 import AdminPanel from './AdminPanel'
@@ -14,8 +26,6 @@ import { ChatHeader } from './chat/ChatHeader'
 import { Composer } from './chat/Composer'
 
 // ── Domain types ───────────────────────────────────────────────────────────
-
-
 
 // The WHOLE redirect decision, extracted so it is testable without stubbing
 // window.location, which jsdom makes non-configurable. Only the navigation is
@@ -121,10 +131,10 @@ export default function App() {
   const [effectiveModel, setEffectiveModel] = useState('')
   const initials = instanceName.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
   const bottomRef = useRef<HTMLDivElement>(null)
-  // IDENTITY TICKET, same idea as the stream ticket above and for the same
-  // reason. clearIdentityState resets eleven pieces of state, but the polls
-  // that fill three of them are already in flight when it runs - so a
-  // /api/status, /api/analytics or /api/sessions/mine response belonging to the
+  // IDENTITY TICKET, same idea as the stream ticket (useChatStream's streamSeq)
+  // and for the same reason. clearIdentityState resets eleven pieces of state,
+  // but the polls that fill three of them are already in flight when it runs -
+  // so a /api/status, /api/analytics or /api/sessions/mine response belonging to the
   // account that just signed out could land afterwards and put its data back on
   // a screen that had been cleared. Every identity transition takes a new
   // ticket; a response holding a stale one is dropped in silence.
