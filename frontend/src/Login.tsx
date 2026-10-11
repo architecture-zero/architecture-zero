@@ -1,6 +1,6 @@
 import { useState } from 'react'
+import { PRIMARY_COLOR } from './theme'
 
-const PRIMARY_COLOR = import.meta.env.VITE_PRIMARY_COLOR || '#2563eb'
 const INSTANCE_NAME = import.meta.env.VITE_INSTANCE_NAME || 'Architecture Zero'
 const INITIALS = INSTANCE_NAME.split(' ').map((w: string) => w[0]).join('').slice(0, 2).toUpperCase()
 

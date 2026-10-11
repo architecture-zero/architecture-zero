@@ -1,6 +1,5 @@
 import { useState } from 'react'
-
-const PRIMARY_COLOR = import.meta.env.VITE_PRIMARY_COLOR || '#2563eb'
+import { PRIMARY_COLOR } from './theme'
 
 interface ProfileProps {
   api: string

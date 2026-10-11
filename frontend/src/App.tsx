@@ -5,6 +5,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import Login from './Login'
 import AdminPanel from './AdminPanel'
+import { PRIMARY_COLOR } from './theme'
 import HistoryList from './HistoryList'
 import Profile from './Profile'
 import { ErrorSurface, actionError, emitError, guardedJson, guardedPoll } from './errorSurface'
@@ -122,7 +123,6 @@ interface Analytics {
 // ── Constants ──────────────────────────────────────────────────────────────
 
 const INSTANCE_NAME = import.meta.env.VITE_INSTANCE_NAME || 'Architecture Zero'
-const PRIMARY_COLOR = import.meta.env.VITE_PRIMARY_COLOR || '#2563eb'
 const INITIALS = INSTANCE_NAME.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
 
 function contrastColor(hex: string): string {
