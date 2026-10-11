@@ -85,3 +85,12 @@ export interface ModelGroup {
   label: string
   models: ModelOption[]
 }
+
+export interface AuthUser {
+  id: number
+  username: string
+  role: string
+  permissions: string[]
+}
+
+export type View = 'loading' | 'login' | 'chat' | 'admin'
