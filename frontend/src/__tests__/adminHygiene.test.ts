@@ -1,7 +1,7 @@
 // The admin split's standing rules (2026-10-10), the frontend counterpart of
 // the backend's test_module_hygiene: the shell (AdminPanel.tsx) imports the
 // tabs under src/admin/, never the reverse; tabs share through the shared
-// modules (stepUp, settingsControls, types, theme), never through each other;
+// modules (stepUp, settingsControls, and src/theme), never through each other;
 // no file carries an import it does not read; and every tab the sidebar lists
 // is rendered by exactly one line of the shell.
 import { describe, it, expect } from 'vitest'
@@ -34,11 +34,15 @@ function imports(text: string) {
 
 describe('admin split hygiene', () => {
   it('src/admin never imports the shell or another tab', () => {
+    // A sibling import is allowed only for the shared modules; any other './x'
+    // is a tab reaching into a tab, whatever the file is called (the template
+    // renders its KB tab as KBManage, which a '*Tab' test would have missed).
+    const SHARED = ['./stepUp', './settingsControls']
     const offenders: string[] = []
     for (const f of adminFiles) {
       for (const imp of imports(files[`admin/${f}`])) {
         if (/AdminPanel$/.test(imp.from)) offenders.push(`${f} imports the shell (${imp.from})`)
-        if (/Tab$/.test(imp.from)) offenders.push(`${f} imports another tab (${imp.from})`)
+        else if (imp.from.startsWith('./') && !SHARED.includes(imp.from)) offenders.push(`${f} imports another tab (${imp.from})`)
       }
     }
     expect(offenders).toEqual([])
