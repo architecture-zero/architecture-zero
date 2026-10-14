@@ -101,7 +101,9 @@ Two settings matter more than the rest, and both default to the safe option:
   turns this into an answer for an unlisted plain-HTTP name is in scope.
 
 `ENABLE_AGENT_TOOLS` is off by default and should stay off unless you have read
-what the tool surface does. The shell tool is a real shell.
+what the tool surface does. The shell tool is a real shell. The `ENABLE_*` flags
+gate what runs, not only what the model is offered, and the shell tool runs
+for the Owner alone; a tool call that gets past either is in scope.
 
 **Keep the vector store embedded.** `database.py` builds a
 `chromadb.PersistentClient` in-process. Three CVEs against chromadb

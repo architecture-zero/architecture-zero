@@ -31,7 +31,6 @@ not. Re-run the planted suite whenever a prompt changes.
 import datetime
 import json
 import os
-import re
 
 from app.providers import stream_chat
 
@@ -332,18 +331,22 @@ def _parse_verdict(raw: str) -> dict | None:
     text = (raw or "").strip()
     if not text:
         return None
-    # strip a ```json ... ``` fence if the model added one anyway
-    m = re.search(r"\{.*\}", text, flags=re.DOTALL)
-    if not m:
-        return None
-    try:
-        data = json.loads(m.group(0))
-    except Exception:
-        return None
-    if not isinstance(data, dict) or not isinstance(data.get("pass"), bool):
-        return None
-    return {"pass": data["pass"],
-            "rationale": str(data.get("rationale") or "").strip()}
+    # Decode a JSON value at each "{" and take the first object with a bool
+    # "pass". A greedy \{.*\} ran from the first "{" to the LAST "}", so a
+    # verdict followed by prose holding a brace failed to parse; this also
+    # steps past a code fence or prose before the object.
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            data, _ = decoder.raw_decode(text, i)
+        except ValueError:
+            continue
+        if isinstance(data, dict) and isinstance(data.get("pass"), bool):
+            return {"pass": data["pass"],
+                    "rationale": str(data.get("rationale") or "").strip()}
+    return None
 
 
 def _run_judge(system: str, user: str, model: str) -> tuple[int | None, str]:

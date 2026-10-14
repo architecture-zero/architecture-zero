@@ -2,6 +2,7 @@ import csv
 import hashlib
 import io
 import json
+from collections.abc import Iterator
 from datetime import datetime, timedelta
 
 from app.db import get_session
@@ -199,39 +200,67 @@ def _to_dict(e: AuditLog) -> dict:
     }
 
 
+# A cell that opens with one of these is read as a formula by a spreadsheet,
+# and prompt_preview is whatever a chat user typed. A leading apostrophe makes
+# the cell text again (the OWASP CSV-injection guidance).
+_FORMULA_LEADS = ("=", "+", "-", "@", "\t", "\r")
+
+# Rows per database read while the export streams. Each batch opens its own
+# short session, so a slow download never holds a connection open.
+EXPORT_BATCH_ROWS = 500
+
+
+def _csv_cell(value):
+    if isinstance(value, str) and value.startswith(_FORMULA_LEADS):
+        return "'" + value
+    return value
+
+
+def _csv_line(cells: list) -> str:
+    buf = io.StringIO()
+    csv.writer(buf).writerow([_csv_cell(c) for c in cells])
+    return buf.getvalue()
+
+
 def export_audit_csv(
     date_from: str | None = None,
     date_to: str | None = None,
     username_filter: str | None = None,
-) -> str:
-    with get_session() as db:
-        q = db.query(AuditLog)
-        if username_filter:
-            q = q.filter(AuditLog.username.ilike(f"%{username_filter}%"))
-        if date_from:
-            q = q.filter(AuditLog.timestamp >= date_from)
-        if date_to:
-            q = q.filter(AuditLog.timestamp <= date_to + "T23:59:59")
-        rows = q.order_by(AuditLog.id.asc()).all()
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow([
+) -> Iterator[str]:
+    """The audit log as CSV, yielded a line at a time for a streaming
+    response. Rows are read in id-ordered batches (keyset, never one .all()
+    over the whole window): with a year of retention by default, building
+    the whole file in memory was one large allocation per click."""
+    yield _csv_line([
         "id", "timestamp", "username", "user_id", "session_id",
         "model", "answer_lane", "use_rag", "response_length",
         "duration_ms", "ttft_ms",
         "pii_out_hits", "pii_out_redacted", "pii_out_types",
         "prompt_preview", "prompt_hash", "sources",
     ])
-    for r in rows:
-        writer.writerow([
-            r.id, r.timestamp, r.username, r.user_id, r.session_id,
-            r.model, r.answer_lane, r.use_rag, r.response_length,
-            r.duration_ms, r.ttft_ms,
-            r.pii_out_hits, r.pii_out_redacted, r.pii_out_types,
-            r.prompt_preview, r.prompt_hash, r.sources,
-        ])
-    return output.getvalue()
+    last_id = 0
+    while True:
+        with get_session() as db:
+            q = db.query(AuditLog).filter(AuditLog.id > last_id)
+            if username_filter:
+                q = q.filter(AuditLog.username.ilike(f"%{username_filter}%"))
+            if date_from:
+                q = q.filter(AuditLog.timestamp >= date_from)
+            if date_to:
+                q = q.filter(AuditLog.timestamp <= date_to + "T23:59:59")
+            batch = q.order_by(AuditLog.id.asc()).limit(EXPORT_BATCH_ROWS).all()
+            lines = [_csv_line([
+                r.id, r.timestamp, r.username, r.user_id, r.session_id,
+                r.model, r.answer_lane, r.use_rag, r.response_length,
+                r.duration_ms, r.ttft_ms,
+                r.pii_out_hits, r.pii_out_redacted, r.pii_out_types,
+                r.prompt_preview, r.prompt_hash, r.sources,
+            ]) for r in batch]
+            # Read inside the session: its commit on exit expires the rows.
+            last_id = batch[-1].id if batch else last_id
+        yield from lines
+        if len(lines) < EXPORT_BATCH_ROWS:
+            return
 
 
 def purge_old_entries(days: int) -> int:

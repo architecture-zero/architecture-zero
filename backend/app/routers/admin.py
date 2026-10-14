@@ -19,7 +19,8 @@ import json
 import shutil
 import datetime as _dt
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app import model_catalog
@@ -85,9 +86,8 @@ def admin_audit_export(
     username: str | None = Query(None),
     current_user: dict = Depends(require_permission("view_audit_log")),
 ):
-    csv_content = export_audit_csv(date_from=date_from, date_to=date_to, username_filter=username)
-    return Response(
-        content=csv_content,
+    return StreamingResponse(
+        export_audit_csv(date_from=date_from, date_to=date_to, username_filter=username),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=audit_log.csv"},
     )

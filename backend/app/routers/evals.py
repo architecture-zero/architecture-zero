@@ -103,11 +103,16 @@ def seed_eval_questions(current_user: dict = Depends(require_owner)):
         if existing > 0:
             raise HTTPException(status_code=409, detail=f"Already have {existing} questions. Delete all first.")
         now = _dt.datetime.utcnow().isoformat()
+        # A question listed twice is seeded once, as the startup sync does.
+        seen: set[str] = set()
         for category, question, notes, expected_source, as_level, holdout in questions:
+            if question.strip() in seen:
+                continue
+            seen.add(question.strip())
             db.add(EvalQuestion(question=question, category=category, notes=notes,
                                 expected_source=expected_source, as_level=as_level,
                                 holdout=holdout, created_at=now))
-    return {"seeded": len(questions)}
+    return {"seeded": len(seen)}
 @router.post("/api/admin/evals/questions/sync")
 def sync_eval_questions(current_user: dict = Depends(require_owner)):
     """On-demand reconcile of the DB question set from the seed file."""

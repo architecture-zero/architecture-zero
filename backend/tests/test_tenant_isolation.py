@@ -330,6 +330,11 @@ def test_tool_path_gate_blocks_history_for_low_tier(tmp_path, monkeypatch):
     (ws / "internal" / "session-log.md").write_text("OWNER-ONLY SECRET LOG", encoding="utf-8")
     (ws / "README.md").write_text("public readme", encoding="utf-8")
     monkeypatch.setattr(agent, "AGENT_WORKSPACE", ws.resolve())
+    # The flags gate EXECUTION too (test_agent_tool_gating); arm them so this
+    # test reaches its actual subject, the tier clearance BENEATH the flag gate.
+    monkeypatch.setattr(agent, "ENABLE_AGENT_TOOLS", True)
+    monkeypatch.setattr(agent, "ENABLE_READ_TOOLS", True)
+    monkeypatch.setattr(agent, "ENABLE_WRITE_TOOLS", True)
 
     log = {"path": "internal/session-log.md"}
 
@@ -364,6 +369,9 @@ def test_tool_path_search_and_list_hide_higher_tier(tmp_path, monkeypatch):
     (ws / "internal" / "runbook.md").write_text("internal runbook", encoding="utf-8")
     (ws / "faq.md").write_text("public", encoding="utf-8")   # general (root) file
     monkeypatch.setattr(agent, "AGENT_WORKSPACE", ws.resolve())
+    # The flags gate execution - arm them to reach the tier layer.
+    monkeypatch.setattr(agent, "ENABLE_AGENT_TOOLS", True)
+    monkeypatch.setattr(agent, "ENABLE_READ_TOOLS", True)
 
     member_hits = agent.execute_tool("search_files", {"pattern": "**/*.md"}, user_level=MEMBER_LEVEL)
     assert "session-log.md" not in member_hits      # history, Owner-only

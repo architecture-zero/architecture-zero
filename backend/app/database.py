@@ -336,7 +336,10 @@ def _tokenize(text: str) -> list[str]:
 
 def _bm25_scores(query: str, docs: list[str], k1: float = BM25_K1, b: float = BM25_B) -> list[float]:
     tokenized_docs = [_tokenize(d) for d in docs]
-    avg_dl = sum(len(d) for d in tokenized_docs) / max(len(tokenized_docs), 1)
+    # 1.0 when every candidate has no word characters (punctuation-only or
+    # empty chunks): avg_dl 0 divided below. The full-corpus leg guards the
+    # same way.
+    avg_dl = (sum(len(d) for d in tokenized_docs) / max(len(tokenized_docs), 1)) or 1.0
     query_terms = _tokenize(query)
 
     idf: dict[str, float] = {}

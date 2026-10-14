@@ -60,6 +60,7 @@ def sync_eval_questions_from_seed() -> dict:
     with open(EVAL_SEED_PATH, "r", encoding="utf-8") as f:
         raw = json.load(f)
     added = updated = unchanged = 0
+    repeated: list[str] = []
     with get_session() as db:
         rows = db.query(EvalQuestion).all()
         by_text = {r.question.strip(): r for r in rows}
@@ -68,6 +69,12 @@ def sync_eval_questions_from_seed() -> dict:
         for q in raw:
             text = (q.get("question") or "").strip()
             if not text:
+                continue
+            # A question listed twice in the file is synced once (its first
+            # entry) and named in the result. by_text never gains the rows
+            # this loop adds, so a repeat used to be added a second time.
+            if text in seen:
+                repeated.append(text)
                 continue
             seen.add(text)
             category = (q.get("category") or "general").strip()
@@ -100,7 +107,7 @@ def sync_eval_questions_from_seed() -> dict:
                 unchanged += 1
         db_only = sorted(r.question for r in rows if r.question.strip() not in seen)
     result = {"status": "ok", "added": added, "updated": updated,
-              "unchanged": unchanged, "db_only": db_only}
+              "unchanged": unchanged, "db_only": db_only, "repeated": repeated}
     log("eval_seed_sync", **{k: v for k, v in result.items() if k != "status"})
     return result
 def _score_retrieval(expected_source: str | None, retrieved_sources: list[str]) -> tuple[int | None, int | None]:

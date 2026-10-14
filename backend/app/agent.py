@@ -10,13 +10,18 @@ ENABLE_SHELL_TOOLS = os.getenv("ENABLE_SHELL_TOOLS", "false").lower() == "true"
 AGENT_WORKSPACE    = Path(os.getenv("AGENT_WORKSPACE", "/app/repo")).resolve()
 
 
+def _inside_workspace(resolved: Path) -> bool:
+    """The one containment rule for every file tool: a RESOLVED path is inside
+    AGENT_WORKSPACE or it is the workspace itself. is_relative_to compares
+    path components, so a sibling that merely shares the prefix
+    (/app/repo-evil beside /app/repo) is outside."""
+    return resolved.is_relative_to(AGENT_WORKSPACE)
+
+
 def _safe_path(path: str) -> Path:
     """Resolve path and ensure it stays within AGENT_WORKSPACE."""
     resolved = (AGENT_WORKSPACE / path).resolve()
-    # Must check with trailing separator - a bare startswith allows
-    # sibling paths like /app/repo-evil to pass /app/repo.
-    workspace_str = str(AGENT_WORKSPACE)
-    if resolved != AGENT_WORKSPACE and not str(resolved).startswith(workspace_str + os.sep):
+    if not _inside_workspace(resolved):
         raise PermissionError(f"Path '{path}' escapes the agent workspace")
     return resolved
 
@@ -30,6 +35,7 @@ def _safe_path(path: str) -> Path:
 # clearance rung; None == Owner/full access, so trusted internal callers
 # (offline scripts) are unchanged, exactly like retrieve().
 from app.rag_config import dept_for_source, department_min_level
+from app.permissions import OWNER_LEVEL
 
 
 def _may_read(resolved: Path, user_level: int | None) -> bool:
@@ -168,6 +174,18 @@ def get_tool_config() -> dict:
 # -- Tool executors -----------------------------------------------------------
 
 def execute_tool(name: str, args: dict, user_level: int | None = None) -> str:
+    # THE FLAG GATE: the ENABLE_* flags gate EXECUTION, not just what the
+    # model is offered. Dispatch used to key on the tool name alone, so a
+    # known name arriving by any path other than the offered list ran
+    # whatever the flags said - run_command included, with shell tools off.
+    # The active set comes from the SAME source the offer does
+    # (get_active_tools), so the two cannot disagree; test_agent_tool_gating.py
+    # pins its contents per flag combination. Both dispatch call sites (chat
+    # and the eval runner) flow through here.
+    active = {t.get("function", {}).get("name") for t in get_active_tools()}
+    if name not in active:
+        return (f"Tool '{name}' is not enabled on this instance - the agent "
+                f"tool flags gate execution, not just advertisement.")
     try:
         if name == "read_file":
             p = _safe_path(args["path"])
@@ -194,11 +212,18 @@ def execute_tool(name: str, args: dict, user_level: int | None = None) -> str:
         elif name == "search_files":
             pattern = args["pattern"]
             matches = glob_module.glob(str(AGENT_WORKSPACE / pattern), recursive=True)
-            # Drop matches above the caller's level - a search must not
-            # surface a higher-tier path (same isolation as read_file,
-            # applied to the hit list).
-            rel = [str(Path(m).relative_to(AGENT_WORKSPACE))
-                   for m in matches if _may_read(Path(m).resolve(), user_level)]
+            # A match counts only when its RESOLVED path is inside the
+            # workspace - _safe_path's rule. relative_to alone is lexical, so
+            # a "../" pattern passed it and listed outside names as ordinary
+            # hits, and an absolute pattern raised an error that named the
+            # outside path. Then drop matches above the caller's level - a
+            # search must not surface a higher-tier path (same isolation as
+            # read_file, applied to the hit list).
+            rel = []
+            for m in matches:
+                resolved = Path(m).resolve()
+                if _inside_workspace(resolved) and _may_read(resolved, user_level):
+                    rel.append(str(resolved.relative_to(AGENT_WORKSPACE)))
             return "\n".join(rel) if rel else "No files found matching pattern"
 
         elif name == "write_file":
@@ -211,10 +236,22 @@ def execute_tool(name: str, args: dict, user_level: int | None = None) -> str:
 
         elif name == "create_directory":
             p = _safe_path(args["path"])
+            # Same clearance rule as write_file: creating a directory in a
+            # department above the caller's level is a write into space the
+            # caller cannot even read.
+            if not _may_read(p, user_level):
+                return f"Permission denied: '{args['path']}' is above your access level."
             p.mkdir(parents=True, exist_ok=True)
             return f"Created: {args['path']}"
 
         elif name == "run_command":
+            # A shell command can touch ANY workspace path, so per-path
+            # clearance cannot bound it - the only honest tier rule is
+            # Owner-only. None is the trusted internal caller (offline
+            # scripts, an eval question with no as_level), the same
+            # convention as _may_read; chat always passes the caller's rung.
+            if user_level is not None and user_level < OWNER_LEVEL:
+                return "Permission denied: shell commands are Owner-only."
             timeout = int(args.get("timeout", 30))
             # shell=True is intentional: this IS the agent's shell tool (needs
             # pipes, globs, redirection). The risk (command injection via
