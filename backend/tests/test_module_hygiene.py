@@ -2,7 +2,10 @@
 
 Both were stated in docstrings and commit messages first, and both had already
 slipped once by the end of the first router extraction - which is the argument
-for checking them here instead of remembering them nine more times.
+for checking them here instead of remembering them nine more times. A third
+joined them (2026-10-14): no script under scripts/ imports app.main unless it
+says why - a script run beside a live backend that imports it builds the whole
+app in a second process.
 
 There is no linter in CI (the four jobs are residue, gitleaks, tests, image),
 so these run in the suite.
@@ -94,6 +97,20 @@ def _names_resolving_to_module_scope(tree):
     return seen
 
 
+def _lines_importing_app_main(tree):
+    """Every line that imports app.main, at any depth - lazy imports included."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "") in ("app.main", "main"):
+            yield node.lineno
+        elif isinstance(node, ast.ImportFrom) and node.module == "app" and any(
+                a.name == "main" for a in node.names):
+            yield node.lineno
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in ("app.main", "main"):
+                    yield node.lineno
+
+
 def test_nothing_under_app_imports_app_main():
     """Direction is main -> routers -> runtime_config, one way.
 
@@ -103,20 +120,41 @@ def test_nothing_under_app_imports_app_main():
     absent. Imported lazily inside a handler it resolves fine at request time
     and the cycle ships undetected - so the check is structural, not runtime.
     """
-    offenders = []
-    for path in _modules():
-        if path.name == "main.py":
-            continue
-        for node in ast.walk(_tree(path)):
-            if isinstance(node, ast.ImportFrom) and (node.module or "") in ("app.main", "main"):
-                offenders.append(f"{path.relative_to(APP.parent)}:{node.lineno}")
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name in ("app.main", "main"):
-                        offenders.append(f"{path.relative_to(APP.parent)}:{node.lineno}")
+    offenders = [f"{path.relative_to(APP.parent)}:{n}"
+                 for path in _modules() if path.name != "main.py"
+                 for n in _lines_importing_app_main(_tree(path))]
     assert not offenders, (
         "modules under app/ importing app.main - move the shared name into "
         f"app/runtime_config.py instead: {offenders}")
+
+
+# Scripts that import app.main on purpose, each with the reason. Two-sided like
+# the exemptions below: an entry that stops being needed fails.
+_SCRIPTS_IMPORTING_MAIN = {}
+
+
+def test_no_script_imports_app_main_unless_it_says_why():
+    """A script run beside a live backend (docker exec in its container) that
+    imports app.main builds the whole app in a second process and runs main's
+    import-time steps: the schema check, the default config rows, the startup
+    sweeps. A script reads what it needs from the module that owns it -
+    runtime_config, or the router or service the name lives in."""
+    scripts = APP.parent / "scripts"
+    offenders, allowed_used = [], set()
+    for path in sorted(p for p in scripts.rglob("*.py") if "__pycache__" not in p.parts):
+        lines = list(_lines_importing_app_main(_tree(path)))
+        if not lines:
+            continue
+        if path.name in _SCRIPTS_IMPORTING_MAIN:
+            allowed_used.add(path.name)
+            continue
+        offenders += [f"{path.relative_to(APP.parent).as_posix()}:{n}" for n in lines]
+    assert not offenders, (
+        "scripts importing app.main - read the name from the module that owns "
+        "it, or add the script to _SCRIPTS_IMPORTING_MAIN with the reason: "
+        f"{offenders}")
+    stale = sorted(set(_SCRIPTS_IMPORTING_MAIN) - allowed_used)
+    assert not stale, f"_SCRIPTS_IMPORTING_MAIN entries no longer needed - remove them: {stale}"
 
 
 # Names imported for a side effect or re-exported on purpose. Keep it short and
