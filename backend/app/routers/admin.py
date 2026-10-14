@@ -253,6 +253,14 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
         raise HTTPException(
             status_code=400,
             detail=f"{', '.join(_not_bool)} must be a boolean")
+    # The judge is the ruler, a pin: a family alias written for it is stored
+    # as the version it resolves to now (model_catalog), so a new model
+    # shipping never moves what a score means - and one that resolves to no
+    # version is refused here, before the first write, so the body is refused
+    # whole rather than half-applied.
+    for _k in _PINNED_ON_SAVE:
+        if isinstance(body.get(_k), str):
+            body[_k] = _pinned_judge(body[_k])
     written = []
     for key, value in body.items():
         if key == "suggestions":
@@ -261,11 +269,6 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
             # silently rewriting what an operator typed is the smaller cousin of
             # silently discarding it.
             value = json.dumps([s for s in value if s.strip()])
-        elif key in _PINNED_ON_SAVE and isinstance(value, str):
-            # The judge is the ruler, a pin: a family alias written for it is
-            # stored as the version it resolves to now (model_catalog), so a
-            # new model shipping never moves what a score means.
-            value = model_catalog.resolve(value.strip())
         elif key in _bool_keys:
             # NOT `"true" if value else "false"`. That is Python truthiness on
             # the raw JSON value, so the STRING "false" - and "no", and "0" -
@@ -317,6 +320,22 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
 # releases, so the next run shows what a new model brings, and every run
 # records the exact version it used (a run resolves its writer once).
 _PINNED_ON_SAVE = ("eval_judge_model",)
+
+
+def _pinned_judge(value: str) -> str:
+    """The judge's stored value: the version a family alias resolves to now,
+    or a 400 with nothing saved. resolve() hands an alias back as written for
+    a family the live list, the last answer and FAMILY_FALLBACK all miss (a
+    cold catalog, a family newer than the map); storing that would let a
+    later release move what a score means."""
+    pinned = model_catalog.resolve(value.strip())
+    if model_catalog.is_alias(pinned):
+        raise HTTPException(
+            status_code=400,
+            detail=(f"eval_judge '{value.strip()}' names a model family with no "
+                    "version known right now - pick a version, or retry once "
+                    "the model list is reachable"))
+    return pinned
 
 
 class ModelConfigUpdate(BaseModel):
@@ -373,7 +392,7 @@ def admin_set_model_config(body: ModelConfigUpdate,
         set_config("eval_answer_model", body.eval_writer.strip())
     if body.eval_judge is not None:
         set_config("eval_judge_model",
-                   model_catalog.resolve(body.eval_judge.strip()) or EVAL_JUDGE_MODEL_DEFAULT)
+                   _pinned_judge(body.eval_judge) or EVAL_JUDGE_MODEL_DEFAULT)
     log("model_config_update", admin_id=current_user["id"],
         keys=[k for k, v in (("default", body.default), ("chat", body.chat),
                              ("eval_writer", body.eval_writer),

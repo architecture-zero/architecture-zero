@@ -258,6 +258,34 @@ def test_the_judge_pins_a_picked_family_and_the_writer_follows_one(client, admin
                  json={"default": "", "eval_judge": "", "eval_writer": ""})
 
 
+def test_the_judge_refuses_an_alias_no_version_is_known_for(client, admin_headers, catalog):
+    """A cold catalog and a family outside FAMILY_FALLBACK: resolve() hands the
+    alias back as written, and storing that would let a later release move
+    what a score means - so it is refused with nothing saved, on both doors
+    (the 2026-10-12 delta review)."""
+    from app.config import get_config
+    catalog["models"] = []
+    judge_before = get_config("eval_judge_model", "")
+    writer_before = get_config("eval_answer_model", "")
+    r = client.patch("/api/admin/model-config", headers=admin_headers,
+                     json={"eval_judge": "claude-newfamily-latest"})
+    assert r.status_code == 400
+    assert get_config("eval_judge_model", "") == judge_before
+    # The config door refuses the whole body, before its first write.
+    r = client.patch("/api/admin/config", headers=admin_headers,
+                     json={"eval_answer_model": "claude-haiku-latest",
+                           "eval_judge_model": "claude-newfamily-latest"})
+    assert r.status_code == 400
+    assert get_config("eval_judge_model", "") == judge_before
+    assert get_config("eval_answer_model", "") == writer_before
+    # A family the fallback map knows still pins, cold catalog or not.
+    r = client.patch("/api/admin/model-config", headers=admin_headers,
+                     json={"eval_judge": "claude-sonnet-latest"})
+    assert r.status_code == 200
+    assert get_config("eval_judge_model", "") == model_catalog.FAMILY_FALLBACK["sonnet"]
+    client.patch("/api/admin/model-config", headers=admin_headers, json={"eval_judge": ""})
+
+
 def test_the_chat_config_names_the_version_that_answers(client, admin_headers, catalog):
     with patch("app.routers.system.get_config",
                side_effect=lambda k, d=None: "claude-sonnet-latest" if k == "chat_model" else d):
