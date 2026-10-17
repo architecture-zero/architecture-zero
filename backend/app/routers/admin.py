@@ -384,15 +384,20 @@ def admin_get_model_config(current_user: dict = Depends(require_permission("mana
 @router.patch("/api/admin/model-config")
 def admin_set_model_config(body: ModelConfigUpdate,
                            current_user: dict = Depends(require_permission("manage_system"))):
+    # The judge is the one slot that can refuse, so it resolves before the
+    # first write and a refused save changes nothing (the 2026-10-15 check-up
+    # review: the slots above it were written, then the 400).
+    judge = None
+    if body.eval_judge is not None:
+        judge = _pinned_judge(body.eval_judge) or EVAL_JUDGE_MODEL_DEFAULT
     if body.default is not None:
         set_config("default_model", body.default.strip() or DEFAULT_MODEL)
     if body.chat is not None:
         set_config("chat_model", body.chat.strip())
     if body.eval_writer is not None:
         set_config("eval_answer_model", body.eval_writer.strip())
-    if body.eval_judge is not None:
-        set_config("eval_judge_model",
-                   _pinned_judge(body.eval_judge) or EVAL_JUDGE_MODEL_DEFAULT)
+    if judge is not None:
+        set_config("eval_judge_model", judge)
     log("model_config_update", admin_id=current_user["id"],
         keys=[k for k, v in (("default", body.default), ("chat", body.chat),
                              ("eval_writer", body.eval_writer),

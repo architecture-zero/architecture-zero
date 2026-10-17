@@ -271,6 +271,18 @@ def test_the_judge_refuses_an_alias_no_version_is_known_for(client, admin_header
                      json={"eval_judge": "claude-newfamily-latest"})
     assert r.status_code == 400
     assert get_config("eval_judge_model", "") == judge_before
+    # The whole body is refused before its first write: the other slots sent
+    # beside the refused judge stay as they were (the 2026-10-15 check-up
+    # review, C-AZ-01).
+    slots = ("default_model", "chat_model", "eval_answer_model")
+    slots_before = {k: get_config(k, "") for k in slots}
+    r = client.patch("/api/admin/model-config", headers=admin_headers,
+                     json={"default": "new-default", "chat": "new-chat",
+                           "eval_writer": "new-writer",
+                           "eval_judge": "claude-newfamily-latest"})
+    assert r.status_code == 400
+    assert {k: get_config(k, "") for k in slots} == slots_before
+    assert get_config("eval_judge_model", "") == judge_before
     # The config door refuses the whole body, before its first write.
     r = client.patch("/api/admin/config", headers=admin_headers,
                      json={"eval_answer_model": "claude-haiku-latest",
