@@ -49,8 +49,10 @@ interface MessageProps {
   onFeedback?: (msgIndex: number, value: number) => void
   onRegenerate?: () => void
   // Returns false when the edit was REFUSED (a stream is in flight), so the
-  // editor can keep the user's text instead of silently discarding it.
-  onEdit?: (newContent: string) => boolean | void
+  // editor can keep the user's text instead of silently discarding it. A
+  // promise that answers false when the server refused it later (a 409 on
+  // the history trim, nothing sent) - the editor then takes the text back.
+  onEdit?: (newContent: string) => boolean | void | Promise<boolean>
   isStreaming?: boolean
 }
 
@@ -81,9 +83,23 @@ export function Message({ role, content, toolCalls, sources, helpLane, notice, m
     // gone, editor closed, nothing said. Widening the guard to cover the whole
     // stream turned that from a sub-second window into the entire generation,
     // and re-enabling the composer mid-stream made it easy to walk into.
-    if (onEdit?.(editText.trim()) === false) return
+    const draft = editText
+    const accepted = onEdit?.(editText.trim())
+    if (accepted === false) return
     setEditing(false)
     setEditText(content)
+    // REFUSED AFTER THE EDITOR CLOSED (2026-10-21): the server can refuse the
+    // history trim the edit needs (409 - a turn on this conversation still
+    // holds its slot), and that answer lands after the close. Nothing was
+    // sent, so the draft comes back where it was typed - the composer's 409
+    // does the same with its own draft - and Send works again once that turn
+    // is over. The transcript is untouched on that path (the trim's answer
+    // comes before any truncation), so the editor reopens over this message.
+    if (accepted instanceof Promise) {
+      void accepted.then(sent => {
+        if (!sent) { setEditText(draft); setEditing(true) }
+      })
+    }
   }
 
   // Edit mode - replaces the user bubble with an inline textarea

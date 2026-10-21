@@ -557,6 +557,81 @@ describe('a trim the server refuses while a turn is in flight (2026-10-21)', () 
   })
 })
 
+describe('Edit after a trim the server refuses (2026-10-21)', () => {
+  // Edit trims the rows from the edited message on, then sends the new text.
+  // It went on after a 409 trim the way Regenerate did before the case above:
+  // nothing had been trimmed, so the edited prompt landed as an extra row after
+  // the very rows the trim was meant to remove. The refusal's sentence differs
+  // from the Regenerate case only because the toast drops a repeat of the same
+  // line inside five seconds; the client shows whatever sentence the route sends.
+  const refusedTrim = () => new Response(
+    JSON.stringify({ detail: 'A turn on this conversation is still running - wait for it to finish, then edit again.' }),
+    { status: 409, headers: { 'Content-Type': 'application/json' } })
+  const landedTrim = () => new Response(
+    JSON.stringify({ status: 'ok', deleted: 2, requested: 2 }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } })
+
+  async function editTo(from: string, to: string) {
+    await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[0]) })
+    fireEvent.change(screen.getByDisplayValue(from), { target: { value: to } })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send' })) })
+  }
+
+  it('FIX: sends nothing after a refused trim, says why and keeps the edited text - pressed again once the turn is over, it sends', async () => {
+    await signedInApp()
+    await ask('question twenty')
+    await waitFor(() => expect(screen.getByText('hi')).toBeInTheDocument())
+    h.setTrim(refusedTrim)
+
+    await editTo('question twenty', 'question twenty, edited')
+    await waitFor(() => expect(h.trimCounts).toEqual([2]))
+    expect(await screen.findByText(/Trimming history failed: A turn on this conversation is still running/i)).toBeInTheDocument()
+    await act(async () => { await new Promise(r => setTimeout(r, 50)) })
+    expect(h.chatBodies).toHaveLength(1)
+    // The edited text is back where it was typed, the turn as it is stored,
+    // and the composer is free.
+    expect(await screen.findByDisplayValue('question twenty, edited')).toBeInTheDocument()
+    expect(screen.getByText('hi')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTitle('Send message')).toBeInTheDocument())
+
+    // That turn is over: the same press trims and sends the edit.
+    h.setTrim(landedTrim)
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send' })) })
+    await waitFor(() => expect(h.chatBodies).toHaveLength(2))
+    expect(h.trimCounts).toEqual([2, 2])
+    expect(h.chatBodies[1].prompt).toBe('question twenty, edited')
+    expect(h.chatBodies[1].history).toEqual([])
+  })
+
+  it('CONTROL: a trim that lands sends the edit, as before', async () => {
+    await signedInApp()
+    await ask('question twenty-one')
+    await waitFor(() => expect(screen.getByText('hi')).toBeInTheDocument())
+    h.setTrim(landedTrim)
+
+    await editTo('question twenty-one', 'question twenty-one, edited')
+    await waitFor(() => expect(h.chatBodies).toHaveLength(2))
+    expect(h.trimCounts).toEqual([2])
+    expect(h.chatBodies[1].prompt).toBe('question twenty-one, edited')
+    expect(h.chatBodies[1].history).toEqual([])
+    // The editor closed on the send and stays closed.
+    expect(screen.queryByDisplayValue('question twenty-one, edited')).toBeNull()
+    expect(await screen.findByText('question twenty-one, edited', { ignore: 'textarea, script, style' })).toBeInTheDocument()
+  })
+
+  it('CONTROL: a trim that fails any other way still sends the edit, as before', async () => {
+    await signedInApp()
+    await ask('question twenty-two')
+    await waitFor(() => expect(screen.getByText('hi')).toBeInTheDocument())
+    h.setTrim(() => new Response(JSON.stringify({ detail: 'database is locked' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }))
+
+    await editTo('question twenty-two', 'question twenty-two, edited')
+    await waitFor(() => expect(h.chatBodies).toHaveLength(2))
+    expect(h.chatBodies[1].prompt).toBe('question twenty-two, edited')
+  })
+})
+
 describe('leaving a conversation mid-answer', () => {
   it('a chunk already in flight lands nowhere once the conversation is left', async () => {
     h.setSessions([{ session: 'older-session', first_message: 'The older chat' }])

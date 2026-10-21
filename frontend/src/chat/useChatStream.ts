@@ -605,17 +605,19 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
     await sendCore(prompt, history)
   }
 
-  const editAndRegenerate = (msgIndex: number, newContent: string): boolean => {
+  // false = refused now (a stream is in flight): the editor keeps the draft.
+  // The promise answers false when the server refused the trim the edit needs
+  // (409, see below) and nothing was sent: the editor takes the draft back.
+  const editAndRegenerate = (msgIndex: number, newContent: string): false | Promise<boolean> => {
     // Refusal is REPORTED, not silent - the caller keeps the user's draft.
     if (busy) {
       emitError('Still answering - stop the current reply before editing.')
       return false
     }
-    void _editAndRegenerate(msgIndex, newContent)
-    return true
+    return _editAndRegenerate(msgIndex, newContent)
   }
 
-  const _editAndRegenerate = async (msgIndex: number, newContent: string) => {
+  const _editAndRegenerate = async (msgIndex: number, newContent: string): Promise<boolean> => {
     // Same await window as regenerate: claim the guard before the trim.
     setLoading(true)
     const truncated = messages.slice(0, msgIndex)
@@ -628,10 +630,21 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
 
     // Guests skip the trim - see regenerate above for why.
     if (countToRemove > 0 && !isGuest) {
-      const trimErr = await actionError(fetch(`${API}/api/history/${mySession}/tail?count=${countToRemove}`, {
+      const trim = fetch(`${API}/api/history/${mySession}/tail?count=${countToRemove}`, {
         method: 'DELETE', headers: authHeaders(),
-      }), 'Trimming history')
-      if (trimErr) emitError(trimErr) // proceed - the edit still sends, server history may duplicate
+      })
+      const trimErr = await actionError(trim, 'Trimming history')
+      if (trimErr) emitError(trimErr) // any other failure proceeds - the edit still sends, server history may duplicate
+      // REFUSED, NOT FAILED (2026-10-21) - regenerate's rule above, which Edit
+      // was still missing: nothing was trimmed, so sending now would land the
+      // edited prompt as an extra row after the very rows the trim was meant
+      // to remove. Nothing is sent and the transcript stays as stored; the
+      // toast carries the route's words, the editor gets the text back
+      // (Message's submitEdit), and Send works again once that turn is over.
+      if ((await trim.catch(() => null))?.status === 409) {
+        if (activeStream.current === null) setLoading(false)   // see regenerate
+        return false
+      }
     }
     if (sessionIdRef.current !== mySession || identityGen.current !== myIdentity) {
       // Wider blast radius than regenerate: countToRemove reaches back to the
@@ -640,13 +653,14 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
       // with nothing on screen to say so.
       emitError('You left that conversation while the edit was sending, so it was not re-sent.')
       if (activeStream.current === null) setLoading(false)   // see regenerate
-      return
+      return true
     }
 
     setContextWarning(false)
     setContextSummarized(false)
     setMessages([...truncated, { role: 'user', content: newContent, ephemeral: true }])
     await sendCore(newContent, history)
+    return true
   }
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
