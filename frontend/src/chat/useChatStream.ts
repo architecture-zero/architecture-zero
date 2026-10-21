@@ -568,10 +568,21 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
     // siblings that never got the guard. Nothing is lost by skipping: a guest's
     // rows are anonymous and they cannot read them back.
     if (trimCount > 0 && !isGuest) {
-      const trimErr = await actionError(fetch(`${API}/api/history/${mySession}/tail?count=${trimCount}`, {
+      const trim = fetch(`${API}/api/history/${mySession}/tail?count=${trimCount}`, {
         method: 'DELETE', headers: authHeaders(),
-      }), 'Trimming history')
+      })
+      const trimErr = await actionError(trim, 'Trimming history')
       if (trimErr) emitError(trimErr) // proceed - regeneration still works, server history may duplicate
+      // REFUSED, NOT FAILED (2026-10-21): the route answers 409 while a turn
+      // on this conversation still holds its slot - the one a Stop leaves
+      // running until its late write. Nothing was trimmed, so sending now
+      // would store the prompt a second time behind the one still stored.
+      // Stop here with the turn as it was; the toast says to wait, and
+      // Regenerate works again once that turn is over.
+      if ((await trim.catch(() => null))?.status === 409) {
+        if (activeStream.current === null) setLoading(false)   // see the leaving path below
+        return
+      }
     }
     // The trim was a network round-trip and nothing disables the sidebar during
     // it, so the user can be in a different conversation by now. Writing into it

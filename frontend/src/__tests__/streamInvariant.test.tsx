@@ -519,6 +519,44 @@ describe('a Stop before the 200 (2026-10-21)', () => {
   })
 })
 
+describe('a trim the server refuses while a turn is in flight (2026-10-21)', () => {
+  // The tail route answers 409 while a turn on this conversation still holds
+  // its slot - the one a Stop leaves running until the route's late write.
+  // Nothing was trimmed, so a re-send would store the prompt a second time.
+  const refusedTrim = () => new Response(
+    JSON.stringify({ detail: 'Still answering your last message on this conversation - wait for it to finish, then send again.' }),
+    { status: 409, headers: { 'Content-Type': 'application/json' } })
+
+  it('FIX: Regenerate sends nothing after a refused trim, keeps the turn and says why', async () => {
+    await signedInApp()
+    await ask('question eighteen')
+    await waitFor(() => expect(screen.getByText('hi')).toBeInTheDocument())
+    h.setTrim(refusedTrim)
+
+    await clickRegenerate()
+    await waitFor(() => expect(h.trimCounts).toEqual([2]))
+    expect(await screen.findByText(/Trimming history failed: Still answering/i)).toBeInTheDocument()
+    await act(async () => { await new Promise(r => setTimeout(r, 50)) })
+    expect(h.chatBodies).toHaveLength(1)
+    // The turn stays on screen as it is stored, and Regenerate is free again.
+    expect(screen.getByText('hi')).toBeInTheDocument()
+    expect(screen.getByText('question eighteen', { ignore: 'textarea, script, style' })).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTitle('Send message')).toBeInTheDocument())
+  })
+
+  it('CONTROL: a trim that fails any other way still regenerates, as before', async () => {
+    await signedInApp()
+    await ask('question nineteen')
+    await waitFor(() => expect(screen.getByText('hi')).toBeInTheDocument())
+    h.setTrim(() => new Response(JSON.stringify({ detail: 'database is locked' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }))
+
+    await clickRegenerate()
+    await waitFor(() => expect(h.chatBodies).toHaveLength(2))
+    expect(h.chatBodies[1].prompt).toBe('question nineteen')
+  })
+})
+
 describe('leaving a conversation mid-answer', () => {
   it('a chunk already in flight lands nowhere once the conversation is left', async () => {
     h.setSessions([{ session: 'older-session', first_message: 'The older chat' }])
