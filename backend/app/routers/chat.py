@@ -298,10 +298,27 @@ def delete_history(session_id: str,
 
 
 @router.delete("/api/history/{session_id}/tail")
-def delete_history_tail(session_id: str, count: int = Query(1, ge=1),
+def delete_history_tail(session_id: str, req: Request, count: int = Query(1, ge=1),
                         current_user: dict = Depends(require_permission("chat"))):
-    # Report what was DELETED, not what was ASKED FOR - see delete_tail_messages.
-    deleted = delete_tail_messages(session_id, count, current_user["id"])
+    # NOT WHILE A TURN IS IN FLIGHT (2026-10-21). This deletes the newest rows
+    # by id, and the chat route writes a turn's user row late - past retrieval
+    # and the peers, just before it answers - and keeps going for a caller who
+    # has left. So a Regenerate sent right after a Stop could trim here BEFORE
+    # that write landed: the newest row was then the previous turn's answer,
+    # and it went. The tail asks the chat route's own guard, keyed the same way
+    # (caller and session), and holds the slot for its own length so no turn
+    # starts under it either. Refused, it reads and deletes nothing; the
+    # client tries again once the turn is over.
+    caller = turn_guard.caller_key(current_user["id"], client_ip_from_request(req))
+    token = turn_guard.acquire(caller, session_id)
+    if token is None:
+        log("history_tail_refused", session_id=session_id, reason="in_flight")
+        raise HTTPException(status_code=409, detail=turn_guard.IN_FLIGHT_DETAIL)
+    try:
+        # Report what was DELETED, not what was ASKED FOR - see delete_tail_messages.
+        deleted = delete_tail_messages(session_id, count, current_user["id"])
+    finally:
+        turn_guard.release(caller, session_id, token)
     return {"status": "ok", "deleted": deleted, "requested": count}
 
 

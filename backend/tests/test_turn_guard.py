@@ -265,3 +265,144 @@ def test_a_raise_before_the_response_frees_the_slot(client):
     p1, p2, p3 = _patched(_plain_stream)
     with p1, p2, p3:
         assert _post(client, session, "two").status_code == 200
+
+
+# ---- the tail trim waits for the turn (2026-10-21) ---------------------------
+#
+# DELETE /api/history/{id}/tail deletes the newest N rows by id. The chat route
+# writes a turn's user row late - past retrieval and the peers, just before it
+# answers - and keeps going for a caller who has left, so a Regenerate sent
+# right after a Stop could trim BEFORE that write: the newest row was then the
+# previous turn's answer, and it went. The tail now asks the chat route's own
+# guard, keyed the same way (caller and session).
+
+def _uid(client, headers) -> int:
+    r = client.get("/api/auth/me", headers=headers)
+    assert r.status_code == 200
+    return r.json()["id"]
+
+
+def _rows(client, session, headers):
+    r = client.get(f"/api/history/{session}", headers=headers)
+    assert r.status_code == 200
+    return [(m["role"], m["content"]) for m in r.json()["messages"]]
+
+
+def _tail(client, session, count, headers):
+    return client.delete(f"/api/history/{session}/tail?count={count}", headers=headers)
+
+
+def _one_turn(client, session, prompt, headers):
+    p1, p2, p3 = _patched(_plain_stream)
+    with p1, p2, p3:
+        assert _post(client, session, prompt, headers).status_code == 200
+
+
+class _BlockingRetrieve:
+    """Retrieval that announces it started and then waits: the window a Stop
+    before the 200 lands in - the turn holds its slot and has not written its
+    user row yet."""
+
+    def __init__(self):
+        self.started = threading.Event()
+        self.go = threading.Event()
+
+    def __call__(self, *args, **kwargs):
+        self.started.set()
+        assert self.go.wait(timeout=20), "the test never released retrieval"
+        return []
+
+
+def test_fix_a_tail_while_a_turn_holds_the_slot_is_refused_and_deletes_nothing(client, admin_headers):
+    """FIX. The slot held under the key the chat route takes for this caller
+    and session; the tail used to delete the newest row - the previous answer."""
+    session = "tg-tail-held"
+    _one_turn(client, session, "first", admin_headers)
+    caller = turn_guard.caller_key(_uid(client, admin_headers), "testclient")
+    token = turn_guard.acquire(caller, session)
+    assert token
+    try:
+        r = _tail(client, session, 1, admin_headers)
+    finally:
+        turn_guard.release(caller, session, token)
+    # The harm first, so a failure names it: the previous answer is still there.
+    assert _rows(client, session, admin_headers) == [("user", "first"), ("assistant", "ok")]
+    assert r.status_code == 409
+    assert r.json()["detail"] == turn_guard.IN_FLIGHT_DETAIL
+
+
+def test_fix_a_tail_raced_against_a_real_turn_still_retrieving_deletes_nothing(client, admin_headers):
+    """FIX, raced for real: a turn parked in retrieval - its slot taken, its
+    user row not yet written - and a tail fired at it."""
+    session = "tg-tail-raced"
+    _one_turn(client, session, "first", admin_headers)
+    blocking = _BlockingRetrieve()
+    got = {}
+    p1, p2, p3 = _patched(_plain_stream)
+    with p1, p2, p3, patch("app.rerank.retrieve", side_effect=blocking):
+        worker = threading.Thread(target=lambda: got.update(turn=client.post(
+            "/api/chat", json={"prompt": "second", "model": "test-model", "session_id": session,
+                               "history": [], "use_rag": True}, headers=admin_headers)))
+        worker.start()
+        assert blocking.started.wait(timeout=20), "the turn never reached retrieval"
+        try:
+            r = _tail(client, session, 1, admin_headers)
+        finally:
+            blocking.go.set()
+            worker.join(timeout=30)
+    assert got["turn"].status_code == 200
+    # The previous answer survived, and the turn landed whole behind it.
+    assert _rows(client, session, admin_headers) == [
+        ("user", "first"), ("assistant", "ok"), ("user", "second"), ("assistant", "ok")]
+    assert r.status_code == 409
+
+
+def test_control_a_tail_with_no_turn_in_flight_trims_as_before(client, admin_headers):
+    session = "tg-tail-idle"
+    _one_turn(client, session, "first", admin_headers)
+    _one_turn(client, session, "second", admin_headers)
+    r = _tail(client, session, 2, admin_headers)
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok", "deleted": 2, "requested": 2}
+    assert _rows(client, session, admin_headers) == [("user", "first"), ("assistant", "ok")]
+    # The tail held the slot only for its own length.
+    assert not turn_guard.in_flight(turn_guard.caller_key(_uid(client, admin_headers), "testclient"),
+                                    session)
+
+
+def test_control_the_chat_routes_own_409_is_unchanged(client, admin_headers):
+    session = "tg-tail-chat409"
+    caller = turn_guard.caller_key(_uid(client, admin_headers), "testclient")
+    token = turn_guard.acquire(caller, session)
+    try:
+        p1, p2, p3 = _patched(_plain_stream)
+        with p1, p2, p3:
+            r = _post(client, session, "refused", admin_headers)
+        assert r.status_code == 409
+        assert r.json()["detail"] == turn_guard.IN_FLIGHT_DETAIL
+    finally:
+        turn_guard.release(caller, session, token)
+    assert _rows(client, session, admin_headers) == []
+
+
+def test_control_the_slot_released_after_a_turn_lets_the_tail_through(client, admin_headers):
+    session = "tg-tail-after"
+    _one_turn(client, session, "first", admin_headers)
+    r = _tail(client, session, 2, admin_headers)
+    assert r.status_code == 200 and r.json()["deleted"] == 2
+    assert _rows(client, session, admin_headers) == []
+
+
+def test_control_another_sessions_or_another_callers_turn_does_not_refuse_the_tail(client, admin_headers):
+    session = "tg-tail-keyed"
+    _one_turn(client, session, "first", admin_headers)
+    me = turn_guard.caller_key(_uid(client, admin_headers), "testclient")
+    elsewhere = turn_guard.acquire(me, "tg-tail-some-other-session")
+    a_guest = turn_guard.acquire(turn_guard.caller_key(None, "testclient"), session)
+    try:
+        r = _tail(client, session, 1, admin_headers)
+    finally:
+        turn_guard.release(me, "tg-tail-some-other-session", elsewhere)
+        turn_guard.release(turn_guard.caller_key(None, "testclient"), session, a_guest)
+    assert r.status_code == 200 and r.json()["deleted"] == 1
+    assert _rows(client, session, admin_headers) == [("user", "first")]
