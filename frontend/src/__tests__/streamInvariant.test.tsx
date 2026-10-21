@@ -466,6 +466,59 @@ describe('Stop is Stop for the whole answer', () => {
   })
 })
 
+/** A chat request with no answer yet - the route is still retrieving - that
+ *  fails the way a real fetch does when it is aborted before the response:
+ *  the fetch promise itself rejects, so no status ever reaches the client. */
+const answerNotYet = (init?: RequestInit) => new Promise<Response>((_, reject) => {
+  init?.signal?.addEventListener('abort', () => {
+    const aborted = new Error('The user aborted a request.')
+    aborted.name = 'AbortError'
+    reject(aborted)
+  })
+})
+
+describe('a Stop before the 200 (2026-10-21)', () => {
+  // chat.py writes the user row past every refusal and just before it answers,
+  // and nothing before that write asks whether the caller is still there - so
+  // a Stop that lands while the route is still retrieving leaves the row
+  // behind. The client counted that prompt as unstored: Regenerate trimmed
+  // nothing and sent it again, and the server held it twice.
+  it('FIX: counts the stopped prompt as stored, so Regenerate trims it and sends it once more', async () => {
+    await signedInApp()
+    await ask('first')
+    await waitFor(() => expect(screen.getByText('hi')).toBeInTheDocument())
+    h.setChat(answerNotYet)
+    await ask('question sixteen')
+    await waitFor(() => expect(screen.getByTitle('Stop generation')).toBeInTheDocument())
+
+    await act(async () => { fireEvent.click(screen.getByTitle('Stop generation')) })
+    await waitFor(() => expect(screen.getByText(/Stopped before the answer started/i)).toBeInTheDocument())
+
+    h.setChat(() => new Response(sseStream([tok('again'), DONE]).stream, { status: 200 }))
+    await clickRegenerate()
+    // The stopped prompt's row, and only that row (the notice has none).
+    await waitFor(() => expect(h.trimCounts).toEqual([1]))
+    await waitFor(() => expect(h.chatBodies).toHaveLength(3))
+    expect(h.chatBodies[2].prompt).toBe('question sixteen')
+    // The re-send carries the turn before it, never the prompt it replaces.
+    expect((h.chatBodies[2].history as Array<{ content: string }>).map(m => m.content))
+      .toEqual(['first', 'hi'])
+  })
+
+  it('CONTROL: a send that never reached the server is still unsaved - Regenerate trims nothing', async () => {
+    await signedInApp()
+    h.setChat(() => Promise.reject(new TypeError('Failed to fetch')))
+    await ask('question seventeen')
+    await waitFor(() => expect(screen.getByText(/Could not reach the backend/i)).toBeInTheDocument())
+
+    h.setChat(() => new Response(sseStream([tok('again'), DONE]).stream, { status: 200 }))
+    await clickRegenerate()
+    await waitFor(() => expect(h.chatBodies).toHaveLength(2))
+    // No row was written, so a trim of any size would eat a real one.
+    expect(h.trimCounts).toEqual([])
+  })
+})
+
 describe('leaving a conversation mid-answer', () => {
   it('a chunk already in flight lands nowhere once the conversation is left', async () => {
     h.setSessions([{ session: 'older-session', first_message: 'The older chat' }])

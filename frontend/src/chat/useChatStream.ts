@@ -123,6 +123,20 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
     // makes a stream's writes stale, and every leaving path abandons it (see
     // abandonedThrough). mine() stays the check at the moment of writing.
     const live = () => myStream > abandonedThrough.current
+    // The prompt's row is stored: clear the flag on the most recent user
+    // bubble, which from here counts as a stored row. Two callers - the 200
+    // below, and a Stop (the AbortError branch, 2026-10-21).
+    const markPromptStored = (prev: ChatMessage[]) => {
+      if (!live()) return prev
+      const next = [...prev]
+      for (let i = next.length - 1; i >= 0; i--) {
+        if (next[i].role === 'user') {
+          if (next[i].ephemeral) next[i] = { ...next[i], ephemeral: false }
+          break
+        }
+      }
+      return next
+    }
     setStreaming(true)
     // The index of THIS stream's assistant bubble, captured when it is created.
     // Every write below used to target `next[next.length - 1]` - whatever
@@ -239,19 +253,8 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
 
       // THE USER ROW IS NOW STORED. The route writes it before it returns the
       // streaming response, so an OK status is proof the write happened - and
-      // this is the only point at which the client can know it. Clear the flag
-      // on the most recent user bubble; from here it counts as a stored row.
-      setMessages(prev => {
-        if (!live()) return prev
-        const next = [...prev]
-        for (let i = next.length - 1; i >= 0; i--) {
-          if (next[i].role === 'user') {
-            if (next[i].ephemeral) next[i] = { ...next[i], ephemeral: false }
-            break
-          }
-        }
-        return next
-      })
+      // this is the only point at which the client can know it.
+      setMessages(markPromptStored)
 
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
@@ -429,6 +432,19 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
       }
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') {
+        // A STOP COUNTS THE PROMPT AS STORED, the way the route counts it
+        // (2026-10-21). chat.py writes the user row past every refusal and
+        // just before it answers, and nothing before that write asks whether
+        // the caller is still there - so a Stop that lands before the 200,
+        // while the route is still retrieving, leaves the row behind all the
+        // same. Left ephemeral, the next Regenerate trimmed nothing and sent
+        // the prompt again, and the server held it twice. After the 200 this
+        // is a no-op: the flag is already clear. fetch cannot say whether the
+        // request ever left, so this is the route's common case, not proof: a
+        // Stop that beat the request out or landed on a refusal is counted one
+        // row high, and a Regenerate whose trim reaches the server before the
+        // route's late write takes the row before it.
+        if (mine()) setMessages(markPromptStored)
         // Stopping BEFORE the first token means no assistant bubble was ever
         // created, so the transcript ended on the user's question with nothing
         // saying it had been cancelled - and Regenerate refuses to run unless
@@ -504,7 +520,8 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
     // budget - runs BEFORE the user row is written, so a refused send leaves a
     // user bubble on screen with no row behind it. Counted as stored, the next
     // Regenerate trims one row too far back and takes the previous turn's
-    // answer with it. sendCore clears the flag once the response is OK.
+    // answer with it. sendCore clears the flag once the response is OK, or on
+    // a Stop (the route stores a prompt whose caller has left).
     setMessages(prev => [...prev, { role: 'user', content: prompt, ephemeral: true }])
     setLoading(true)
     await sendCore(prompt, history)
