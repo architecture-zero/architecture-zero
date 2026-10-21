@@ -630,6 +630,44 @@ describe('Edit after a trim the server refuses (2026-10-21)', () => {
     await waitFor(() => expect(h.chatBodies).toHaveLength(2))
     expect(h.chatBodies[1].prompt).toBe('question twenty-two, edited')
   })
+
+  // Edit opened again (2026-10-21). The editor's text was seeded once, from
+  // the content the bubble mounted with, and the send reset it to that same
+  // old content - so after an edit landed, the bubble showed the new text and
+  // Edit opened on the one it replaced.
+  it('FIX: Edit opened again after an edit that landed shows the edited text', async () => {
+    await signedInApp()
+    await ask('question twenty-three')
+    await waitFor(() => expect(screen.getByText('hi')).toBeInTheDocument())
+    h.setTrim(landedTrim)
+
+    await editTo('question twenty-three', 'question twenty-three, edited')
+    await waitFor(() => expect(h.chatBodies).toHaveLength(2))
+    await waitFor(() => expect(screen.getByTitle('Send message')).toBeInTheDocument())
+    expect(screen.getByText('question twenty-three, edited', { ignore: 'textarea, script, style' })).toBeInTheDocument()
+
+    await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[0]) })
+    expect(screen.getByDisplayValue('question twenty-three, edited')).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('question twenty-three')).toBeNull()
+  })
+
+  it('CONTROL: a refused edit still reopens on the text as typed; Cancel, then Edit, opens on the stored text', async () => {
+    await signedInApp()
+    await ask('question twenty-four')
+    await waitFor(() => expect(screen.getByText('hi')).toBeInTheDocument())
+    h.setTrim(refusedTrim)
+
+    await editTo('question twenty-four', 'question twenty-four, edited')
+    await waitFor(() => expect(h.trimCounts).toEqual([2]))
+    // The typed text, not the message's - the edit never landed.
+    expect(await screen.findByDisplayValue('question twenty-four, edited')).toBeInTheDocument()
+    expect(h.chatBodies).toHaveLength(1)
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })) })
+    await waitFor(() => expect(screen.getByTitle('Send message')).toBeInTheDocument())
+    await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[0]) })
+    expect(screen.getByDisplayValue('question twenty-four')).toBeInTheDocument()
+  })
 })
 
 describe('leaving a conversation mid-answer', () => {

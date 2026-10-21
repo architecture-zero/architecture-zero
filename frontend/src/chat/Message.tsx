@@ -179,7 +179,12 @@ export function Message({ role, content, toolCalls, sources, helpLane, notice, m
         )}
         {isUser && onEdit && !isStreaming && (
           <div className="flex justify-end opacity-0 group-hover:opacity-100 transition-opacity px-1">
-            <button onClick={() => setEditing(true)} className="text-xs text-gray-500 hover:text-gray-300 transition-colors">
+            {/* Opens on the text the message holds NOW. useState(content) reads
+                the prop once, at mount, and the send reset the draft to the
+                content it had then - so after an edit landed, the bubble showed
+                the new text and Edit opened on the old one. A refused edit
+                reopens on the typed draft through submitEdit, not this button. */}
+            <button onClick={() => { setEditText(content); setEditing(true) }} className="text-xs text-gray-500 hover:text-gray-300 transition-colors">
               Edit
             </button>
           </div>
