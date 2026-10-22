@@ -17,6 +17,27 @@ export const GUEST_TURN_LIMIT = 10
 // that carries none (a proxy in front of the app answers with an HTML page).
 const TURN_NOTICE = 'Still answering your last message on this conversation. Wait for it to finish, then send again.'
 const TOO_LARGE_NOTICE = 'That message was too large to send. Shorten it, or start a new chat.'
+// Under the last bubble of a turn put back on screen after its trim was SENT
+// and the send was then refused (2026-10-22). The rows the trim removed are
+// gone from the server, so the turn comes back unstored - and the flag alone
+// said nothing: the turn looked as saved as it had before, the way a Stop's
+// partial answer did before its own notice. A turn whose trim was never sent
+// has nothing unsaved and gets no notice.
+const REFUSED_UNSAVED_NOTICE = 'The send was refused. This turn is back on screen but no longer saved.'
+
+// The transcript as it was before a Regenerate or an Edit cut it, with the
+// tail from `from` on put back UNSTORED and its last bubble saying so. For a
+// refused send whose trim was SENT: a trim that landed removed those rows, and
+// counted as stored the next trim would reach one turn too far back (the
+// stored-row rule in regenerate). A refused send whose trim was never sent
+// puts `before` back untouched instead - nothing of it is unsaved.
+const putBackUnstored = (before: ChatMessage[], from: number): ChatMessage[] =>
+  before.map((m, i) => {
+    if (i < from) return m
+    return i === before.length - 1
+      ? { ...m, ephemeral: true, notice: REFUSED_UNSAVED_NOTICE }
+      : { ...m, ephemeral: true }
+  })
 
 // What the stream reads from the shell each render: the conversation it
 // belongs to, who is asking, which lane, the model and retrieval choices the
@@ -109,13 +130,17 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
   // Core SSE stream handler - prompt is already in messages state when called.
   // Resolves TRUE when the server refused the turn before anything was stored
   // (409 or 413) and the send was taken back, FALSE on every other ending.
-  // `fromEditor` (2026-10-22) says the prompt is an edit from a message's
-  // inline editor: a refusal's text then belongs to that editor, which reopens
-  // on it, and the transcript - cut to the edit before the send - is put back
-  // whole by _editAndRegenerate once this resolves. takeBack leaves both alone
-  // on that path and only says why; it used to take the edit back into an
-  // empty composer, where text typed since had already made it a loss.
-  const sendCore = async (prompt: string, historyForRequest: Array<{ role: string; content: string }>, fromEditor = false): Promise<boolean> => {
+  // `keepTranscript` (2026-10-22; named `fromEditor` for the hours it covered
+  // the edit alone) says the caller cut the transcript before this send and
+  // puts it back whole itself once this resolves - _editAndRegenerate, whose
+  // editor then reopens on the text, and regenerate, which re-sent a stored
+  // prompt and has no text to give anyone. takeBack leaves the transcript and
+  // the composer alone on that path and only says why; it used to take the
+  // prompt back into an empty composer, where text typed since had already
+  // made it a loss - and for a regenerate that prompt was never the user's
+  // draft, so a copy of it in the box was the wrong thing even when the box was
+  // empty, while the turn it belonged to was off the screen.
+  const sendCore = async (prompt: string, historyForRequest: Array<{ role: string; content: string }>, keepTranscript = false): Promise<boolean> => {
     const controller = new AbortController()
     abortRef.current = controller
     const myStream = ++streamSeq.current
@@ -204,12 +229,13 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
       // other branch has it.
       const takeBack = (notice: string): boolean => {
         if (!mine()) return false
-        // An edit's refusal (2026-10-22) is undone whole by _editAndRegenerate
-        // - the transcript it cut and the text it typed - once this resolves.
-        // The bubble is not removed here first: the list is keyed by index, so
-        // a render between that removal and the restore unmounts the edited
-        // message's bubble, which is the editor the text goes back to.
-        if (!fromEditor) {
+        // An edit's or a regenerate's refusal (2026-10-22) is undone whole by
+        // its caller - the transcript it cut, and for the edit the text it
+        // typed - once this resolves. The bubble is not removed here first: the
+        // list is keyed by index, so a render between that removal and the
+        // restore unmounts the edited message's bubble, which is the editor the
+        // text goes back to.
+        if (!keepTranscript) {
           setMessages(prev => {
             const last = prev[prev.length - 1]
             return last && last.role === 'user' && last.ephemeral && last.content === prompt
@@ -560,6 +586,7 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
     const lastUserMsg = messages[messages.length - 2]
     if (lastUserMsg.role !== 'user') { setLoading(false); return }
 
+    const before = messages   // what a refused send puts back (below)
     const truncated = messages.slice(0, -2)
     const history = truncated.filter(m => !m.ephemeral).map(m => ({ role: m.role, content: m.content }))
     const prompt = lastUserMsg.content
@@ -582,7 +609,8 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
     // guests with that exact reasoning; regenerate and edit were the two
     // siblings that never got the guard. Nothing is lost by skipping: a guest's
     // rows are anonymous and they cannot read them back.
-    if (trimCount > 0 && !isGuest) {
+    const trimmed = trimCount > 0 && !isGuest
+    if (trimmed) {
       const trim = fetch(`${API}/api/history/${mySession}/tail?count=${trimCount}`, {
         method: 'DELETE', headers: authHeaders(),
       })
@@ -617,7 +645,21 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
     setContextWarning(false)
     setContextSummarized(false)
     setMessages([...truncated, { role: 'user', content: prompt, ephemeral: true }])
-    await sendCore(prompt, history)
+    if (await sendCore(prompt, history, true)) {
+      // THE SEND ITSELF WAS REFUSED (2026-10-22): 409, a turn still holds the
+      // slot - the trim found no row to remove, or a guest skipped it, or a
+      // second tab's turn began between the trim and the POST - or 413. The
+      // transcript had been cut to the prompt, and the refusal took the prompt
+      // back into an empty composer only: the turn - its question and its
+      // answer - was off the screen, and the question stood in the box as if
+      // the user had typed it, or nowhere when the box held the next thought.
+      // The edit's rule below, which Regenerate was still missing: put the
+      // transcript back as it was; the notice under the transcript says why,
+      // and Regenerate works again once that turn is over. After a trim was
+      // sent the tail comes back unstored, with the last bubble saying so -
+      // see putBackUnstored.
+      setMessages(trimmed ? putBackUnstored(before, before.length - 2) : before)
+    }
   }
 
   // false = refused now (a stream is in flight): the editor keeps the draft.
@@ -689,7 +731,9 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
       // longer knows those rows exist on the server (a trim that landed removed
       // them), so that tail comes back unstored: counted as stored, the next
       // trim would reach one turn too far back - the stored-row rule above.
-      setMessages(trimmed ? before.map((m, i) => (i < msgIndex ? m : { ...m, ephemeral: true })) : before)
+      // The flag alone left the turn looking as saved as before (2026-10-22,
+      // the same night): the tail's last bubble now says so - putBackUnstored.
+      setMessages(trimmed ? putBackUnstored(before, msgIndex) : before)
       return false
     }
     return true
