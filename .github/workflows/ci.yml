@@ -149,6 +149,23 @@ jobs:
           # HS256 token never meets a public key. Pinned by
           # backend/tests/test_jwt_algorithms_pinned.py rather than by this comment;
           # re-triage the day it fails, or when python-jose ships a fixed release.
+          #
+          # ACCEPTED (triaged 2026-10-21) - CVE-2026-112395 / -112397 / -112400 /
+          # -112404 / -112895 / -112896 / -112897 / -112899, Pillow 12.3.0: eight
+          # decoder faults (TIFF tiles and strips decoded past their buffers or
+          # into uninitialized memory, a TIFF ColorMap plane-size mismatch on
+          # encode, a zero-width image in _imagingmorph, a GIF seek that keeps a
+          # rejected size, an EPS load that lets Ghostscript render past the
+          # decompression-bomb limit, a PDF page tree or trailer chain that
+          # recurses without bound). Fixed in Pillow 13.0.0, which cannot be
+          # installed: fastembed (0.8.0 pinned here; 0.9.0 the same) requires
+          # pillow<13, and pip refuses the pair. Not exercised here: no module of
+          # this app imports Pillow - it is in the image only because fastembed
+          # imports it for image-embedding models this app never loads - so no
+          # upload, connector or crawl reaches a Pillow decoder. Pinned by
+          # backend/tests/test_pillow_unreached.py rather than by this comment;
+          # re-triage the day it fails, or when fastembed lets Pillow 13 in (its
+          # PR #830) - then bump fastembed and drop these eight ids.
           ignore-vulns: |
             CVE-2026-45830
             CVE-2026-45831
@@ -162,6 +179,14 @@ jobs:
             CVE-2026-54282
             CVE-2026-54283
             PYSEC-2026-161
+            CVE-2026-112395
+            CVE-2026-112397
+            CVE-2026-112400
+            CVE-2026-112404
+            CVE-2026-112895
+            CVE-2026-112896
+            CVE-2026-112897
+            CVE-2026-112899
 
   # SAST over this repository's own Python rather than its dependencies:
   # injection shapes, unsafe deserialization, weak crypto, credentials in
