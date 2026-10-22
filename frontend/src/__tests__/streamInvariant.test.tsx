@@ -670,6 +670,148 @@ describe('Edit after a trim the server refuses (2026-10-21)', () => {
   })
 })
 
+describe('Edit refused by the chat POST itself (2026-10-22)', () => {
+  // The edit's own send can be the refused one: the trim found no stored row
+  // to remove (an all-unsaved tail - here a send that never reached the
+  // server - or a guest, whose edit skips the trim), and the POST met the
+  // one-turn guard: a second tab's turn, or the one a Stop leaves running.
+  // By then the transcript had been cut to the edit and the editor had
+  // closed, so the refusal gave the text back into an EMPTY composer only -
+  // with the next thought already in the box the edited text was gone, and
+  // the question it replaced was off the screen with its answer. Now the
+  // transcript goes back as it was and the editor reopens on the text; the
+  // composer is not written on this path.
+  const refusedTurn = () => new Response(
+    JSON.stringify({ detail: 'Still answering your last message on this conversation - wait for it to finish, then send again.' }),
+    { status: 409, headers: { 'Content-Type': 'application/json' } })
+  const landedTrim = () => new Response(
+    JSON.stringify({ status: 'ok', deleted: 2, requested: 2 }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } })
+
+  async function editTo(from: string, to: string) {
+    await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[0]) })
+    fireEvent.change(screen.getByDisplayValue(from), { target: { value: to } })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send' })) })
+  }
+
+  /** An all-unsaved tail: a send that never reached the server leaves its
+   *  bubble and the error under it unstored, so an edit of it trims nothing. */
+  async function unsavedTurn(text: string) {
+    h.setChat(() => Promise.reject(new TypeError('Failed to fetch')))
+    await ask(text)
+    await waitFor(() => expect(screen.getByText(/Could not reach the backend/i)).toBeInTheDocument())
+  }
+
+  /** The next thought, typed into the composer before the edit is sent. */
+  function nextThought() {
+    const box = screen.getByPlaceholderText(/Message/i) as HTMLTextAreaElement
+    fireEvent.change(box, { target: { value: 'my next thought' } })
+    return box
+  }
+
+  it('FIX: a no-trim edit the POST refuses reopens the editor on the edited text, over the transcript as it was, and leaves the composer alone', async () => {
+    await signedInApp()
+    await unsavedTurn('question twenty-five')
+    h.setChat(refusedTurn)
+    const box = nextThought()
+
+    await editTo('question twenty-five', 'question twenty-five, edited')
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/still answering/i))
+    // The edited text is back in the editor it was typed in - not the composer,
+    // which kept the next thought.
+    expect(await screen.findByDisplayValue('question twenty-five, edited')).not.toBe(box)
+    expect(box.value).toBe('my next thought')
+    // The transcript is as it was before the edit: the error under the
+    // question is back on screen. Nothing was trimmed; the edit was posted once.
+    expect(screen.getByText(/Could not reach the backend/i)).toBeInTheDocument()
+    expect(h.trimCounts).toEqual([])
+    expect(h.chatBodies).toHaveLength(2)
+    expect(h.chatBodies[1].prompt).toBe('question twenty-five, edited')
+    await waitFor(() => expect(screen.getByTitle('Send message')).toBeInTheDocument())
+  })
+
+  it('FIX: a guest edit the POST refuses (no trim for a guest) reopens the editor and keeps the turn - pressed again once the turn is over, it sends', async () => {
+    h = installFetch({ guestMode: true })
+    render(<App />)
+    const guestDoor = await screen.findByRole('button', { name: /Continue as guest/i })
+    await act(async () => { fireEvent.click(guestDoor) })
+    await screen.findByPlaceholderText(/Message/i)
+    await ask('a guest question')
+    await waitFor(() => expect(screen.getByText('hi')).toBeInTheDocument())
+    h.setChat(refusedTurn)
+    const box = nextThought()
+
+    await editTo('a guest question', 'a guest question, edited')
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/still answering/i))
+    expect(await screen.findByDisplayValue('a guest question, edited')).not.toBe(box)
+    expect(box.value).toBe('my next thought')
+    // The turn is back as it was - its rows were never trimmed.
+    expect(screen.getByText('hi')).toBeInTheDocument()
+    expect(h.trimCounts).toEqual([])
+    expect(h.chatBodies).toHaveLength(2)
+
+    // That turn is over: the same press sends the edit.
+    h.setChat(() => new Response(sseStream([tok('again'), DONE]).stream, { status: 200 }))
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send' })) })
+    await waitFor(() => expect(h.chatBodies).toHaveLength(3))
+    expect(h.chatBodies[2].prompt).toBe('a guest question, edited')
+    expect(h.chatBodies[2].history).toEqual([])
+    expect(h.trimCounts).toEqual([])
+  })
+
+  it('FIX: after a trim that landed, a POST the server refuses puts the turn back unstored and reopens the editor - a Regenerate then trims nothing more', async () => {
+    // The race: the trim found the slot free and the POST did not (a second
+    // tab's turn began between them). The trimmed rows are gone from the
+    // server, so the turn comes back on screen as unstored - counted as stored,
+    // the next trim would reach one turn too far back.
+    await signedInApp()
+    await ask('question twenty-six')
+    await waitFor(() => expect(screen.getByText('hi')).toBeInTheDocument())
+    h.setTrim(landedTrim)
+    h.setChat(refusedTurn)
+    const box = nextThought()
+
+    await editTo('question twenty-six', 'question twenty-six, edited')
+    await waitFor(() => expect(h.trimCounts).toEqual([2]))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/still answering/i))
+    expect(await screen.findByDisplayValue('question twenty-six, edited')).not.toBe(box)
+    expect(box.value).toBe('my next thought')
+    expect(h.chatBodies).toHaveLength(2)
+    // The answer is back on screen, with no thumbs: an unstored answer offers none.
+    expect(screen.getByText('hi')).toBeInTheDocument()
+    expect(screen.queryByTitle('Good response')).toBeNull()
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })) })
+    await waitFor(() => expect(screen.getByTitle('Send message')).toBeInTheDocument())
+    h.setChat(() => new Response(sseStream([tok('again'), DONE]).stream, { status: 200 }))
+    await clickRegenerate()
+    await waitFor(() => expect(h.chatBodies).toHaveLength(3))
+    expect(h.chatBodies[2].prompt).toBe('question twenty-six')
+    expect(h.chatBodies[2].history).toEqual([])
+    expect(h.trimCounts).toEqual([2])
+  })
+
+  it('CONTROL: a no-trim edit the server accepts lands as before, and the editor stays closed', async () => {
+    await signedInApp()
+    await unsavedTurn('question twenty-seven')
+    h.setChat(() => new Response(sseStream([tok('hi'), DONE]).stream, { status: 200 }))
+
+    await editTo('question twenty-seven', 'question twenty-seven, edited')
+    await waitFor(() => expect(screen.getByText('hi')).toBeInTheDocument())
+    expect(h.trimCounts).toEqual([])
+    expect(h.chatBodies).toHaveLength(2)
+    expect(h.chatBodies[1].prompt).toBe('question twenty-seven, edited')
+    expect(h.chatBodies[1].history).toEqual([])
+    expect(screen.queryByDisplayValue('question twenty-seven, edited')).toBeNull()
+    expect(screen.getByText('question twenty-seven, edited', { ignore: 'textarea, script, style' })).toBeInTheDocument()
+    // The error the edit replaced went with the question it hung under.
+    expect(screen.queryByText(/Could not reach the backend/i)).toBeNull()
+    // Both rows stored now: a Regenerate trims two.
+    await clickRegenerate()
+    await waitFor(() => expect(h.trimCounts).toEqual([2]))
+  })
+})
+
 describe('leaving a conversation mid-answer', () => {
   it('a chunk already in flight lands nowhere once the conversation is left', async () => {
     h.setSessions([{ session: 'older-session', first_message: 'The older chat' }])

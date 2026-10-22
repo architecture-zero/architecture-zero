@@ -106,8 +106,16 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
 
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
 
-  // Core SSE stream handler - prompt is already in messages state when called
-  const sendCore = async (prompt: string, historyForRequest: Array<{ role: string; content: string }>) => {
+  // Core SSE stream handler - prompt is already in messages state when called.
+  // Resolves TRUE when the server refused the turn before anything was stored
+  // (409 or 413) and the send was taken back, FALSE on every other ending.
+  // `fromEditor` (2026-10-22) says the prompt is an edit from a message's
+  // inline editor: a refusal's text then belongs to that editor, which reopens
+  // on it, and the transcript - cut to the edit before the send - is put back
+  // whole by _editAndRegenerate once this resolves. takeBack leaves both alone
+  // on that path and only says why; it used to take the edit back into an
+  // empty composer, where text typed since had already made it a loss.
+  const sendCore = async (prompt: string, historyForRequest: Array<{ role: string; content: string }>, fromEditor = false): Promise<boolean> => {
     const controller = new AbortController()
     abortRef.current = controller
     const myStream = ++streamSeq.current
@@ -194,31 +202,38 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
       // added, put the draft back in the box, say why under the transcript. No
       // retry loop - the user sends again. mine() for the same reason every
       // other branch has it.
-      const takeBack = (notice: string) => {
-        if (!mine()) return
-        setMessages(prev => {
-          const last = prev[prev.length - 1]
-          return last && last.role === 'user' && last.ephemeral && last.content === prompt
-            ? prev.slice(0, -1) : prev
-        })
-        // Into an EMPTY box only. The box stays live while a request is in
-        // flight, so the user may have started the next thought; writing the
-        // old draft back unconditionally erased it.
-        setInput(cur => (cur.trim() ? cur : prompt))
+      const takeBack = (notice: string): boolean => {
+        if (!mine()) return false
+        // An edit's refusal (2026-10-22) is undone whole by _editAndRegenerate
+        // - the transcript it cut and the text it typed - once this resolves.
+        // The bubble is not removed here first: the list is keyed by index, so
+        // a render between that removal and the restore unmounts the edited
+        // message's bubble, which is the editor the text goes back to.
+        if (!fromEditor) {
+          setMessages(prev => {
+            const last = prev[prev.length - 1]
+            return last && last.role === 'user' && last.ephemeral && last.content === prompt
+              ? prev.slice(0, -1) : prev
+          })
+          // Into an EMPTY box only. The box stays live while a request is in
+          // flight, so the user may have started the next thought; writing the
+          // old draft back unconditionally erased it.
+          setInput(cur => (cur.trim() ? cur : prompt))
+          // The draft came back without a keystroke, so onInput never sized the
+          // box for it - and a 413's draft is by definition a long one.
+          setTimeout(() => {
+            const box = textareaRef.current
+            if (box) { box.style.height = 'auto'; box.style.height = Math.min(box.scrollHeight, 180) + 'px' }
+          }, 0)
+        }
         setTurnNotice(notice)
         setLoading(false)
-        // The draft came back without a keystroke, so onInput never sized the
-        // box for it - and a 413's draft is by definition a long one.
-        setTimeout(() => {
-          const box = textareaRef.current
-          if (box) { box.style.height = 'auto'; box.style.height = Math.min(box.scrollHeight, 180) + 'px' }
-        }, 0)
+        return true
       }
       if (res.status === 409) {
         // ONE TURN AT A TIME: another turn on this conversation is still
         // answering (a second tab, a resend, a tap that beat the Stop swap).
-        takeBack(TURN_NOTICE)
-        return
+        return takeBack(TURN_NOTICE)
       }
       if (res.status === 413) {
         // THE SIZE BOUND: this request carried more than one turn may - the
@@ -229,8 +244,7 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
         // chat). Before this branch the generic one below showed it as an
         // assistant bubble and the draft was gone.
         const refusal = await res.json().catch(() => ({}))
-        takeBack(typeof refusal.detail === 'string' && refusal.detail ? refusal.detail : TOO_LARGE_NOTICE)
-        return
+        return takeBack(typeof refusal.detail === 'string' && refusal.detail ? refusal.detail : TOO_LARGE_NOTICE)
       }
       if (!res.ok) {
         // Surface the server's own message (guest limit, widget-only guest scope,
@@ -247,7 +261,7 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
           setMessages(prev => [...prev, { role: 'assistant', content: errData.detail || fallback, ephemeral: true }])
           setLoading(false)
         }
-        return
+        return false
       }
       if (!res.body) throw new Error('No response body')
 
@@ -470,7 +484,7 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
         // may have sent in the next conversation, and clearing `loading` there
         // dropped the new answer's thinking dots while it was still pending.
         if (mine()) setLoading(false)
-        return
+        return false
       }
       // mine() for the same reason the branch above has it: an abandoned
       // stream must not write its failure into whichever conversation is on
@@ -494,6 +508,7 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
         setLoading(false)
       }
     }
+    return false
   }
 
   const guestTurnCount = isGuest ? messages.filter(m => m.role === 'user').length : 0
@@ -607,7 +622,8 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
 
   // false = refused now (a stream is in flight): the editor keeps the draft.
   // The promise answers false when the server refused the trim the edit needs
-  // (409, see below) and nothing was sent: the editor takes the draft back.
+  // (409, see below) or the edit's own send (409 or 413, since 2026-10-22) and
+  // nothing was stored: the editor takes the draft back.
   const editAndRegenerate = (msgIndex: number, newContent: string): false | Promise<boolean> => {
     // Refusal is REPORTED, not silent - the caller keeps the user's draft.
     if (busy) {
@@ -620,6 +636,7 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
   const _editAndRegenerate = async (msgIndex: number, newContent: string): Promise<boolean> => {
     // Same await window as regenerate: claim the guard before the trim.
     setLoading(true)
+    const before = messages   // what a refused send puts back (below)
     const truncated = messages.slice(0, msgIndex)
     // Stored rows only - see regenerate above. `messages.length - msgIndex`
     // counted local bubbles against server rows and orphaned real ones.
@@ -629,7 +646,8 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
     const myIdentity = identityGen.current   // see regenerate above
 
     // Guests skip the trim - see regenerate above for why.
-    if (countToRemove > 0 && !isGuest) {
+    const trimmed = countToRemove > 0 && !isGuest
+    if (trimmed) {
       const trim = fetch(`${API}/api/history/${mySession}/tail?count=${countToRemove}`, {
         method: 'DELETE', headers: authHeaders(),
       })
@@ -659,7 +677,21 @@ export function useChatStream({ sessionId, isGuest, helpMode, modelTouched, mode
     setContextWarning(false)
     setContextSummarized(false)
     setMessages([...truncated, { role: 'user', content: newContent, ephemeral: true }])
-    await sendCore(newContent, history)
+    if (await sendCore(newContent, history, true)) {
+      // THE SEND ITSELF WAS REFUSED (2026-10-22): 409, a turn still holds the
+      // slot - the trim found no row to remove, or a guest skipped it - or 413.
+      // The transcript had been cut to the edit and the editor had closed, and
+      // the refusal gave the text back into an empty composer only: with the
+      // next thought already there it was gone, and the question it replaced
+      // was off the screen with its answer. Put the transcript back as it was
+      // and answer false - the editor reopens on the text (Message's
+      // submitEdit); the composer is not written. After a trim the client no
+      // longer knows those rows exist on the server (a trim that landed removed
+      // them), so that tail comes back unstored: counted as stored, the next
+      // trim would reach one turn too far back - the stored-row rule above.
+      setMessages(trimmed ? before.map((m, i) => (i < msgIndex ? m : { ...m, ephemeral: true })) : before)
+      return false
+    }
     return true
   }
 

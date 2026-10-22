@@ -51,7 +51,8 @@ interface MessageProps {
   // Returns false when the edit was REFUSED (a stream is in flight), so the
   // editor can keep the user's text instead of silently discarding it. A
   // promise that answers false when the server refused it later (a 409 on
-  // the history trim, nothing sent) - the editor then takes the text back.
+  // the history trim, or the send's own 409 or 413 - nothing stored) - the
+  // editor then takes the text back.
   onEdit?: (newContent: string) => boolean | void | Promise<boolean>
   isStreaming?: boolean
 }
@@ -95,6 +96,9 @@ export function Message({ role, content, toolCalls, sources, helpLane, notice, m
     // does the same with its own draft - and Send works again once that turn
     // is over. The transcript is untouched on that path (the trim's answer
     // comes before any truncation), so the editor reopens over this message.
+    // The send itself refused (409 or 413, 2026-10-22) answers false the same
+    // way, after _editAndRegenerate has put the transcript it cut back - so
+    // this message is on screen again for the editor to reopen over.
     if (accepted instanceof Promise) {
       void accepted.then(sent => {
         if (!sent) { setEditText(draft); setEditing(true) }
