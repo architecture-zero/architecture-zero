@@ -172,6 +172,16 @@ jobs:
           # (a new advisory, or 13.0.0 itself in the affected range), or when
           # fastembed lets Pillow 13 in (its PR #830) - then bump fastembed and
           # drop these ids.
+          # Re-triaged 2026-10-22, the day the template's CI found a Pillow id outside
+          # the list: OSV's set for 12.3.0 grew from 28 to 39 - the eleven below are
+          # the same class (decompression-bomb bypasses on a multi-frame seek and in
+          # SpiderImagePlugin, a BMP RLE memory amplification and a TarIO spin, a PDF
+          # page-tree DAG, a quadratic PNG eXIf parse, stale multi-frame storage, a
+          # WMF/EMF over-read, a JPEG comment overflow, undefined native integer
+          # behavior; and GHSA-78g4-xqwv-q3g8, the libopenjp2 bundled in every wheel
+          # since 11.1.0), every one fixed only in 13.0.0; fastembed 0.9.0 (released
+          # 2026-10-07, the newest) still requires pillow<13; test_pillow_unreached
+          # still passes. The same re-open conditions stand.
           ignore-vulns: |
             CVE-2026-45830
             CVE-2026-45831
@@ -213,6 +223,17 @@ jobs:
             CVE-2026-112900
             CVE-2026-112901
             CVE-2026-112902
+            CVE-2026-96636
+            CVE-2026-96637
+            CVE-2026-96638
+            CVE-2026-96639
+            CVE-2026-96640
+            CVE-2026-96641
+            CVE-2026-96642
+            CVE-2026-96643
+            CVE-2026-96644
+            CVE-2026-96778
+            GHSA-78g4-xqwv-q3g8
 
   # SAST over this repository's own Python rather than its dependencies:
   # injection shapes, unsafe deserialization, weak crypto, credentials in
