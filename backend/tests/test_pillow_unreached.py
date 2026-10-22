@@ -1,16 +1,17 @@
 """Pillow is never handed bytes by this app (2026-10-21).
 
-pip-audit flags Pillow 12.3.0 (eight advisories: TIFF, GIF, EPS and PDF decoders
-reading past their buffers, returning uninitialized memory, recursing without
-bound or rendering past the decompression-bomb limit), fixed in Pillow 13.0.0 -
-which cannot be installed: fastembed (0.8.0 pinned here; 0.9.0 the same)
+pip-audit flags Pillow 12.3.0 (OSV lists 28 advisories for it as of 2026-10-21 -
+TIFF, GIF, EPS and PDF decoders reading past their buffers, returning
+uninitialized memory, recursing without bound, a double free in a transform; the
+morning's runs showed eight, the evening's sixteen more), all fixed in Pillow
+13.0.0 - which cannot be installed: fastembed (0.8.0 pinned here; 0.9.0 the same)
 requires pillow<13, and pip refuses the pair. The acceptance in the scan
 workflow's ignore-vulns block rests on one condition: no module of this app
 imports Pillow, and none loads fastembed's image-embedding models (the only
 code in the image that hands Pillow bytes), so no upload, connector or crawl
 reaches a Pillow decoder. This test fails the build the day an app module does
 either; re-triage then, or when fastembed lets Pillow 13 in (its PR #830) -
-bump fastembed and drop the eight ids.
+bump fastembed and drop the ids.
 """
 import pathlib
 import re

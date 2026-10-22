@@ -150,22 +150,28 @@ jobs:
           # backend/tests/test_jwt_algorithms_pinned.py rather than by this comment;
           # re-triage the day it fails, or when python-jose ships a fixed release.
           #
-          # ACCEPTED (triaged 2026-10-21) - CVE-2026-112395 / -112397 / -112400 /
-          # -112404 / -112895 / -112896 / -112897 / -112899, Pillow 12.3.0: eight
-          # decoder faults (TIFF tiles and strips decoded past their buffers or
-          # into uninitialized memory, a TIFF ColorMap plane-size mismatch on
-          # encode, a zero-width image in _imagingmorph, a GIF seek that keeps a
-          # rejected size, an EPS load that lets Ghostscript render past the
-          # decompression-bomb limit, a PDF page tree or trailer chain that
-          # recurses without bound). Fixed in Pillow 13.0.0, which cannot be
-          # installed: fastembed (0.8.0 pinned here; 0.9.0 the same) requires
-          # pillow<13, and pip refuses the pair. Not exercised here: no module of
-          # this app imports Pillow - it is in the image only because fastembed
-          # imports it for image-embedding models this app never loads - so no
-          # upload, connector or crawl reaches a Pillow decoder. Pinned by
+          # ACCEPTED (triaged 2026-10-21) - Pillow 12.3.0, every advisory OSV lists
+          # for it as of 2026-10-21: the 28 CVE ids below, CVE-2026-112390 through
+          # -112902 (decoder and transform faults - TIFF tiles and strips decoded
+          # past their buffers or into uninitialized memory, a TIFF ColorMap
+          # plane-size mismatch on encode, a zero-width image in _imagingmorph, a
+          # GIF seek that keeps a rejected size, an EPS load that lets Ghostscript
+          # render past the decompression-bomb limit, a PDF page tree or trailer
+          # chain that recurses without bound, a double free in Image.transform
+          # when an oversized output runs out of memory). The list is OSV's full
+          # set, not the ids one run showed: the morning's runs reported eight,
+          # the evening's sixteen more, and the advisory feed was still catching
+          # up. Every one is fixed in Pillow 13.0.0, which cannot be installed:
+          # fastembed (0.8.0 pinned here; 0.9.0 the same) requires pillow<13, and
+          # pip refuses the pair. Not exercised here: no module of this app
+          # imports Pillow - it is in the image only because fastembed imports it
+          # for image-embedding models this app never loads - so no upload,
+          # connector or crawl reaches a Pillow decoder. Pinned by
           # backend/tests/test_pillow_unreached.py rather than by this comment;
-          # re-triage the day it fails, or when fastembed lets Pillow 13 in (its
-          # PR #830) - then bump fastembed and drop these eight ids.
+          # re-triage the day it fails, when a Pillow id outside this list appears
+          # (a new advisory, or 13.0.0 itself in the affected range), or when
+          # fastembed lets Pillow 13 in (its PR #830) - then bump fastembed and
+          # drop these ids.
           ignore-vulns: |
             CVE-2026-45830
             CVE-2026-45831
@@ -179,14 +185,34 @@ jobs:
             CVE-2026-54282
             CVE-2026-54283
             PYSEC-2026-161
+            CVE-2026-112390
+            CVE-2026-112391
+            CVE-2026-112392
+            CVE-2026-112393
+            CVE-2026-112394
             CVE-2026-112395
+            CVE-2026-112396
             CVE-2026-112397
+            CVE-2026-112399
             CVE-2026-112400
+            CVE-2026-112401
+            CVE-2026-112402
+            CVE-2026-112403
             CVE-2026-112404
+            CVE-2026-112405
+            CVE-2026-112406
+            CVE-2026-112891
+            CVE-2026-112892
+            CVE-2026-112893
+            CVE-2026-112894
             CVE-2026-112895
             CVE-2026-112896
             CVE-2026-112897
+            CVE-2026-112898
             CVE-2026-112899
+            CVE-2026-112900
+            CVE-2026-112901
+            CVE-2026-112902
 
   # SAST over this repository's own Python rather than its dependencies:
   # injection shapes, unsafe deserialization, weak crypto, credentials in
