@@ -102,6 +102,38 @@ def _no_outbound_embed(*args, **kwargs):
 
 patch("app.database.requests.post", side_effect=_no_outbound_embed).start()
 
+# -- The cross-encoder's download, closed (2026-10-21) --
+# app.rerank._get_encoder imports fastembed's TextCrossEncoder when first asked
+# and builds it against FASTEMBED_CACHE - the fresh, empty test dir above - so
+# the first test to reach it would DOWNLOAD the model from the Hugging Face
+# hub. No test reaches a real load today, which is luck: on a sibling
+# deployment the same download hung under pytest in the deploy gate's
+# production image on 2026-10-21 (three 25-minute runs, each at the same test,
+# through the eval run route's reranker preflight - rerank.status(); the same
+# download took 5 s outside pytest there, and the test passed in 2 s with
+# HF_HUB_OFFLINE=1). The suite loads no model: this module's constructor
+# raises, _get_encoder records the load error, status() answers 'not loaded' at
+# once, and retrieval falls back to retriever order - the fallback the code
+# already has for a failed load. A test that wants an encoder installs its own:
+# the provider tests reach the module by attribute (import
+# fastembed.rerank.cross_encoder as fce) and set TextCrossEncoder on it per
+# test, so the stub hangs off the real, empty fastembed.rerank package too -
+# both import paths see the one module. Pinned by test_reranker_never_loads.py.
+import sys as _sys  # noqa: E402
+import types as _types  # noqa: E402
+import fastembed.rerank as _fastembed_rerank  # noqa: E402  (an empty package - no model)
+_no_cross_encoder = _types.ModuleType("fastembed.rerank.cross_encoder")
+
+
+def _no_reranker_model(*args, **kwargs):
+    raise RuntimeError("conftest: the test suite loads no reranker model "
+                       "(a real TextCrossEncoder is a network download)")
+
+
+_no_cross_encoder.TextCrossEncoder = _no_reranker_model
+_fastembed_rerank.cross_encoder = _no_cross_encoder
+_sys.modules["fastembed.rerank.cross_encoder"] = _no_cross_encoder
+
 # Nor does any test read Anthropic's live model list - a requests.get, which
 # the block above does not cover. Every Anthropic request asks the catalog how
 # much room its model needs (model_catalog.output_room, 2026-10-09), so a test
