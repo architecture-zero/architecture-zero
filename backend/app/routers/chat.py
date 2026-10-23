@@ -1010,9 +1010,11 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
             # assistant_text holds the last round's text.
             if not "".join(assistant_text).strip():
                 # Empty-final-answer guard: stream errors raise loudly
-                # upstream, so anything landing here is a model that
-                # genuinely stopped without text (or burned all 6 rounds on
-                # tool calls). One nudged retry - tools stay attached so the
+                # upstream, and since 2026-10-22 a model that stopped without
+                # text or a tool call is answered at the provider's exit
+                # (providers.EMPTY_TURN_TEXT), so what lands here is a round
+                # of whitespace alone, or all 6 rounds burned on tool calls.
+                # One nudged retry - tools stay attached so the
                 # tool_use transcript remains valid, but tool calls are
                 # ignored: this round must produce text.
                 log("chat_empty_answer", session_id=request.session_id,

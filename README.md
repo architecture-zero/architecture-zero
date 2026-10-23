@@ -21,8 +21,9 @@ aspirational.
 
 - **Grounded chat** - streaming answers with source citations, an agentic
   tool loop (workspace file tools, clearance-gated, off by default), and
-  honest failure modes: an empty model turn gets one retry and then says
-  so, never a blank bubble.
+  honest failure modes: an empty model turn - a refusal stop, a completion
+  with no text - is answered with one plain sentence at the provider's exit,
+  never a blank bubble.
 - **A built-in onboarding assistant** - the platform ships pre-loaded
   with its own documentation, so a fresh install explains, onboards, and
   troubleshoots itself from the first question. See

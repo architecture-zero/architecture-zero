@@ -163,13 +163,25 @@ eval_answer_model or eval_judge_model in admin config so they differ, or
 pass allow_same_family=true only if you deliberately accept a self-graded
 run.
 
+## "I can't answer that."
+
+The model returned nothing for the turn - no text, no tool call. Since
+2026-10-22 the provider layer answers that empty turn with this one
+sentence at the exit every provider's stream passes through, instead of a
+blank bubble. The usual cause is the provider's own safety classifier
+ending the stream with a refusal stop (a jailbreak-shaped question, for
+example); the server log carries a warning naming the model and the stop.
+A plain provider hiccup can land here too - resend the message. If a local
+model keeps answering this way, it may be failing to load or out of memory
+on the Ollama host; check Ollama's logs and /api/health.
+
 ## "I could not produce an answer this turn"
 
-The model returned empty output twice in a row (the system retries once
-automatically before saying this). Usually a provider-side hiccup - resend
-the message. If it persists on a local model, the model may be failing to
-load or out of memory on the Ollama host; check Ollama's logs and
-/api/health.
+A turn produced only whitespace, or an agentic conversation spent all of
+its tool rounds without an answer (the system retries once automatically
+before saying this). An empty model turn no longer lands here - it is
+answered at the provider's exit, above. Resend the message; if it persists
+on a local model, check Ollama's logs and /api/health.
 
 ## Chat answers "I can only answer questions based on the documents..."
 
