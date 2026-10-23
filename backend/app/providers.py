@@ -223,7 +223,9 @@ def _ollama_chat_nonstream(messages: list, model: str, tools: list | None = None
         payload["tools"] = tools
     resp = req.post(f"{base}/api/chat", json=payload, headers=_ollama_headers(), timeout=300)
     resp.raise_for_status()
-    return resp.json()
+    data = resp.json()
+    model_catalog.note_if_cut(data.get("done_reason"), model, (opts or {}).get("num_predict"))
+    return data
 
 
 def _ollama_stream_events(messages: list, model: str, tools: list | None = None,
@@ -256,6 +258,7 @@ def _ollama_stream_events(messages: list, model: str, tools: list | None = None,
             yield from _ollama_message_events(data.get("message", {}))
             return
         raise
+    done_reason = None
     with resp:
         for line in resp.iter_lines():
             if not line:
@@ -271,7 +274,12 @@ def _ollama_stream_events(messages: list, model: str, tools: list | None = None,
             if chunk.get("error"):
                 raise ValueError(
                     f"Ollama stream error: {str(chunk['error'])[:200]}")
+            if chunk.get("done"):
+                done_reason = chunk.get("done_reason") or done_reason
             yield from _ollama_message_events(chunk.get("message", {}))
+    # The cap's cut on record, as the Anthropic streamer records it: Ollama's
+    # last line says done_reason "length" when num_predict ended the answer.
+    model_catalog.note_if_cut(done_reason, model, (opts or {}).get("num_predict"))
 
 
 def _ollama_tool_call(messages: list, model: str, tools: list) -> dict:
@@ -302,9 +310,10 @@ def _openai_tool_call(messages: list, model: str, tools: list,
                     json={"model": model, "messages": messages, "tools": tools},
                     timeout=120)
     resp.raise_for_status()
-    msg = resp.json()["choices"][0]["message"]
+    choice = resp.json()["choices"][0]
+    model_catalog.note_if_cut(choice.get("finish_reason"), model, None)
     # Normalise to Ollama-style {message: {content, tool_calls}}
-    return {"message": msg}
+    return {"message": choice["message"]}
 
 
 # -- Anthropic ----------------------------------------------------------------
@@ -655,6 +664,7 @@ def _openai_stream_events(messages: list, model: str, tools: list | None = None,
         payload["tools"] = tools
 
     tool_accum: dict[int, dict] = {}  # index -> {"id", "name", "args_buf"}
+    finish_reason = None
     with req.post(f"{_compat_base(provider)}/chat/completions",
                   headers=_compat_headers(provider), json=payload, stream=True, timeout=300) as resp:
         resp.raise_for_status()
@@ -681,6 +691,7 @@ def _openai_stream_events(messages: list, model: str, tools: list | None = None,
             choices = chunk.get("choices") or []
             if not choices:
                 continue
+            finish_reason = choices[0].get("finish_reason") or finish_reason
             delta = choices[0].get("delta", {})
             text = delta.get("content") or ""
             if text:
@@ -695,6 +706,9 @@ def _openai_stream_events(messages: list, model: str, tools: list | None = None,
                 if fn.get("arguments"):
                     slot["args_buf"] += fn["arguments"]
 
+    # The cap's cut on record, as the Anthropic streamer records it: the
+    # dialect's finish_reason says "length" when max_tokens ended the answer.
+    model_catalog.note_if_cut(finish_reason, model, max_tokens)
     for idx in sorted(tool_accum):
         slot = tool_accum[idx]
         if not slot["name"]:
@@ -757,11 +771,20 @@ def non_stream_tool_call(messages: list, model: str, tools: list) -> dict:
     dict."""
     provider, bare = _resolve_model(model)
     if provider == "anthropic":
+        # Its door answers an empty completion itself, naming the stop reason.
         return _anthropic_tool_call(messages, bare, tools)
     elif provider == "ollama":
-        return _ollama_tool_call(messages, bare, tools)
+        data = _ollama_tool_call(messages, bare, tools)
     else:
-        return _openai_tool_call(messages, bare, tools, provider=provider)
+        data = _openai_tool_call(messages, bare, tools, provider=provider)
+    # The empty turn on the other two doors (2026-10-23): a completion with no
+    # text and no tool call reached the caller as a blank answer, the same
+    # silence the streaming exit and the Anthropic door already answer.
+    msg = data.get("message") or {}
+    if not (msg.get("content") or "") and not msg.get("tool_calls"):
+        logger.warning("%s returned an empty completion - answering with the empty-turn line", model)
+        data = {**data, "message": {**msg, "content": EMPTY_TURN_TEXT, "tool_calls": []}}
+    return data
 
 
 def supports_tools(model: str = "") -> bool:

@@ -281,8 +281,10 @@ def output_room(model: str, max_tokens: int) -> int:
 
 def note_if_cut(stop_reason, model: str, max_tokens: int) -> None:
     """Log a response its token cap ended ("output_cut_at_token_cap"), so an
-    answer stopped mid-sentence is on record instead of silent."""
-    if stop_reason == "max_tokens":
+    answer stopped mid-sentence is on record instead of silent. Anthropic says
+    "max_tokens"; the OpenAI dialect's finish_reason and Ollama's done_reason
+    say "length" for the same cut."""
+    if stop_reason in ("max_tokens", "length"):
         _note("output_cut_at_token_cap", model=model, max_tokens=max_tokens)
 
 
