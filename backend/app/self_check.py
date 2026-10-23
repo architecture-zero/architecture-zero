@@ -35,8 +35,10 @@ proven. Before the first pass it reads "pending"; with the timer off, "off".
 
 Readiness is proof, never its absence (R-AZ-01, the outside re-review,
 2026-10-07): the lane passes readiness only on a fresh pass that found it "ok"
-or "not_required" (no operator documents and RAG_ONLY_MODE off - the documented
-no-corpus policy, decided by a pass, not assumed). "pending", "off", "skipped"
+or "not_required" (no operator documents in the store, none the deployment
+expects there, and RAG_ONLY_MODE off - the documented no-corpus policy,
+decided by a pass, not assumed; a deployment that expects a corpus reads an
+empty store as an error, never as this). "pending", "off", "skipped"
 (no probe wired), "stale" and "error" all fail it. They used to pass, so a
 broken lane read ready from boot until the first pass, and indefinitely with
 the timer off. So the first lane pass runs at boot, not one interval later; if
