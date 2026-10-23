@@ -59,6 +59,15 @@ class EvalRunRequest(BaseModel):
     use_rag: bool = True
     n_results: int = 5            # kept after rerank - mirrors the chat's RERANK_TOP_K
     retrieval_only: bool = True   # recall needs no LLM answer; skip it (avoids 504 on big runs)
+    # The chat's federation lane, for the eval: the enabled peers asked with each
+    # question and their pieces through the same selection the chat applies,
+    # behind the same consume floor. Off by default because the chat's own
+    # default is off (ChatRequest.use_peers) - a deployment whose client asks
+    # for peers on every turn measures with it ON, or its eval measures a
+    # system its visitors never get (a federated deployment, 2026-10-22: the department
+    # documents live on three peers; the hub-only eval scored every
+    # department question a miss).
+    use_peers: bool = False
     # Deliberate same-family override: a run whose answer model and judge
     # share a provider family is refused unless this is explicitly true -
     # self-graded scores must never happen by accident.
@@ -259,7 +268,8 @@ def run_evals(body: EvalRunRequest, current_user: dict = Depends(require_owner))
     _eval_runs[run_id] = {"total": len(questions), "done": 0, "complete": False, "run_at": run_at}
     threading.Thread(
         target=_run_eval_job,
-        args=(run_id, run_at, questions, model, body.use_rag, body.n_results, body.retrieval_only),
+        args=(run_id, run_at, questions, model, body.use_rag, body.n_results, body.retrieval_only,
+              body.use_peers),
         daemon=True,
     ).start()
     return {"run_id": run_id, "run_at": run_at, "total": len(questions), "status": "running"}

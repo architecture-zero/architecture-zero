@@ -262,3 +262,79 @@ def test_anthropic_plain_user_merge_still_works():
         {"role": "user", "content": "second"},
     ])
     assert len(out) == 1 and out[0]["content"] == "first\nsecond"
+
+
+# -- The empty turn (2026-10-22) ------------------------------------------------
+# The newer models can end a stream with a refusal stop and no content; read as
+# an answer, that was silence - a deployed instance served a jailbreak question as
+# its sources and [DONE], zero output tokens. stream_chat_events is the one exit
+# for every provider, so the guard sits there; the non-streaming door gets the
+# same line.
+
+def _sse(*events):
+    return [b"data: " + json.dumps(e).encode() for e in events]
+
+
+def _anthropic_events(lines):
+    from app.providers import stream_chat_events
+    resp = _stream_resp(lines)
+    resp.ok = True
+    with patch("app.providers.req.post", return_value=resp), \
+         patch("app.providers._anthropic_headers", return_value={}), \
+         patch("app.providers._resolve_model", return_value=("anthropic", "claude-sonnet-5-5")):
+        return list(stream_chat_events(_MSGS, "claude-sonnet-5-5"))
+
+
+def test_refusal_stop_with_no_text_yields_the_empty_turn_line():
+    """FIX: a stream that ends with a refusal stop and no content reaches the
+    caller as one plain sentence, never as nothing."""
+    from app.providers import EMPTY_TURN_TEXT
+    events = _anthropic_events(_sse(
+        {"type": "message_start", "message": {"usage": {}}},
+        {"type": "message_delta", "delta": {"stop_reason": "refusal"}, "usage": {}},
+        {"type": "message_stop"},
+    ))
+    assert events == [{"type": "text", "text": EMPTY_TURN_TEXT}]
+
+
+def test_text_stream_gets_no_empty_turn_line():
+    """CONTROL: a turn that said something passes through untouched."""
+    from app.providers import EMPTY_TURN_TEXT
+    events = _anthropic_events(_sse(
+        {"type": "message_start", "message": {"usage": {}}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "text_delta", "text": "Hello"}},
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {}},
+        {"type": "message_stop"},
+    ))
+    assert events == [{"type": "text", "text": "Hello"}]
+    assert all(e["text"] != EMPTY_TURN_TEXT for e in events)
+
+
+def test_tool_call_only_round_gets_no_empty_turn_line():
+    """CONTROL: an agentic round that only called a tool is not an empty turn."""
+    events = _anthropic_events(_sse(
+        {"type": "message_start", "message": {"usage": {}}},
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "tool_use", "id": "t1", "name": "search_files"}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "input_json_delta", "partial_json": "{\"q\": \"x\"}"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {}},
+        {"type": "message_stop"},
+    ))
+    assert events == [{"type": "tool_call", "id": "t1", "name": "search_files", "args": {"q": "x"}}]
+
+
+def test_non_streaming_empty_completion_gets_the_empty_turn_line():
+    """FIX: the non-streaming door (the agentic loop) answers an empty
+    completion - a refusal stop with no content blocks - the same way."""
+    from app.providers import EMPTY_TURN_TEXT, _anthropic_tool_call
+    resp = MagicMock()
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = {"content": [], "stop_reason": "refusal", "usage": {}}
+    with patch("app.providers.req.post", return_value=resp), \
+         patch("app.providers._anthropic_headers", return_value={}):
+        out = _anthropic_tool_call(_MSGS, "claude-sonnet-5-5", _TOOLS)
+    assert out["message"]["content"] == EMPTY_TURN_TEXT
+    assert out["message"]["tool_calls"] == []

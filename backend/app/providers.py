@@ -29,6 +29,15 @@ OPENAI_BASE   = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ANTHROPIC_VER = "2023-06-01"
 
+# The line a lane answers with when the model returns NOTHING - no text and no
+# tool call. The newer models can end a stream with a refusal stop (the
+# provider's own classifier) and no content at all; read as an answer, that is
+# silence: a deployed instance answered a jailbreak question with its sources and [DONE]
+# and zero output tokens (2026-10-22, found by its eval's security cohort and
+# reproduced live). One sentence, true for a refusal and for an empty
+# completion alike, so no lane ever serves an empty turn.
+EMPTY_TURN_TEXT = "I can't answer that."
+
 
 def _get_runtime(db_key: str, env_key: str, default: str = "") -> str:
     """Read from config DB; fall back to env var; then to default. Called
@@ -570,6 +579,11 @@ def _anthropic_stream_events(messages: list, model: str, system_prompt: str = ""
                 stop_reason = (chunk.get("delta") or {}).get("stop_reason") or stop_reason
 
     model_catalog.note_if_cut(stop_reason, model, payload["max_tokens"])
+    if stop_reason == "refusal":
+        # The provider's classifier ended the turn; usually with no content at
+        # all. stream_chat_events answers an empty turn with EMPTY_TURN_TEXT;
+        # this line is the operator's record of why.
+        logger.warning("%s ended the stream with a refusal stop", model)
 
 
 def _anthropic_tool_call(messages: list, model: str, tools: list) -> dict:
@@ -615,6 +629,14 @@ def _anthropic_tool_call(messages: list, model: str, tools: list) -> dict:
                     "arguments": block.get("input", {}),
                 },
             })
+
+    if not text_parts and not tool_calls:
+        # The same empty turn the streaming lane guards against, on the
+        # non-streaming door: a refusal stop or an empty completion must not
+        # read as a blank answer.
+        logger.warning("%s returned an empty completion (stop_reason=%s) - answering with the empty-turn line",
+                       model, data.get("stop_reason"))
+        text_parts.append(EMPTY_TURN_TEXT)
 
     return {"message": {"content": "".join(text_parts), "tool_calls": tool_calls}}
 
@@ -698,12 +720,25 @@ def stream_chat_events(messages: list, model: str, tools: list | None = None,
     """
     provider, bare = _resolve_model(model)
     if provider == "anthropic":
-        yield from _anthropic_stream_events(messages, bare, system_prompt, max_tokens, tools or None)
+        events = _anthropic_stream_events(messages, bare, system_prompt, max_tokens, tools or None)
     elif provider == "ollama":
-        yield from _ollama_stream_events(messages, bare, tools or None)
+        events = _ollama_stream_events(messages, bare, tools or None)
     else:
-        yield from _openai_stream_events(messages, bare, tools or None, max_tokens,
-                                         provider=provider)
+        events = _openai_stream_events(messages, bare, tools or None, max_tokens,
+                                       provider=provider)
+    # One exit for every provider, so the guard sits here: a turn that yields
+    # no event at all - no text, no tool call - is never an answer. A refusal
+    # stop (the provider's classifier), an empty completion, a reply that was
+    # all thinking: each used to reach the caller as silence, and the chat lane
+    # served it as such. The visitor gets one plain sentence instead.
+    yielded = False
+    for event in events:
+        yielded = True
+        yield event
+    if not yielded:
+        logger.warning("%s returned an empty turn (no text, no tool call) - answering with the empty-turn line",
+                       model)
+        yield {"type": "text", "text": EMPTY_TURN_TEXT}
 
 
 def stream_chat(messages: list, model: str, tools: list | None = None,

@@ -154,8 +154,45 @@ _eval_runs_lock = threading.Lock()
 # no-headroom shared box. A pause lets everything else breathe; run duration
 # is irrelevant here.
 EVAL_QUESTION_PAUSE_SECONDS = float(os.getenv("EVAL_QUESTION_PAUSE_SECONDS", "2.0"))
+def _peer_pieces(query: str, as_level) -> list[dict]:
+    """The chat's federation lane, for a run asked with use_peers: every enabled
+    peer asked with the question, the pieces through app.peer_boundary.select with
+    this instance's rank and threshold - the ONE function the chat calls - behind
+    the same consume floor the chat applies to the caller's clearance
+    (PEER_CONSUME_MIN_LEVEL, the chat router's constant). The question's as_level
+    stands for the caller; None is Owner, as retrieval reads it. A peer that
+    raises costs its pieces and a log line, never the run."""
+    from app import peer_boundary
+    from app.peers import get_peers, query_peer_kb
+    from app.permissions import OWNER_LEVEL
+    from app.rerank import rerank
+    from app.routers.chat import PEER_CONSUME_MIN_LEVEL
+    from app.runtime_config import RAG_SIMILARITY_THRESHOLD
+    level = OWNER_LEVEL if as_level is None else int(as_level)
+    if level < PEER_CONSUME_MIN_LEVEL:
+        log("eval_peer_query_refused", caller_level=level, required=PEER_CONSUME_MIN_LEVEL)
+        return []
+    peers = [p for p in get_peers() if p.get("enabled")]
+    if not peers:
+        return []
+    sent: list[dict] = []
+    for p in peers:
+        try:
+            result = query_peer_kb(p, query)
+        except Exception as e:
+            log("eval_peer_query_failed", peer=p.get("name"), error=str(e)[:200])
+            continue
+        if isinstance(result, list):
+            sent.extend(result)
+    if not sent:
+        return []
+    threshold = float(_config_or_default("rag_similarity_threshold", str(RAG_SIMILARITY_THRESHOLD)))
+    return peer_boundary.select(query, sent, threshold, rank=rerank, on_event=log, report={})
+
+
 def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
-                  use_rag: bool, n_results: int, retrieval_only: bool):
+                  use_rag: bool, n_results: int, retrieval_only: bool,
+                  use_peers: bool = False):
     """Run the eval in a background thread so a large set can't hit the HTTP
     timeout. Writes each EvalResult as it goes and ticks progress."""
     # The writer is resolved ONCE, here, for every caller - the route already
@@ -237,6 +274,7 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
             retrieved_sources: list[str] = []
             retrieved: list[dict] = []
             context = ""
+            peer_context = ""
             if use_rag:
                 # Same retrieve-wide -> rerank pipeline the chat uses, so the
                 # eval measures the real system. n_results = how many to keep
@@ -266,6 +304,19 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                     retrieved_sources = [x["source"] for x in retrieved]
                     from app.rerank import format_context
                     context = format_context(context_results)
+                # The chat's federation lane, when the run asks for it: the
+                # peers' pieces count for recall and stand in the prompt as
+                # the chat's SUPPLEMENTARY block, so a run measures the
+                # system a peer-asking client is served - not the hub alone.
+                if use_peers:
+                    peer_chunks = _peer_pieces(retrieval_query, q.get("as_level"))
+                    for c in peer_chunks:
+                        retrieved.append({"source": c.get("source", "unknown"),
+                                          "score": c.get("score"), "peer": c.get("peer", "")})
+                        retrieved_sources.append(c.get("source", "unknown"))
+                    if peer_chunks:
+                        from app.rerank import format_peer_context
+                        peer_context = format_peer_context(peer_chunks)
 
             hit, rank = _score_retrieval(q.get("expected_source"), retrieved_sources)
 
@@ -284,20 +335,29 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                 response = "[retrieval-only]"
             else:
                 prompt = question_text
+                # The blocks stand before the question under the one
+                # instruction, as the chat assembles them: the local CONTEXT,
+                # then the peers' SUPPLEMENTARY block when a peer-asking run
+                # got pieces. A run with no peer piece builds the same prompt,
+                # byte for byte, as before.
+                blocks = ""
                 if context:
+                    blocks += f"CONTEXT:\n{context}\n\n"
+                if peer_context:
+                    blocks += ("SUPPLEMENTARY CONTEXT (from connected AI sources):\n"
+                               f"{peer_context}\n\n")
+                if blocks:
                     if RAG_ONLY_MODE:
                         prompt = (
                             "Answer the question using ONLY the context below. "
                             "Do not use outside knowledge. If the context does not contain the answer, say so.\n\n"
-                            f"CONTEXT:\n{context}\n\n"
-                            f"QUESTION: {question_text}"
+                            f"{blocks}QUESTION: {question_text}"
                         )
                     else:
                         prompt = (
                             "The following context may help answer the question. "
                             "You may also use your file read tools to access actual file contents when needed.\n\n"
-                            f"CONTEXT:\n{context}\n\n"
-                            f"QUESTION: {question_text}"
+                            f"{blocks}QUESTION: {question_text}"
                         )
                 # Scripted turns precede the final question exactly as chat
                 # sends history; the context-bearing prompt stays the final

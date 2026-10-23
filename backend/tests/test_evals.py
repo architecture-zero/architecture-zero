@@ -1101,3 +1101,71 @@ def test_blank_config_row_does_not_beat_the_default(client):
         # models and thresholds through their real defaults.
         set_config("default_model", "")
         set_config("rag_similarity_threshold", "")
+
+
+# -- The eval's federation lane (2026-10-22) ------------------------------------
+# A run asked with use_peers asks the enabled peers each question and their
+# pieces count for recall, through the chat's own selection and behind the
+# chat's consume floor - so a run measures the system a peer-asking client is
+# served, not the hub alone. One deployment's department documents live on three
+# peers; its hub-only eval scored every department question a miss.
+
+def _peer_run(monkeypatch, run_id, *, use_peers, as_level=None):
+    """A run against a local corpus that holds nothing and one enabled peer that
+    holds the expected source. Returns (the row's retrieval_hit, the peers asked)."""
+    import app.eval_runner as main_mod
+    from app.db import get_session
+    from app.models import EvalResult
+
+    asked = []
+    monkeypatch.setattr("app.database.corpus_fingerprint", lambda: "src=0;chunks=0;sha=0")
+    monkeypatch.setattr("app.rerank.retrieve", lambda q, top_k=None, user_level=None: [])
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setattr("app.peers.get_peers", lambda: [
+        {"id": "peer-1", "name": "engineering", "url": "http://peer", "enabled": True}])
+
+    def fake_query(peer, query, n_results=8, timeout=10):
+        asked.append(peer["name"])
+        return [{"source": "docs/peer-held.md", "text": "The four pillars are listed here.",
+                 "score": 0.91, "peer": "engineering"}]
+    monkeypatch.setattr("app.peers.query_peer_kb", fake_query)
+    # The selection is the chat's own function; the rank it would call is a
+    # model call, so the pieces pass through here - the wiring is what these
+    # tests pin, not the rank.
+    monkeypatch.setattr("app.peer_boundary.select",
+                        lambda query, pieces, threshold, rank, on_event=None, report=None: list(pieces))
+
+    questions = [{"id": 901, "question": "What are the four pillars?", "category": "general",
+                  "expected_source": "docs/peer-held.md", "notes": "", "as_level": as_level}]
+    main_mod._run_eval_job(run_id, "2026-10-22T00:00:00", questions, model="m",
+                           use_rag=True, n_results=5, retrieval_only=True, use_peers=use_peers)
+    with get_session() as db:
+        row = db.query(EvalResult).filter(EvalResult.run_id == run_id).one()
+        return row.retrieval_hit, asked
+
+
+def test_eval_with_use_peers_counts_a_peer_held_source(monkeypatch):
+    """FIX: with use_peers the enabled peer is asked and its piece scores the hit."""
+    hit, asked = _peer_run(monkeypatch, "peer-hit-run", use_peers=True)
+    assert hit == 1
+    assert asked == ["engineering"]
+
+
+def test_eval_without_use_peers_never_asks_a_peer(monkeypatch):
+    """CONTROL: the default is the chat's default - off. No peer is asked and the
+    peer-held source stays a miss."""
+    hit, asked = _peer_run(monkeypatch, "peer-off-run", use_peers=False)
+    assert hit == 0
+    assert asked == []
+
+
+def test_eval_peer_lane_honors_the_consume_floor(monkeypatch):
+    """CONTROL: a question asked as a clearance below PEER_CONSUME_MIN_LEVEL gets
+    no peer, exactly as the chat refuses that caller - the eval measures the
+    floor, it does not lift it."""
+    from app.permissions import GUEST_LEVEL
+    from app.routers.chat import PEER_CONSUME_MIN_LEVEL
+    assert GUEST_LEVEL < PEER_CONSUME_MIN_LEVEL
+    hit, asked = _peer_run(monkeypatch, "peer-floor-run", use_peers=True, as_level=GUEST_LEVEL)
+    assert hit == 0
+    assert asked == []
