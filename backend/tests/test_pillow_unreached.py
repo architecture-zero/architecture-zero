@@ -1,9 +1,11 @@
 """Pillow is never handed bytes by this app (2026-10-21).
 
-pip-audit flags Pillow 12.3.0 (OSV lists 28 advisories for it as of 2026-10-21 -
+pip-audit flags Pillow 12.3.0 (OSV listed 28 advisories for it on 2026-10-21 -
 TIFF, GIF, EPS and PDF decoders reading past their buffers, returning
 uninitialized memory, recursing without bound, a double free in a transform; the
-morning's runs showed eight, the evening's sixteen more), all fixed in Pillow
+morning's runs showed eight, the evening's sixteen more - and 39 on 2026-10-22,
+the same class: the scan workflow's re-triage paragraph lists the eleven new
+ids, and its ignore-vulns block is the current set), all fixed in Pillow
 13.0.0 - which cannot be installed: fastembed (0.8.0 pinned here; 0.9.0 the same)
 requires pillow<13, and pip refuses the pair. The acceptance in the scan
 workflow's ignore-vulns block rests on one condition: no module of this app
