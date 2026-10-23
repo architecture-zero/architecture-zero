@@ -1110,9 +1110,11 @@ def test_blank_config_row_does_not_beat_the_default(client):
 # served, not the hub alone. One deployment's department documents live on three
 # peers; its hub-only eval scored every department question a miss.
 
-def _peer_run(monkeypatch, run_id, *, use_peers, as_level=None):
+def _peer_run(monkeypatch, run_id, *, use_peers, as_level=None, use_rag=True,
+              setup_turns=None, queries=None):
     """A run against a local corpus that holds nothing and one enabled peer that
-    holds the expected source. Returns (the row's retrieval_hit, the peers asked)."""
+    holds the expected source. Returns (the row's retrieval_hit, the peers asked);
+    `queries`, when given, collects the words each peer was asked with."""
     import app.eval_runner as main_mod
     from app.db import get_session
     from app.models import EvalResult
@@ -1126,6 +1128,8 @@ def _peer_run(monkeypatch, run_id, *, use_peers, as_level=None):
 
     def fake_query(peer, query, n_results=8, timeout=10):
         asked.append(peer["name"])
+        if queries is not None:
+            queries.append(query)
         return [{"source": "docs/peer-held.md", "text": "The four pillars are listed here.",
                  "score": 0.91, "peer": "engineering"}]
     monkeypatch.setattr("app.peers.query_peer_kb", fake_query)
@@ -1136,9 +1140,10 @@ def _peer_run(monkeypatch, run_id, *, use_peers, as_level=None):
                         lambda query, pieces, threshold, rank, on_event=None, report=None: list(pieces))
 
     questions = [{"id": 901, "question": "What are the four pillars?", "category": "general",
-                  "expected_source": "docs/peer-held.md", "notes": "", "as_level": as_level}]
+                  "expected_source": "docs/peer-held.md", "notes": "", "as_level": as_level,
+                  "setup_turns": json.dumps(setup_turns) if setup_turns else None}]
     main_mod._run_eval_job(run_id, "2026-10-22T00:00:00", questions, model="m",
-                           use_rag=True, n_results=5, retrieval_only=True, use_peers=use_peers)
+                           use_rag=use_rag, n_results=5, retrieval_only=True, use_peers=use_peers)
     with get_session() as db:
         row = db.query(EvalResult).filter(EvalResult.run_id == run_id).one()
         return row.retrieval_hit, asked
@@ -1169,6 +1174,27 @@ def test_eval_peer_lane_honors_the_consume_floor(monkeypatch):
     hit, asked = _peer_run(monkeypatch, "peer-floor-run", use_peers=True, as_level=GUEST_LEVEL)
     assert hit == 0
     assert asked == []
+
+
+def test_eval_peer_lane_runs_without_rag_as_the_chat_does(monkeypatch):
+    """FIX (2026-10-23): the chat asks its peers whether or not RAG is on, so a
+    run asked with use_rag off and use_peers on asks them too - the lane sat
+    inside the local-retrieval branch and was skipped."""
+    hit, asked = _peer_run(monkeypatch, "peer-norag-run", use_peers=True, use_rag=False)
+    assert asked == ["engineering"]
+    assert hit == 1
+
+
+def test_eval_peer_lane_asks_with_the_questions_own_words(monkeypatch):
+    """FIX (2026-10-23): a multi-turn question asks its peers with its own final
+    words, as the chat sends a peer request.prompt - never the follow-up the
+    local lane resolves for its own retrieval."""
+    queries: list = []
+    monkeypatch.setattr("app.routing.resolve_followup", lambda q, turns: "RESOLVED FOLLOW-UP")
+    turns = [{"role": "user", "content": "Tell me about the platform."},
+             {"role": "assistant", "content": "It has four pillars."}]
+    _peer_run(monkeypatch, "peer-words-run", use_peers=True, setup_turns=turns, queries=queries)
+    assert queries == ["What are the four pillars?"]
 
 
 def test_eval_grounding_carries_the_peer_block(monkeypatch):

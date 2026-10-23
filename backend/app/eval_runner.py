@@ -304,19 +304,23 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                     retrieved_sources = [x["source"] for x in retrieved]
                     from app.rerank import format_context
                     context = format_context(context_results)
-                # The chat's federation lane, when the run asks for it: the
-                # peers' pieces count for recall and stand in the prompt as
-                # the chat's SUPPLEMENTARY block, so a run measures the
-                # system a peer-asking client is served - not the hub alone.
-                if use_peers:
-                    peer_chunks = _peer_pieces(retrieval_query, q.get("as_level"))
-                    for c in peer_chunks:
-                        retrieved.append({"source": c.get("source", "unknown"),
-                                          "score": c.get("score"), "peer": c.get("peer", "")})
-                        retrieved_sources.append(c.get("source", "unknown"))
-                    if peer_chunks:
-                        from app.rerank import format_peer_context
-                        peer_context = format_peer_context(peer_chunks)
+            # The chat's federation lane, when the run asks for it: the peers'
+            # pieces count for recall and stand in the prompt as the chat's
+            # SUPPLEMENTARY block, so a run measures the system a peer-asking
+            # client is served - not the hub alone. As the chat runs it: beside
+            # the local lane, not inside it (the chat asks its peers whether or
+            # not RAG is on), and with the question's own words (the chat sends
+            # a peer request.prompt, not the follow-up resolved for local
+            # retrieval) - 2026-10-23, found by a fork's port of this lane.
+            if use_peers:
+                peer_chunks = _peer_pieces(question_text, q.get("as_level"))
+                for c in peer_chunks:
+                    retrieved.append({"source": c.get("source", "unknown"),
+                                      "score": c.get("score"), "peer": c.get("peer", "")})
+                    retrieved_sources.append(c.get("source", "unknown"))
+                if peer_chunks:
+                    from app.rerank import format_peer_context
+                    peer_context = format_peer_context(peer_chunks)
 
             hit, rank = _score_retrieval(q.get("expected_source"), retrieved_sources)
 
