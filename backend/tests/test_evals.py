@@ -1169,3 +1169,39 @@ def test_eval_peer_lane_honors_the_consume_floor(monkeypatch):
     hit, asked = _peer_run(monkeypatch, "peer-floor-run", use_peers=True, as_level=GUEST_LEVEL)
     assert hit == 0
     assert asked == []
+
+
+def test_eval_grounding_carries_the_peer_block(monkeypatch):
+    """FIX: the faithfulness judge sees what the model was given. With a peer piece
+    in the prompt, the grounding carries the peers' block too - without it a
+    correct peer-grounded answer reads as fabricated (the hole a port of this
+    lane caught the day it landed)."""
+    import app.eval_runner as main_mod
+
+    seen = {}
+    monkeypatch.setattr("app.database.corpus_fingerprint", lambda: "src=0;chunks=0;sha=0")
+    monkeypatch.setattr("app.rerank.retrieve", lambda q, top_k=None, user_level=None: [])
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setattr("app.peers.get_peers", lambda: [
+        {"id": "peer-1", "name": "engineering", "url": "http://peer", "enabled": True}])
+    monkeypatch.setattr("app.peers.query_peer_kb", lambda peer, query, n_results=8, timeout=10: [
+        {"source": "docs/peer-held.md", "text": "The four pillars are listed here.",
+         "score": 0.91, "peer": "engineering"}])
+    monkeypatch.setattr("app.peer_boundary.select",
+                        lambda query, pieces, threshold, rank, on_event=None, report=None: list(pieces))
+    monkeypatch.setattr(main_mod, "supports_tools", lambda model: False)
+    monkeypatch.setattr(main_mod, "stream_chat",
+                        lambda *a, **k: iter(["The four pillars are listed here."]))
+    monkeypatch.setattr("app.eval_judge.judge_answer", lambda *a, **k: (1, "ok"))
+
+    def _faith(question, grounding, answer, *a, **k):
+        seen["grounding"] = grounding
+        return 1, "ok"
+    monkeypatch.setattr("app.eval_judge.judge_faithfulness", _faith)
+    monkeypatch.setattr("app.eval_judge.judge_freshness", lambda *a, **k: (1, "ok"))
+
+    questions = [{"id": 902, "question": "What are the four pillars?", "category": "general",
+                  "expected_source": "docs/peer-held.md", "notes": "", "as_level": None}]
+    main_mod._run_eval_job("peer-grounding-run", "2026-10-22T00:00:00", questions, model="m",
+                           use_rag=True, n_results=5, retrieval_only=False, use_peers=True)
+    assert "The four pillars are listed here." in seen.get("grounding", "")

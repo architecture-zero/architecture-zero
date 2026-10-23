@@ -334,7 +334,15 @@ def _summarize_history(old_messages: list, model: str) -> str:
             model,
             tools=[],
         )
-        return result.get("message", {}).get("content", "").strip() or "Previous conversation was summarized."
+        content = result.get("message", {}).get("content", "").strip()
+        # The provider's empty-turn sentence (providers.EMPTY_TURN_TEXT) is
+        # an answer, not a summary: a summarizer completion that came back
+        # empty takes the default, as it did before the provider's exit
+        # started answering the empty turn (2026-10-22).
+        from app.providers import EMPTY_TURN_TEXT
+        if not content or content == EMPTY_TURN_TEXT:
+            return "Previous conversation was summarized."
+        return content
     except Exception:
         return "Previous conversation was summarized."
 

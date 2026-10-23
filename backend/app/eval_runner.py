@@ -437,8 +437,16 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                 # context + tool outputs, captured now because re-retrieving
                 # at judge time would measure today's corpus, not this
                 # run's.
+                # The peers' block is part of what the model was given, so a
+                # peer-grounded answer is judged against it too - without it
+                # the faithfulness judge reads a correct peer-grounded answer
+                # as fabricated (the hole a port of this lane caught the same
+                # day it landed). Empty when no peer piece came back, so a
+                # hub-only run's grounding is the bytes it always was.
                 grounding = "\n\n---\n\n".join(
-                    ([context] if context else []) + tool_outputs)
+                    ([context] if context else [])
+                    + ([peer_context] if peer_context else [])
+                    + tool_outputs)
                 if response.startswith("[ERROR:"):
                     judge_score, judge_rationale = 0, "[answer errored - auto-fail]"
                     faithfulness, faith_rationale = None, "[answer errored - unjudged]"
