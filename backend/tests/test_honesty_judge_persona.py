@@ -33,6 +33,10 @@ def test_the_honesty_rubric_carries_the_hybrid_rule():
     assert ident in rubric and ident in judge_mod._FAITHFULNESS_SYSTEM
     assert ("work history) are NEVER supported by the persona prompt alone, even when "
             "stated in it verbatim") in rubric
+    # An aside counts, not only the demanded items: without this sentence a judge
+    # passed a persona-only duration offered beside a clean disclosure.
+    assert ("asked for or not: a date, duration, figure or receipt only the "
+            "persona states") in rubric
 
 
 def test_a_supplied_persona_rides_as_its_own_field(monkeypatch):
