@@ -179,11 +179,12 @@ def test_watcher_ingest_adds_before_it_prunes():
     """
     import inspect
     from app import ingest_sync as m
-    src = inspect.getsource(m._ingest_file)
+    # The body: _ingest_file is its per-source-locking wrapper.
+    src = inspect.getsource(m._ingest_file_locked)
     add_at = src.index("add_documents_batch(new_entries")
     prune_at = src.index("delete_documents(sorted(stale)")
     assert add_at < prune_at, (
-        "_ingest_file prunes before it adds - a failed embed loses the old generation")
+        "_ingest_file_locked prunes before it adds - a failed embed loses the old generation")
 
 
 def test_admin_cannot_reset_an_owners_mfa(client, admin_headers):

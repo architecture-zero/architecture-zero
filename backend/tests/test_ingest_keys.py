@@ -16,12 +16,16 @@ def test_subdir_sources_key_by_relative_path_and_purge_guards(tmp_path, monkeypa
     (kd / "handbook" / "a.md").write_text("handbook a", encoding="utf-8")
     (kd / "handbook" / "b.md").write_text("handbook b", encoding="utf-8")
 
-    ingested, purged = [], []
+    ingested, purged, by_name = [], [], []
     monkeypatch.setattr(main_mod, "KNOWLEDGE_DIR", str(kd))
     monkeypatch.setattr(main_mod, "_ingest_file",
                         lambda name, text: ingested.append(name) or 1)
-    monkeypatch.setattr(main_mod, "delete_source",
+    # The purge deletes only the chunks a file sync stamped; deleting by name
+    # alone would take an upload of the same name too (test_legacy_key_purge).
+    monkeypatch.setattr(main_mod, "delete_file_chunks",
                         lambda source, dept=None: purged.append(source))
+    monkeypatch.setattr(main_mod, "delete_source",
+                        lambda source, dept=None: by_name.append(source))
     monkeypatch.setattr(main_mod, "_load_ingest_state",
                         lambda: {"b.md": "legacy-fingerprint"})
     monkeypatch.setattr(main_mod, "_save_ingest_state", lambda state: None)
@@ -34,3 +38,4 @@ def test_subdir_sources_key_by_relative_path_and_purge_guards(tmp_path, monkeypa
     # legacy purge: handbook/b.md's old basename key is purged; handbook/a.md's is
     # NOT - the top-level a.md legitimately owns "a.md"
     assert purged == ["b.md"]
+    assert by_name == []

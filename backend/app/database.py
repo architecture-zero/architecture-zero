@@ -900,6 +900,24 @@ def delete_source(source: str, department: str | None = None):
         _invalidate_lexical_index(col.name)
 
 
+def delete_file_chunks(source: str, department: str | None = None):
+    """Delete only the chunks of a source that a file sync wrote - the ones
+    stamped from_file="true" - and leave any other chunk under that name.
+
+    delete_source removes every chunk keyed by a name, which is right for
+    removing a whole source and wrong for cleaning up one writer's leftovers:
+    an upload is keyed by its file name too, so a purge of a stale file-sync
+    key through delete_source also deleted any upload that shared the name."""
+    col = _existing_collection(department)
+    if col is None:
+        return  # nothing to delete from, and asking must not create one
+    results = col.get(where={"$and": [{"source": source}, {"from_file": "true"}]},
+                      include=["metadatas"])
+    if results["ids"]:
+        col.delete(ids=results["ids"])
+        _invalidate_lexical_index(col.name)
+
+
 def get_source_ids(source: str, department: str | None = None) -> list[str]:
     """All chunk ids currently indexed for a source. The read half of delta
     ingestion: ids are content-addressed, so comparing this set against the

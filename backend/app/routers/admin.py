@@ -15,6 +15,7 @@ second module-level binding of a name only one handler in this file reads - and
 that handler rebinds it locally anyway.
 """
 import os
+import sys
 import json
 import shutil
 import datetime as _dt
@@ -29,7 +30,7 @@ from app.config import get_config, set_config, get_all_config_masked
 from app.jwt_auth import require_owner, require_permission
 from app.permissions import is_owner
 from app.security import validate_outbound_url
-from app.logger import log
+from app.logger import log, log_error
 from app.runtime_config import (_config_or_default, _ollama_get, DEFAULT_MODEL,
                                 EVAL_JUDGE_MODEL_DEFAULT, MAX_CONTEXT_TOKENS,
                                 ENCRYPTION_AT_REST_VERIFIED, _DATA_DIR)
@@ -438,6 +439,36 @@ def run_backup(current_user: dict = Depends(require_owner)):
 
     stage_dir = os.path.join(_BACKUP_DIR, f"_stage_{timestamp}")
     os.makedirs(stage_dir, exist_ok=True)
+
+    # FLUSH THE VECTOR INDEX FIRST. The loop below snapshots every SQLite file
+    # through the backup API - chroma.sqlite3 included - but the HNSW vector
+    # segments are binary files copied with copytree, and chroma 0.5.23
+    # persists them only when a batch crosses its sync threshold. So the
+    # archive could pair an up-to-date chroma.sqlite3 with vector files missing
+    # their tail: metadata claiming vectors the index does not contain, which
+    # nothing reports until a restore is attempted.
+    #
+    # HONEST LIMIT: this narrows the window, it does not close it. A writer
+    # active DURING the copy can still advance past the flush - nothing pauses
+    # writers here, and the ingest locks are per-source by design.
+    #
+    # Only a process that holds the vector store has a tail to flush. The
+    # serving process does (app.database opens the client at import);
+    # scripts/backup_cron.py runs this function in a process of its own that
+    # never opens it, and importing app.database there would open a second
+    # client on a live store to flush nothing. That run logs the skip instead,
+    # and its archive keeps the exposure described above.
+    vector_store = sys.modules.get("app.database")
+    if vector_store is None:
+        log("backup_chroma_flush", skipped="vector store not open in this process")
+    else:
+        try:
+            log("backup_chroma_flush", **vector_store.flush_vector_segments())
+        except Exception as e:
+            # Never fail a backup over the flush - an unflushed archive still
+            # carries every SQLite file correctly, which is most of its value.
+            log_error("backup_chroma_flush_failed", error=str(e))
+
     try:
         for item in os.listdir(_DATA_DIR):
             if item == "backups":

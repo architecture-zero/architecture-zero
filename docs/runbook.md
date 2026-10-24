@@ -336,12 +336,19 @@ the chunks that did land are skipped rather than embedded a second time.
 
 Everything stateful lives in `backend/data/` (SQLite databases, the chroma
 vector index, ingest state). Two mechanisms:
-- On-demand: POST /api/admin/backup (Owner) writes a consistent snapshot
-  archive under `backend/data/backups/` - SQLite is snapshotted via the
-  backup API, safe against live writers; retention prunes old archives.
+- On-demand: POST /api/admin/backup (Owner) writes a snapshot archive under
+  `backend/data/backups/` - SQLite is snapshotted via the backup API, safe
+  against live writers; retention prunes old archives. The vector index's
+  files are plain copies, taken after the route flushes the index's unwritten
+  tail to disk - which narrows the window in which a live write leaves them
+  behind the database, but does not close it.
 - Scheduled: run `scripts/backup_cron.py` INSIDE the container from a host
   cron - `docker compose exec -T backend python /app/scripts/backup_cron.py`.
-  It takes the same snapshot as the button and writes `backup-status.json`.
+  It runs the same code as the button and writes `backup-status.json`, but in
+  a process of its own, which cannot reach the serving process's unwritten
+  tail: its `backup_chroma_flush` log line says `skipped`, and its vector
+  files can lag the database by that tail - the condition the boot's index
+  maintenance pass (above) looks for after a restore.
   It runs in-container on purpose: the endpoint is Owner-gated and the only
   credential this platform issues expires in 30 minutes, so a nightly curl
   would work once and 401 every night after.

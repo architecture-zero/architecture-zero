@@ -7,23 +7,26 @@ from one place.
 Direction is one-way: main -> ingest_sync, and main -> routers.kb -> ingest_sync.
 Nothing here imports app.main.
 
-_ingest_file and _sync_docs moved byte-for-byte and must stay that way. Three
-tests read them through inspect.getsource and assert on literal substrings and
-their ORDER - that add_documents_batch(new_entries appears before
-delete_documents(sorted(stale), that the token add_document( never appears, and
-that "docs_orphan_prune_failed" survives. Do not reflow them, do not rename
-their locals, and do not run a formatter over this file.
+_ingest_file_locked (the delta-ingest body; _ingest_file is the per-source
+locking wrapper in front of it) and _sync_docs moved byte-for-byte and must
+stay that way. Three tests read them through inspect.getsource and assert on
+literal substrings and their ORDER - that add_documents_batch(new_entries
+appears before delete_documents(sorted(stale), that the token add_document(
+never appears, and that "docs_orphan_prune_failed" survives. Do not reflow
+them, do not rename their locals, and do not run a formatter over this file.
 """
 import os
 import json
+import asyncio
 import hashlib
 import logging
 import pathlib
+import threading
 
 from app.chunking import (chunk_dated_markdown, chunk_markdown_sections,
                           CHUNKER_VERSION)
 from app.database import (add_documents_batch, list_sources, delete_source,
-                          get_source_ids, delete_documents)
+                          get_source_ids, delete_documents, delete_file_chunks)
 from app.logger import log, log_error
 from app.rag_config import dept_for_source as _dept_for_source
 
@@ -104,7 +107,57 @@ def _ingest_fingerprint(name: str, text: str) -> str:
 from app.rag_config import dept_for_source as _dept_for_source  # noqa: E402  (map lives in rag_config, shared with the file-tool gate)
 
 
+# -- Per-source ingest lock ----------------------------------------------------
+# The watcher and the manual sync - or two manual syncs - can reach the SAME
+# source at the same time, and a per-source ingest is not atomic: it purges the
+# general-dept residue, diffs chunk ids, then writes. Two of those interleaving
+# on one source can delete what the other just wrote, and concurrent writers on
+# one collection are the shape that corrupts an HNSW index; this takes the
+# same-source case of it off the table.
+#
+# PER-SOURCE, not global: different files are independent, and one global lock
+# would serialise a whole sync behind its slowest file for no safety gain. The
+# registry keeps one Lock per source name it has seen - a few bytes each.
+#
+# Every writer of a source takes that source's lock. In this module: the delta
+# ingest through _ingest_file (the watcher, the startup and manual syncs), the
+# watcher's delete, the docs orphan prune and the knowledge sync's legacy-key
+# purge - the last two re-check the disk once they hold it. Outside it: the
+# upload and the source-delete route (routers/kb.py), the quarantine release -
+# which re-checks that its row is still held once it holds the lock - and the
+# queued-ingest worker (app/jobs.py). /api/ingest writes one caller-named chunk
+# in a single upsert, with no diff to interleave, and does not take it.
+_ingest_locks: dict[str, threading.Lock] = {}
+_ingest_locks_guard = threading.Lock()
+
+
+# LOCK ORDER, fixed so nothing can deadlock: the upload's global
+# _UPLOAD_WRITE_LOCK (routers/kb.py), the one other lock in play, is always
+# taken BEFORE a source's lock and never while holding one; nothing holds two
+# source locks at once; and no other path - the file syncs, the watcher, the
+# prunes, the source delete, the quarantine release, the queued worker - takes
+# the global lock at all. Every holder runs off the event loop: a threadpool
+# route, the watcher's executor hop, the startup executor, the worker thread.
+def _source_lock(source: str) -> threading.Lock:
+    """The lock for one source. NEVER acquire it on the event loop: a blocking
+    acquire there, while a sync holds it, stalls every request for the length
+    of that ingest - which is why the watcher hops to an executor first."""
+    with _ingest_locks_guard:
+        return _ingest_locks.setdefault(source, threading.Lock())
+
+
 def _ingest_file(name: str, text: str) -> int:
+    """Serialised entry point - one writer per source at a time.
+
+    A thin wrapper so the body below keeps its shape. Every file-sync add path
+    funnels through here - the watcher, the startup syncs and the manual sync -
+    which is what makes one lock here sufficient for them.
+    """
+    with _source_lock(name):
+        return _ingest_file_locked(name, text)
+
+
+def _ingest_file_locked(name: str, text: str) -> int:
     """DELTA-ingest a single file into its department.
 
     Chunk ids are CONTENT-ADDRESSED - md5(dept::name::chunk-text) - not
@@ -228,11 +281,18 @@ def _sync_knowledge_dir(force: bool = True) -> dict:
             # no-op): purge the chunks + state entry this subdir file left
             # under its legacy BASENAME key - unless a top-level file
             # legitimately owns that name (then those chunks are ITS, not
-            # stale copies).
+            # stale copies). Under that key's lock, and re-checked there: a
+            # top-level file of this name written since the listing above is
+            # the watcher's to ingest, not this purge's to delete. Only the
+            # chunks a file sync stamped (from_file): an upload is keyed by
+            # its bare file name too, is no leftover of this sync, and
+            # delete_source would take it on every sync, boot included.
             if rel != p.name and p.name not in top_level:
-                delete_source(p.name, _dept_for_source(p.name))
-                if state.pop(p.name, None) is not None:
-                    _save_ingest_state(state)
+                with _source_lock(p.name):
+                    if not (pathlib.Path(KNOWLEDGE_DIR) / p.name).is_file():
+                        delete_file_chunks(p.name, _dept_for_source(p.name))
+                        if state.pop(p.name, None) is not None:
+                            _save_ingest_state(state)
             if (not force and state.get(rel) == _ingest_fingerprint(rel, text)
                     and indexed.get(rel) == _expected_chunk_count(rel, text)):
                 results[rel] = {"status": "skipped"}
@@ -382,7 +442,13 @@ def _prune_orphan_docs() -> dict:
         name = str(s.get("source", ""))
         if name.startswith("docs/") and name not in valid:
             dept = s.get("department") or "general"
-            delete_source(name, dept)
+            with _source_lock(name):
+                # Re-checked under the lock: a file of this name written back
+                # since the listing above is the watcher's to ingest, and
+                # deleting now would drop what it wrote.
+                if name in _valid_doc_sources():
+                    continue
+                delete_source(name, dept)
             deleted.append({"source": name, "department": dept, "count": s.get("count")})
     docs_in_index = sorted(
         ({"source": str(s.get("source")), "department": s.get("department"), "count": s.get("count")}
@@ -400,13 +466,16 @@ def _handle_watched_change(deleted: bool, p: pathlib.Path) -> None:
     source = (f"docs/{p.name}" if is_docs
               else pathlib.Path(os.path.relpath(p, KNOWLEDGE_DIR)).as_posix())
     if deleted and not p.exists():
-        dept = _dept_for_source(source)
-        delete_source(source, dept)
-        if dept != "general":
-            delete_source(source, "general")  # legacy pre-routing chunks
-        state = _load_ingest_state()
-        if state.pop(source, None) is not None:
-            _save_ingest_state(state)
+        # Same lock as the add path: a delete racing a sync's re-ingest of
+        # this source is the interleave the lock exists for.
+        with _source_lock(source):
+            dept = _dept_for_source(source)
+            delete_source(source, dept)
+            if dept != "general":
+                delete_source(source, "general")  # legacy pre-routing chunks
+            state = _load_ingest_state()
+            if state.pop(source, None) is not None:
+                _save_ingest_state(state)
         log("kb_file_deleted", file=source)
         return
     if deleted:
@@ -449,6 +518,14 @@ async def _watch_knowledge_dir():
             if _archive_dir in p.parents:
                 continue
             try:
-                _handle_watched_change(change_type == Change.deleted, p)
+                # OFF THE EVENT LOOP. An inline call here was already a latency
+                # bug - a slow re-embed froze every other request on the
+                # process - and the per-source lock makes it a correctness
+                # requirement: a blocking acquire on the loop, while a sync
+                # holds the lock, would stall the whole backend for the length
+                # of that ingest. Still awaited, so a batch's changes are
+                # handled one at a time and in order, as before.
+                await asyncio.get_running_loop().run_in_executor(
+                    None, _handle_watched_change, change_type == Change.deleted, p)
             except Exception as e:
                 log_error("kb_file_sync_error", file=str(p), error=str(e))

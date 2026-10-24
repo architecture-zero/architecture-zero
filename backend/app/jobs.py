@@ -199,6 +199,18 @@ def reconcile_orphaned_jobs() -> dict:
 
 def _run_ingest(job_id: str, filename: str, text: str, department: str,
                 extra_meta: dict | None = None) -> None:
+    """One writer per source: the job runs under its source's lock
+    (ingest_sync._source_lock), the lock the synchronous upload, the file
+    syncs, the source delete and the quarantine release take for the same
+    name. Never the upload's global lock - the lock order is written beside
+    _source_lock. Called on the worker thread, never on the event loop."""
+    from app.ingest_sync import _source_lock
+    with _source_lock(filename):
+        _run_ingest_locked(job_id, filename, text, department, extra_meta)
+
+
+def _run_ingest_locked(job_id: str, filename: str, text: str, department: str,
+                       extra_meta: dict | None = None) -> None:
     """Chunk, embed and diff one document against what is already indexed.
 
     extra_meta carries the endpoint's trust tier and its injection / PII tags

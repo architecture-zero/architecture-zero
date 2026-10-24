@@ -4,9 +4,9 @@ Eighth router out of main.py. Same rules: no prefix, full literal paths, guards
 verbatim on the handlers, never `from app.main import ...`.
 
 The ingest-sync machinery this router calls into (_sync_knowledge_dir,
-_sync_docs, _prune_orphan_docs, KNOWLEDGE_DIR, _WATCHED_EXTS) now lives in
-app/ingest_sync.py, which main's startup hooks drive as well. Both import it;
-neither re-exports it.
+_sync_docs, _prune_orphan_docs, _source_lock, KNOWLEDGE_DIR, _WATCHED_EXTS)
+now lives in app/ingest_sync.py, which main's startup hooks drive as well. Both
+import it; neither re-exports it.
 
 MAX_UPLOAD_MB and _UPLOAD_CHUNK_BYTES move here rather than to runtime_config:
 the upload handler is their only reader. tests/test_review_remediation imports
@@ -34,7 +34,7 @@ from app.database import (add_document, list_sources, delete_source,
                           delete_documents)
 from app.db import get_session
 from app.ingest_sync import (KNOWLEDGE_DIR, _WATCHED_EXTS, _sync_knowledge_dir,
-                             _sync_docs, _prune_orphan_docs)
+                             _sync_docs, _prune_orphan_docs, _source_lock)
 from app.jwt_auth import require_owner, require_permission
 from app.logger import log, log_error
 from app.metrics import increment
@@ -161,52 +161,63 @@ def admin_release_quarantine(item_id: int,
         doc_id = hashlib.md5(f"{department}::{source}::{chunk}".encode(),
                              usedforsecurity=False).hexdigest()
         desired.setdefault(doc_id, (i, chunk))
-    existing = set(get_source_ids(source, department))
-    added_ids: list[str] = []
-    try:
-        for doc_id, (i, chunk) in desired.items():
-            if doc_id in existing:
-                continue
-            add_document(doc_id, chunk, {"source": source, "chunk": i, **meta},
-                         department=department, quarantine_exempt=True)
-            added_ids.append(doc_id)
-        stale = sorted(existing - desired.keys())
-        if stale:
-            delete_documents(stale, department)
-    except Exception as e:
-        # Stay held and say why. A failed release that reports success is the
-        # worst outcome here: the operator believes reviewed content is live
-        # and searchable when it is neither.
-        #
-        # And UNDO the adds. "Held" is a claim that this content is not
-        # searchable; add-then-prune means a failure in the prune leaves the
-        # new chunks already indexed, so without this rollback the panel would
-        # say held while the quarantined text was live in retrieval - the
-        # exact inversion the quarantine exists to prevent. Add-then-prune is
-        # the right order for durability of content the user WANTS indexed;
-        # withheld content wants the opposite guarantee.
-        if added_ids:
-            try:
-                delete_documents(added_ids, department)
-            except Exception:
-                logger.exception(
-                    "quarantine release rollback FAILED for %s - %d chunks may be "
-                    "indexed while the item reads held", source, len(added_ids))
+    # Under the source's lock (ingest_sync._source_lock) from the index read to
+    # the status write: an upload of this source running beside the re-ingest
+    # would interleave the two diffs. The hold is re-checked once the lock is
+    # held - an upload that finished while this waited superseded it, and
+    # releasing it now would put the old text back over the new.
+    with _source_lock(source):
+        with get_session() as db:
+            r = db.get(QuarantinedDoc, item_id)
+            if not r or r.status != "held":
+                raise HTTPException(status_code=404, detail="No held quarantine item with that id.")
+        existing = set(get_source_ids(source, department))
+        added_ids: list[str] = []
+        try:
+            for doc_id, (i, chunk) in desired.items():
+                if doc_id in existing:
+                    continue
+                add_document(doc_id, chunk, {"source": source, "chunk": i, **meta},
+                             department=department, quarantine_exempt=True)
+                added_ids.append(doc_id)
+            stale = sorted(existing - desired.keys())
+            if stale:
+                delete_documents(stale, department)
+        except Exception as e:
+            # Stay held and say why. A failed release that reports success is
+            # the worst outcome here: the operator believes reviewed content is
+            # live and searchable when it is neither.
+            #
+            # And UNDO the adds. "Held" is a claim that this content is not
+            # searchable; add-then-prune means a failure in the prune leaves the
+            # new chunks already indexed, so without this rollback the panel
+            # would say held while the quarantined text was live in retrieval -
+            # the exact inversion the quarantine exists to prevent.
+            # Add-then-prune is the right order for durability of content the
+            # user WANTS indexed; withheld content wants the opposite guarantee.
+            if added_ids:
+                try:
+                    delete_documents(added_ids, department)
+                except Exception:
+                    logger.exception(
+                        "quarantine release rollback FAILED for %s - %d chunks may be "
+                        "indexed while the item reads held", source, len(added_ids))
+            with get_session() as db:
+                r = db.get(QuarantinedDoc, item_id)
+                if r:
+                    r.release_error = str(e)[:500]
+            log_error("quarantine_release_failed", quarantine_id=item_id,
+                      source=source, admin_id=current_user["id"], error=str(e))
+            raise HTTPException(status_code=500,
+                                detail="Release failed; item remains held. See logs.")
+        # Indexed. Only now is it released - still under the lock, so no
+        # upload can supersede the hold between the index write and this.
         with get_session() as db:
             r = db.get(QuarantinedDoc, item_id)
             if r:
-                r.release_error = str(e)[:500]
-        log_error("quarantine_release_failed", quarantine_id=item_id,
-                  source=source, admin_id=current_user["id"], error=str(e))
-        raise HTTPException(status_code=500,
-                            detail="Release failed; item remains held. See logs.")
-    # Indexed. Only now is it released.
-    with get_session() as db:
-        r = db.get(QuarantinedDoc, item_id)
-        if r:
-            r.status = "released"
-            r.reviewed_at = _dt.datetime.utcnow().isoformat()
-            r.release_error = None
+                r.status = "released"
+                r.reviewed_at = _dt.datetime.utcnow().isoformat()
+                r.release_error = None
     log("quarantine_released", quarantine_id=item_id, source=source,
         admin_id=current_user["id"], chunks=len(chunks))
     return {"status": "released", "source": source, "chunks": len(chunks)}
@@ -369,7 +380,11 @@ def remove_source(source: str, department: str | None = None, current_user: dict
     # the next boot anyway) - the reserved name is refused here too.
     from app.help_docs import refuse_reserved_department
     refuse_reserved_department(department)
-    delete_source(source, department=department)
+    # Under the source's lock (ingest_sync._source_lock): a delete landing
+    # mid-upload of the same source took the chunks written so far and left
+    # the rest of the file indexed behind it.
+    with _source_lock(source):
+        delete_source(source, department=department)
     return {"status": "deleted", "source": source, "department": department or "general"}
 
 
@@ -415,7 +430,10 @@ async def upload_file(
 # interleave their set diffs against the same index: one prunes what the
 # other just added. The queued path is serial by its single worker
 # (app/jobs.py); this is the same rule for the synchronous one. Extraction and
-# the scans run outside it - they touch no index.
+# the scans run outside it - they touch no index. Inside it the upload also
+# takes its source's lock (ingest_sync._source_lock), which every other writer
+# of that source name takes too - and always in that order, this lock first
+# (the lock order is written beside _source_lock).
 _UPLOAD_WRITE_LOCK = threading.Lock()
 
 
@@ -528,7 +546,8 @@ def _ingest_upload(name: str, ext: str, data: bytes, department: str,
         doc_id = hashlib.md5(f"{department}::{name}::{chunk}".encode(),
                              usedforsecurity=False).hexdigest()
         desired.setdefault(doc_id, (i, chunk))
-    with _UPLOAD_WRITE_LOCK:
+    # The global lock first, then the source's - the fixed order.
+    with _UPLOAD_WRITE_LOCK, _source_lock(name):
         existing = set(get_source_ids(name, department))
         try:
             for doc_id, (i, chunk) in desired.items():

@@ -45,8 +45,9 @@ class Harness:
                                                     self.index.difference_update(ids)))
         monkeypatch.setattr(main_mod, "delete_source", lambda source, dept=None: None)
         # No add_document patch: ingest_sync deliberately does not import it,
-        # which is what lines 67-68 below assert about _ingest_file. Retargeting
-        # this would raise; removing it is the fix.
+        # which is what test_ingest_file_uses_the_batch_write_shape asserts
+        # about the ingest body. Retargeting this would raise; removing it is
+        # the fix.
 
         # _ingest_file writes new chunks through the BATCH shape (one embed
         # round trip per slice); the harness records the same per-chunk facts
@@ -65,8 +66,11 @@ def test_ingest_file_uses_the_batch_write_shape():
     # exists != wired: a batch write path can land in the codebase while the
     # file delta path stays serial. The delta path must write through the
     # batch shape, or every changed file pays one embed round trip per chunk.
+    # Reads the BODY, not the entry point: _ingest_file is the thin
+    # per-source-locking wrapper in front of _ingest_file_locked and holds no
+    # write of its own. The property is unchanged - only the function read moved.
     import inspect
-    src = inspect.getsource(main_mod._ingest_file)
+    src = inspect.getsource(main_mod._ingest_file_locked)
     assert "add_documents_batch(" in src
     assert "add_document(" not in src.replace("add_documents_batch(", "")
 
