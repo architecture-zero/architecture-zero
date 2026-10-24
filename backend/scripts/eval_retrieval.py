@@ -93,7 +93,7 @@ def _acquire_lock() -> bool:
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.eval_runner import _score_retrieval  # noqa: E402  (module init is idempotent)
+from app.eval_runner import _score_retrieval, _source_matches  # noqa: E402  (module init is idempotent)
 from app.db import get_session          # noqa: E402
 from app.models import EvalQuestion     # noqa: E402
 from app.rerank import retrieve         # noqa: E402
@@ -176,8 +176,10 @@ def _needles(expected_source: str) -> list[str]:
 
 
 def _matches(needle: str, source: str) -> bool:
-    s = source.lower()
-    return needle in s or s.rsplit("/", 1)[-1] == needle.rsplit("/", 1)[-1]
+    """The scorer's own rule (eval_runner._source_matches), not a copy of it:
+    a separate copy keeps the old rule whenever the scorer changes, and the
+    pre-flight and nDCG then disagree with recall."""
+    return _source_matches(needle, source)
 
 
 def fetch_questions():

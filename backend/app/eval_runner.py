@@ -118,8 +118,7 @@ def _score_retrieval(expected_source: str | None, retrieved_sources: list[str]) 
 
     Matching is basename-aware because a descriptive expected_source like
     "local:handbook/onboarding.md" must still hit a retrieved source named
-    just "onboarding.md". We match if the needle is a substring of the
-    source OR their basenames are equal."""
+    just "onboarding.md" - see _source_matches for exactly when."""
     if not expected_source:
         return None, None
     # A fact can legitimately live in more than one file (corpus
@@ -134,12 +133,35 @@ def _score_retrieval(expected_source: str | None, retrieved_sources: list[str]) 
     if not needles:
         return None, None
     for i, src in enumerate(retrieved_sources, start=1):
-        s = (src or "").lower()
-        s_base = s.rsplit("/", 1)[-1]
         for nd in needles:
-            if nd in s or s_base == nd.rsplit("/", 1)[-1]:
+            if _source_matches(nd, src or ""):
                 return 1, i
     return 0, None
+
+
+def _source_matches(needle: str, source: str) -> bool:
+    """Does a retrieved source satisfy one expected-source needle (lowercased,
+    scheme stripped)?
+
+    - The needle appears in the source path: a hit.
+    - The same FILE NAME is a hit only when the two paths cannot disagree: one
+      side is a bare name (ingestion may store a file without its folder), or
+      the needle's folder is the source's folder or an ancestor of it (an
+      expected "docs/<name>" still matches "docs/sub/<name>").
+    Two files that only share a name in DIFFERENT folders are not a hit:
+    "handbook/README.md" is not satisfied by "policies/README.md". The old rule
+    (any equal file name) counted that as recall, so a common name like
+    README.md scored whichever README the retriever happened to keep."""
+    s = source.lower()
+    if needle in s:
+        return True
+    n_dir, _, n_base = needle.rpartition("/")
+    s_dir, _, s_base = s.rpartition("/")
+    if n_base != s_base:
+        return False
+    if not n_dir or not s_dir:
+        return True
+    return s_dir == n_dir or s_dir.startswith(n_dir + "/")
 # In-memory progress registry for background eval runs (single uvicorn
 # worker).
 _eval_runs: dict = {}

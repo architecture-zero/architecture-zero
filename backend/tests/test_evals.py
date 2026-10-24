@@ -282,6 +282,25 @@ def test_score_retrieval_multi_source_and_basename():
     assert _score_retrieval(None, ["anything.md"]) == (None, None)
 
 
+def test_score_retrieval_a_shared_file_name_in_another_folder_is_a_miss():
+    """Two files that only share a name in different folders are different
+    documents: the old any-equal-name rule scored a README the retriever kept
+    as recall for whichever README the question expected."""
+    from app.eval_runner import _score_retrieval
+
+    assert _score_retrieval("local:handbook/README.md", ["policies/README.md"]) == (0, None)
+    # The right folder still hits, wherever the file sits in the list.
+    assert _score_retrieval("local:handbook/README.md",
+                            ["policies/README.md", "handbook/README.md"]) == (1, 2)
+    # A folder label still matches its own subfolders (an expected docs/<name>
+    # with the file filed under docs/sub/), and a bare name either side matches.
+    assert _score_retrieval("local:docs/guide.md", ["docs/learning/guide.md"]) == (1, 1)
+    assert _score_retrieval("local:guide.md", ["docs/learning/guide.md"]) == (1, 1)
+    assert _score_retrieval("local:handbook/staff-directory.md", ["staff-directory.md"]) == (1, 1)
+    # A sibling folder whose name merely STARTS like the label's is not inside it.
+    assert _score_retrieval("local:docs/guide.md", ["docs-old/guide.md"]) == (0, None)
+
+
 def test_safety_rules_exist_and_cover_both_prompt_paths():
     """The portable guardrail block must cover the three failure modes the
     measured runs exposed, and chat + eval must BOTH carry it (the eval
