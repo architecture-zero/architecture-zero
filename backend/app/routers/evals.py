@@ -407,7 +407,8 @@ def list_eval_runs(current_user: dict = Depends(require_owner)):
         # shortfall can no longer be seen here (run-status says `known: false`).
         reason = None
         if run["total"] and run["errored"] == run["total"]:
-            reason = "every answer errored - check the provider/model config"
+            reason = ("every answer errored - check the provider/model config and the "
+                      "knowledge base (each row names its error)")
         else:
             st = _eval_runs.get(run["run_id"]) or {}
             expected = st.get("total")

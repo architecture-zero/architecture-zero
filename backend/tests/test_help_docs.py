@@ -179,6 +179,13 @@ class _Col:
     def get(self, include=None, **kw):
         return {"metadatas": [{"source": f"{self.name}-doc"}] * self._count}
 
+    def query(self, *a, **kw):
+        # A search that answers, with nothing in it. query_similar raises
+        # RetrievalUnavailable when every collection it queries fails, so a
+        # stub with no search at all would read as an index outage - and these
+        # tests assert which collections are OPENED, not what they hold.
+        return {"ids": [[]], "documents": [[]], "distances": [[]], "metadatas": [[]]}
+
 
 class _Client:
     def __init__(self, cols):

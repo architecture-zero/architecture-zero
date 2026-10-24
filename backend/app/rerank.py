@@ -415,7 +415,11 @@ def retrieve(query: str, department: str | None = None, top_k: int | None = None
     can't pull higher-tier KB content (e.g. the Owner-only session log) into
     an answer. The security boundary is the untrusted edge (the chat handler),
     which ALWAYS passes the real level; internal/trusted callers (eval, status
-    tools, offline scripts) omit it and get full access."""
+    tools, offline scripts) omit it and get full access.
+
+    database.RetrievalUnavailable from query_similar (every queried collection
+    failed) propagates on purpose: an outage is each caller's to say as one,
+    never to read as an empty result."""
     from app.database import query_similar
     from app.routing import route_departments, is_status_query
     from app.rag_config import department_min_level, FLOOR_DEPARTMENTS

@@ -35,7 +35,8 @@ from app.agent import get_active_tools, execute_tool
 from app.audit import log_audit_entry
 from app.closing_stream import ClosingStreamingResponse
 from app.config import get_config, get_system_prompt
-from app.database import query_similar, list_departments, HELP_DEPARTMENT
+from app.database import (query_similar, list_departments, HELP_DEPARTMENT,
+                          RetrievalUnavailable)
 from app.history import (save_message, load_history,
                          delete_tail_messages, upsert_session_meta,
                          get_session_meta, delete_session_meta)
@@ -261,7 +262,19 @@ def query_kb_for_peer(req: Request, q: str, n: int = Query(8, ge=1, le=20)):
                             detail="Peer KB serving is not enabled on this instance.")
     departments = [d for d in list_departments()
                    if d != "general" and department_min_level(d) <= level]
-    results = query_similar(q, n_results=n, department=departments or None)
+    try:
+        results = query_similar(q, n_results=n, department=departments or None)
+    except RetrievalUnavailable as e:
+        # The index is DOWN, not empty. Served as 200 with no results it read
+        # to the asking instance as "nothing relevant here" and was recorded
+        # there as a healthy answer; a 503 is recorded as this peer failing,
+        # so its breaker learns it. The detail names nothing - the collection
+        # names in the error are department names, which this key's scope may
+        # not cover - and the full error goes to this instance's log.
+        increment("retrieval_unavailable_total")
+        log_error("peer_kb_unavailable", scope=scope, error=str(e))
+        raise HTTPException(status_code=503,
+                            detail="This instance's knowledge base is unavailable right now.")
     # NOT `level=` - app/logger.py's formatter writes the severity under that
     # key and then update()s the caller's fields over it, so a clearance rung
     # would silently replace "INFO" with an integer on exactly the events an
@@ -571,6 +584,10 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
     prompt = request.prompt
     rag_sources: list[str] = []
     rag_refused = False
+    # Set when retrieval raised RetrievalUnavailable: the corpus could not be
+    # read this turn, which must never be spoken as "I don't have that
+    # information".
+    retrieval_down = False
     dept = current_user.get("department", "general") if current_user else None
     # THE HELP LANE (2026-09-21): department="help" asks about the assistant
     # itself. Honoured for EVERY caller the gate above admitted - a guest
@@ -640,9 +657,21 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
         # keeps its exact keyword set, which the retrieval stubs in the suite
         # pin.
         _scope = {"only_department": True} if help_mode else {}
-        context_results = await asyncio.get_running_loop().run_in_executor(
-            None, lambda: retrieve(retrieval_query, department=dept,
-                                   user_level=caller_level, stats=_rr_stats, **_scope))
+        try:
+            context_results = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: retrieve(retrieval_query, department=dept,
+                                       user_level=caller_level, stats=_rr_stats, **_scope))
+        except RetrievalUnavailable as e:
+            # An OUTAGE is not an empty corpus. A down index used to come back
+            # as [], which fell through to the RAG-only refusal and told the
+            # user "I don't have relevant information" - a confident claim
+            # about the corpus, made on behalf of a system fault. The turn
+            # goes on with no local context (a peer may still answer it); the
+            # answer below decides what to say.
+            logger.error("retrieval unavailable for this turn: %s", e)
+            increment("retrieval_unavailable_total")
+            retrieval_down = True
+            context_results = []
         # Filter by similarity threshold - always, not just in RAG_ONLY_MODE
         context_results = [r for r in context_results if r.get("score", 0) >= rag_threshold]
         if context_results:
@@ -767,9 +796,19 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
                 "Answer from this context - do not offer to read files or fetch additional information.\n\n"
                 f"{blocks}QUESTION: {prompt}"
             )
-    if use_rag and (RAG_ONLY_MODE or help_mode) and not context_results and not peer_chunks:
+    # A LOCAL OUTAGE THAT NO PEER COVERED is said as an outage (in generate(),
+    # before the refusal). A turn a peer's piece reached is a PARTIAL outage,
+    # and answers from that piece - narrower, not wrong - by the same rule as
+    # a partial index failure, which returns its surviving collections. The
+    # outage is said whatever the mode: with no context the grounding rules
+    # have the model say "not on record", the same false claim in its own
+    # words.
+    retrieval_outage = retrieval_down and not peer_chunks
+    if (use_rag and (RAG_ONLY_MODE or help_mode) and not context_results and not peer_chunks
+            and not retrieval_outage):
         # Refused only once BOTH lanes came back empty (the help lane never
-        # asks a peer, so its refusal is the local lane's, as it was).
+        # asks a peer, so its refusal is the local lane's, as it was) - and
+        # never for an outage, which is not a gap in the corpus.
         rag_refused = True
 
     uid = current_user["id"] if current_user else None
@@ -784,9 +823,32 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
 
     log("chat_request", session_id=request.session_id, model=request.model,
         use_rag=use_rag, rag_sources=rag_sources, rag_refused=rag_refused,
-        help_mode=help_mode)
+        retrieval_down=retrieval_down, help_mode=help_mode)
 
     def generate():
+        if retrieval_outage:
+            # Checked BEFORE rag_refused on purpose: both lanes arrive here with
+            # no context, and only the retrieval flag knows the difference
+            # between "the corpus does not cover it" and "the corpus could not
+            # be read". Saying the first when the second is true is an
+            # authoritative-sounding answer about the system's own state that
+            # is false. The id is logged first and the row saved before
+            # anything is sent - past the save the turn is a stored answer
+            # (the refusal lane's rule below), so nothing after it may fail.
+            error_id = uuid.uuid4().hex[:12]
+            log_error("retrieval_unavailable", session_id=request.session_id,
+                      error_id=error_id)
+            outage = (
+                "I could not reach my knowledge base for this question, so I can't answer "
+                "from it right now. This is a fault on my side, not a gap in what I know - "
+                "the same question may work once the index is back. "
+                f"Reference: {error_id}"
+            )
+            save_message(request.session_id, "assistant", outage, request.model, user_id=uid)
+            yield f"data: {json.dumps({'token': outage})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
         if rag_refused:
             if help_mode:
                 refusal = (

@@ -43,7 +43,8 @@ def _case(client, headers, rows, errored=0, registry=None):
 def test_a_run_whose_answers_all_errored_is_marked_broken(client, admin_headers):
     run = _case(client, admin_headers, 3, errored=3)
     assert run["errored"] == 3
-    assert run["invalid_reason"] == "every answer errored - check the provider/model config"
+    assert run["invalid_reason"] == ("every answer errored - check the provider/model config and the "
+                                     "knowledge base (each row names its error)")
 
 
 def test_a_run_that_died_partway_is_marked_incomplete(client, admin_headers):

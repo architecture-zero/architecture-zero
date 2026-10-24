@@ -222,7 +222,8 @@ def main() -> int:
                          "base to federated peers")
     args = ap.parse_args()
 
-    from app.database import delete_source, list_sources, count_documents
+    from app.database import (delete_source, list_sources, count_documents,
+                              RetrievalUnavailable)
     from app.rerank import retrieve, format_context
     from app.permissions import OWNER_LEVEL
     from app import corpus_scan
@@ -328,7 +329,16 @@ def main() -> int:
             results = []
             for probe in PROBES:
                 q = probe["question"]
-                hits = retrieve(q, department=dept, user_level=OWNER_LEVEL)
+                try:
+                    hits = retrieve(q, department=dept, user_level=OWNER_LEVEL)
+                except RetrievalUnavailable as e:
+                    # The index is DOWN. Read as [] the arm would grade answers
+                    # given no context and end on "never retrieved the
+                    # poisoned doc" - an outage reported as a fixture problem.
+                    # The finally below still removes what was planted.
+                    print(f"ABORT: retrieval unavailable ({e}) - arm '{arm_name}' "
+                          f"cannot be measured with the index down.")
+                    return 1
                 reached = any(r.get("source") == SOURCE for r in hits)
                 context = format_context(hits) if hits else ""
                 answer = _answer(q, context, args.model)

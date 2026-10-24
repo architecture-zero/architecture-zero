@@ -98,7 +98,7 @@ from app.eval_runner import (  # noqa: E402  (module init is idempotent)
 from app.db import get_session          # noqa: E402
 from app.models import EvalQuestion     # noqa: E402
 from app.rerank import retrieve         # noqa: E402
-from app.database import list_sources   # noqa: E402
+from app.database import RetrievalUnavailable, list_sources   # noqa: E402
 
 PAUSE = float(os.getenv("EVAL_QUESTION_PAUSE_SECONDS", "2.0"))
 
@@ -482,7 +482,18 @@ def run_cohort(questions, top_k, misses_only, label="", stamp=False):
 
             slice_ms.pop("last", None)
             t0 = time.time()
-            results = retrieve(query, top_k=top_k)
+            try:
+                results = retrieve(query, top_k=top_k)
+            except RetrievalUnavailable as e:
+                # The index is DOWN (every queried collection failed). Scored,
+                # the rest of the pass would count the outage as misses and
+                # publish it as a retrieval regression - so the pass aborts
+                # like a mislabelled arm: nothing stamped, and an A/B stops
+                # with its config restored.
+                print(f"  ABORT: retrieval unavailable ({e}) - a pass with the "
+                      f"index down measures the outage, not retrieval. Nothing "
+                      f"recorded.", flush=True)
+                return None
             retrieve_times.append(int((time.time() - t0) * 1000))
             if "last" in slice_ms:
                 rerank_times.append(slice_ms["last"])

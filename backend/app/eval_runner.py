@@ -252,6 +252,15 @@ def _peer_pieces(query: str, as_level) -> list[dict]:
     return peer_boundary.select(query, sent, threshold, rank=rerank, on_event=log, report={})
 
 
+# What a row records when retrieval was DOWN for its question (every queried
+# collection failed - database.RetrievalUnavailable). The "[ERROR:" prefix
+# makes it an errored row wherever rows are counted (the runs list, the
+# retrieval script's error-adjusted band); the rest names the cause, so the
+# row is never read as the model's fault or as a gap in the corpus.
+RETRIEVAL_DOWN_RESPONSE = ("[ERROR: retrieval unavailable - the knowledge base could not "
+                           "be read for this question]")
+
+
 def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                   use_rag: bool, n_results: int, retrieval_only: bool,
                   use_peers: bool = False):
@@ -337,11 +346,14 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
             retrieved: list[dict] = []
             context = ""
             peer_context = ""
+            # Set when retrieval raised RetrievalUnavailable for this question.
+            retrieval_down = False
             if use_rag:
                 # Same retrieve-wide -> rerank pipeline the chat uses, so the
                 # eval measures the real system. n_results = how many to keep
                 # after rerank.
                 from app.rerank import retrieve
+                from app.database import RetrievalUnavailable
                 # A question can be asked AS a clearance level (as_level).
                 # None = Owner/full access (the trusted-caller default), so
                 # existing questions are unchanged; the tier-isolation cohort
@@ -354,8 +366,19 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                 from app.routing import resolve_followup
                 retrieval_query = (resolve_followup(question_text, setup_turns)
                                    if setup_turns else question_text)
-                context_results = retrieve(retrieval_query, top_k=n_results,
-                                           user_level=q.get("as_level"))
+                try:
+                    context_results = retrieve(retrieval_query, top_k=n_results,
+                                               user_level=q.get("as_level"))
+                except RetrievalUnavailable as e:
+                    # The index was DOWN for this question - an outage, not an
+                    # empty corpus. Uncaught, it would end the whole run on
+                    # the first such question; read as [] it would score a
+                    # recall miss. The row records the outage instead (below),
+                    # and the run goes on.
+                    log_error("eval_retrieval_unavailable", run_id=run_id,
+                              question_id=q.get("id"), error=str(e))
+                    retrieval_down = True
+                    context_results = []
                 if context_results:
                     # Keep the rerank_score per chunk so a miss is
                     # diagnosable: was the answer doc absent from the
@@ -374,7 +397,9 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
             # not RAG is on), and with the question's own words (the chat sends
             # a peer request.prompt, not the follow-up resolved for local
             # retrieval) - 2026-10-23, found by a fork's port of this lane.
-            if use_peers:
+            # Not on an outage row: that row records the outage whatever a
+            # peer holds (see the verdict below), so the peers are not asked.
+            if use_peers and not retrieval_down:
                 peer_chunks = _peer_pieces(question_text, q.get("as_level"))
                 for c in peer_chunks:
                     retrieved.append({"source": c.get("source", "unknown"),
@@ -384,7 +409,12 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                     from app.rerank import format_peer_context
                     peer_context = format_peer_context(peer_chunks)
 
-            hit, rank = _score_retrieval(q.get("expected_source"), retrieved_sources)
+            # An outage row has no recall verdict: hit 0 would count it a miss
+            # and put the question on the Gaps list, sending the operator to
+            # tune retrieval for an index that was down. None leaves it out
+            # of recall the way a question with nothing to score is.
+            hit, rank = ((None, None) if retrieval_down
+                         else _score_retrieval(q.get("expected_source"), retrieved_sources))
             # The owner removed this question's answer on purpose
             # (RETIRED_SOURCES): it is graded as a knows-it's-gone check
             # below, and the None hit above already leaves it out of recall.
@@ -401,7 +431,20 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
             faith_rationale: str | None = None
             freshness: int | None = None
             fresh_rationale: str | None = None
-            if retrieval_only:
+            if retrieval_down:
+                # A measurement taken with the local index down is not a
+                # measurement of the system, so the row says outage - even
+                # where a peer held the source, which the chat would have
+                # answered from. No answer is written: on a turn no peer
+                # covered, the chat says the outage instead of calling the
+                # model. In answer mode the row auto-fails like any answer the
+                # user never got (the errored-answer rule below).
+                response = RETRIEVAL_DOWN_RESPONSE
+                if not retrieval_only:
+                    judge_score, judge_rationale = 0, "[answer errored - auto-fail]"
+                    faithfulness, faith_rationale = None, "[answer errored - unjudged]"
+                    freshness, fresh_rationale = None, "[answer errored - unjudged]"
+            elif retrieval_only:
                 response = "[retrieval-only]"
             else:
                 prompt = question_text

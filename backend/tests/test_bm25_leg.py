@@ -233,11 +233,24 @@ def test_knn_retry_halves_k_instead_of_dropping_the_vector_leg(monkeypatch):
     assert col.asked == [3, 1], "k halves from min(fetch_k, count) until accepted"
 
 
-def test_unrelated_query_errors_still_skip_the_collection(monkeypatch):
+def test_unrelated_query_errors_do_not_retry_loop_or_crash(monkeypatch):
+    """The original point holds: a failing query must not spin the halving
+    retry or crash the caller.
+
+    The assertion changed. It was `out == []`, which pinned the defect: with
+    one collection, a failed query is a TOTAL failure, and [] made an outage
+    indistinguishable from an empty corpus - which RAG_ONLY_MODE then spoke to
+    the user as "I don't have relevant information". Raising the named outage
+    is the fix (test_retrieval_degraded.py); a clean, immediate raise still
+    proves there was no retry loop and no crash."""
     class BrokenCol(FakeCol):
+        asked = 0
+
         def query(self, *a, **kw):
+            BrokenCol.asked += 1
             raise ValueError("boom")
 
     _use(monkeypatch, BrokenCol("knowledge_base", _corpus_col().rows))
-    out = query_similar("expedited surcharge", n_results=5)
-    assert out == []  # skipped cleanly - no retry loop, no crash
+    with pytest.raises(database.RetrievalUnavailable):
+        query_similar("expedited surcharge", n_results=5)
+    assert BrokenCol.asked == 1  # asked once - no retry loop

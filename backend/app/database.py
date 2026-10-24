@@ -665,6 +665,17 @@ def add_documents_batch(entries: list[tuple[str, str, dict]],
     return len(ids)
 
 
+class RetrievalUnavailable(RuntimeError):
+    """Every queried collection failed - retrieval is DOWN, not empty.
+
+    Exists so callers can tell an infrastructure outage from "the corpus has
+    nothing on this". Without it the two are the same value ([]), and the chat
+    path speaks an outage to the user as a confident "I don't have that
+    information". Raised only on TOTAL failure; a partial failure returns the
+    surviving candidates, because those are real.
+    """
+
+
 def _fetch_k(n_results: int) -> int:
     """How many candidates query_similar asks each collection for: twice what
     its caller keeps, never fewer than ten. The lane probe asks each
@@ -706,13 +717,28 @@ def query_similar(query: str, n_results: int = 5,
     only_department=True reads the named department's collection ALONE, with
     no global merge - the help lane (2026-09-21): product help must never be
     answered from the operator's documents, and it is the one caller that
-    wants exactly one collection."""
-    embedding = _embed(query)
+    wants exactly one collection.
+
+    Raises RetrievalUnavailable on an outage - the query could not be
+    embedded, or a collection failed and none that answered returned a
+    candidate - which each caller must say as one, never as an empty result.
+    A collection that failed beside one that returned candidates costs only
+    its own candidates."""
+    try:
+        embedding = _embed(query)
+    except Exception as e:
+        # Nothing can be searched without the query's vector: a TOTAL outage,
+        # said as one - not a bare error that hides the cause, and never an
+        # empty result read as "nothing on this".
+        raise RetrievalUnavailable(
+            "retrieval unavailable: the query could not be embedded (%s)"
+            % type(e).__name__) from e
     fetch_k = _fetch_k(n_results)
 
     all_docs: list[str] = []
     all_distances: list[float] = []
     all_metas: list[dict] = []
+    failed_collections: list[str] = []
 
     departments = [department] if isinstance(department, str) else list(department or [])
     collections_to_query = [] if only_department else [_get_collection()]  # global unless scoped
@@ -745,6 +771,16 @@ def query_similar(query: str, n_results: int = 5,
             # Don't hide infrastructure failures behind an empty result - a
             # down/corrupt Chroma otherwise reads as "no knowledge found" in
             # chat.
+            #
+            # Logging and continuing alone IS hiding it: the caller receives
+            # [] and cannot tell "the corpus has nothing on this" from "the
+            # index is down", and in RAG_ONLY_MODE the chat path turns [] into
+            # its refusal - an OUTAGE spoken to the user as a confident claim
+            # about the corpus. So each failure is counted here and a TOTAL
+            # failure raises below. A PARTIAL failure still degrades quietly
+            # on purpose: the surviving collections returned real candidates,
+            # so the answer is narrower rather than wrong.
+            failed_collections.append(getattr(col, "name", "?"))
             log.warning("query_similar: query failed on collection %s: %s", getattr(col, "name", "?"), e)
             continue
 
@@ -769,6 +805,19 @@ def query_similar(query: str, n_results: int = 5,
         except Exception as e:
             log.warning("query_similar: BM25 leg failed on collection %s: %s",
                         getattr(col, "name", "?"), e)
+
+    # An outage, not an empty corpus, whenever a collection failed and no
+    # collection that answered returned a candidate: every one failed, or the
+    # ones that did not are empty (an empty collection is skipped above, so a
+    # failed department beside an empty global would otherwise come back as
+    # [] and be narrated as missing knowledge). A failure beside a collection
+    # that returned candidates stays partial: those candidates are real.
+    if failed_collections and not all_docs:
+        raise RetrievalUnavailable(
+            "retrieval unavailable: %d of %d collection(s) failed (%s) and none "
+            "that answered returned a candidate"
+            % (len(failed_collections), len(collections_to_query),
+               ", ".join(failed_collections)))
 
     return _hybrid_rank(all_docs, all_distances, all_metas, query, n_results)
 
