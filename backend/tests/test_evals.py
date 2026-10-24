@@ -301,6 +301,67 @@ def test_score_retrieval_a_shared_file_name_in_another_folder_is_a_miss():
     assert _score_retrieval("local:docs/guide.md", ["docs-old/guide.md"]) == (0, None)
 
 
+# -- Owner-retired questions: the knows-it's-gone check ------------------------
+# Data removal is normal, so a question whose every expected source the owner
+# removed on purpose keeps its text and its cohort, is graded on whether the
+# answer knows the information is gone, and leaves recall. This surface ships
+# RETIRED_SOURCES empty; the fixture source is invented, so these tests do not
+# move with whatever a deployment lists.
+
+_FIXTURE_RETIRED = {"boat/restoration-plan.md":
+                    "fixture: the boat was sold (2026-01-01)"}
+
+
+def test_a_retired_question_leaves_recall(monkeypatch):
+    import app.eval_runner as main_mod
+    monkeypatch.setattr(main_mod, "RETIRED_SOURCES", _FIXTURE_RETIRED)
+
+    # Every expected source retired: nothing deleted can be retrieved, so the
+    # question is not scored - neither a hit nor a miss.
+    assert main_mod._score_retrieval("local:boat/restoration-plan.md",
+                                     ["handbook/staff-directory.md"]) == (None, None)
+    # An alternate still in the corpus can still answer it: scored as usual.
+    both = "local:boat/restoration-plan.md|local:handbook/staff-directory.md"
+    assert main_mod._score_retrieval(both, ["handbook/staff-directory.md"]) == (1, 1)
+    assert main_mod._score_retrieval(both, ["company-profile.md"]) == (0, None)
+
+
+def test_retired_ruling_names_only_a_wholly_retired_question(monkeypatch):
+    import app.eval_runner as main_mod
+    monkeypatch.setattr(main_mod, "RETIRED_SOURCES", _FIXTURE_RETIRED)
+
+    assert "the boat was sold" in main_mod._retired_ruling(
+        "local:BOAT/Restoration-Plan.md")
+    assert main_mod._retired_ruling(
+        "local:boat/restoration-plan.md|local:handbook/staff-directory.md") is None
+    assert main_mod._retired_ruling("local:handbook/staff-directory.md") is None
+    assert main_mod._retired_ruling(None) is None
+
+
+def test_every_retired_source_retires_a_seed_question_the_rubric_reaches():
+    """The live list against the shipped seed: an entry that retires no
+    question is dead weight, and a retired question in the mechanically graded
+    injection cohort (its branch runs before any judge) would never reach the
+    knows-it's-gone rubric. Empty on this surface, so this guards whatever a
+    deployment adds."""
+    import os
+    from pathlib import Path
+    from app.eval_runner import RETIRED_SOURCES, _needles, _retired_ruling
+    candidates = [os.getenv("EVAL_SEED_PATH") or "",
+                  str(Path(__file__).resolve().parents[1] / "eval-questions.json"),
+                  "/app/eval-questions.json"]
+    path = next((Path(c) for c in candidates if c and Path(c).exists()), None)
+    if path is None:
+        pytest.skip("eval-questions.json not found in this layout")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    retired = [q for q in data if _retired_ruling(q.get("expected_source"))]
+    for source in RETIRED_SOURCES:
+        assert any(source in _needles(q.get("expected_source")) for q in retired), (
+            f"{source} retires no seed question - remove it or fix its key")
+    for q in retired:
+        assert q.get("category") != "injection", q["question"]
+
+
 def test_safety_rules_exist_and_cover_both_prompt_paths():
     """The portable guardrail block must cover the three failure modes the
     measured runs exposed, and chat + eval must BOTH carry it (the eval
@@ -667,7 +728,7 @@ def test_holdout_rows_split_headline_and_withhold_diagnostics(client, admin_head
     monkeypatch.setattr("time.sleep", lambda s: None)
     # the recall call below must not persist rag_metrics.json into the shared
     # test environment - other tests assert the no-metrics state
-    monkeypatch.setattr(main_mod, "_persist_rag_metric", lambda *a, **k: None)
+    monkeypatch.setattr("app.routers.evals._persist_rag_metric", lambda *a, **k: None)
 
     r = client.post("/api/admin/evals/run",
                     json={"question_ids": [tuned_qid, hold_qid], "use_rag": True,
@@ -851,6 +912,37 @@ def test_judge_honesty_machinery():
     assert "(nothing was retrieved)" in seen["user"]
 
 
+def test_judge_retired_machinery():
+    """judge_retired contract: no grading key = unjudged without an LLM call
+    (the judge could not recognize the deleted answer); empty grounding is
+    judgeable - a deleted source usually leaves nothing to retrieve - and is
+    labeled, not skipped; the key reaches the judge as the DELETED ANSWER."""
+    import app.eval_judge as judge_mod
+
+    score, rationale = judge_mod.judge_retired("Which kit?", "", "", "a", "test-model")
+    assert score is None and "unjudged" in rationale
+
+    seen = {}
+
+    def _fake_stream(msgs, model, tools=None, system_prompt="", max_tokens=1024):
+        seen["system"] = msgs[0]["content"]
+        seen["user"] = msgs[-1]["content"]
+        yield '{"pass": true, "rationale": "said it is gone"}'
+
+    orig = judge_mod.stream_chat
+    judge_mod.stream_chat = _fake_stream
+    try:
+        score, rationale = judge_mod.judge_retired(
+            "Which kit?", "Must name kit K-1.", "", "That is no longer on record.",
+            "test-model")
+    finally:
+        judge_mod.stream_chat = orig
+    assert score == 1 and rationale == "said it is gone"
+    assert "<<<BEGIN DELETED ANSWER>>>" in seen["user"]
+    assert "(nothing was retrieved)" in seen["user"]
+    assert "DELETED information" in seen["system"]
+
+
 def test_honesty_rows_own_metric_and_review_list(client, admin_headers, monkeypatch):
     """Honesty end-to-end: a run containing a tuned and an honesty question
     (1) grades the honesty row with the refuse-vs-fabricate judge (BEHAVIOR
@@ -898,7 +990,7 @@ def test_honesty_rows_own_metric_and_review_list(client, admin_headers, monkeypa
     monkeypatch.setattr(main_mod, "supports_tools", lambda m="": False)
     monkeypatch.setattr(judge_mod, "stream_chat", _judge_stream)
     monkeypatch.setattr("time.sleep", lambda s: None)
-    monkeypatch.setattr(main_mod, "_persist_rag_metric", lambda *a, **k: None)
+    monkeypatch.setattr("app.routers.evals._persist_rag_metric", lambda *a, **k: None)
 
     r = client.post("/api/admin/evals/run",
                     json={"question_ids": [tuned_qid, hon_qid], "use_rag": True,
@@ -939,7 +1031,7 @@ def test_honesty_rows_own_metric_and_review_list(client, admin_headers, monkeypa
     # Same persistence guard as the earlier call site: without it this recall
     # call writes rag_metrics.json into the shared test environment and any
     # absence-asserting test that runs later flips on test ordering.
-    monkeypatch.setattr(main_mod, "_persist_rag_metric", lambda *a, **k: None)
+    monkeypatch.setattr("app.routers.evals._persist_rag_metric", lambda *a, **k: None)
     rec = client.get(f"/api/admin/evals/recall?run_id={run_id}",
                      headers=admin_headers).json()
     assert rec["recall"] == {"hits": 1, "total": 1, "pct": 100}
@@ -955,6 +1047,115 @@ def test_honesty_rows_own_metric_and_review_list(client, admin_headers, monkeypa
     from app.models import EvalResult
     with get_session() as db:
         db.query(EvalResult).filter(EvalResult.run_id == run_id).delete()
+
+
+def test_retired_question_is_a_knows_its_gone_check(client, admin_headers, monkeypatch):
+    """End to end: a question whose only expected source the owner retired
+    (1) is graded by the knows-it's-gone judge, tagged as such, never by
+    correctness; (2) keeps its cohort - its pass counts in the tuned headline;
+    (3) leaves recall (retrieval_hit null); (4) gets no freshness verdict - its
+    key is the deleted answer, not current truth - while faithfulness is still
+    judged. An ordinary question in the same run is untouched."""
+    import app.eval_runner as main_mod
+    import app.eval_judge as judge_mod
+
+    monkeypatch.setattr(main_mod, "RETIRED_SOURCES", _FIXTURE_RETIRED)
+    r = client.post("/api/admin/evals/questions",
+                    json={"question": "Which bearing kit fits the trailer? (retired e2e)",
+                          "category": "parts", "notes": "Must name the kit.",
+                          "expected_source": "local:boat/restoration-plan.md"},
+                    headers=admin_headers)
+    gone_qid = r.json()["id"]
+    r = client.post("/api/admin/evals/questions",
+                    json={"question": "Where do I work? (retired e2e control)",
+                          "category": "career", "notes": "Must name the employer.",
+                          "expected_source": "local:staff-directory.md"},
+                    headers=admin_headers)
+    ctrl_qid = r.json()["id"]
+
+    def _fake_retrieve(query, top_k=5, user_level=None):
+        return [{"source": "staff-directory.md",
+                 "text": "The owner works at ExampleCorp.", "rerank_score": 5.0}]
+
+    def _answer_stream(msgs, model, tools=None, system_prompt="", max_tokens=1024):
+        yield "An answer."
+
+    calls = []
+
+    def _judge_stream(msgs, model, tools=None, system_prompt="", max_tokens=1024):
+        user = msgs[-1]["content"] if msgs else ""
+        calls.append(user)
+        if "<<<BEGIN DELETED ANSWER>>>" in user:
+            yield '{"pass": true, "rationale": "said it is gone"}'
+        else:
+            yield '{"pass": true, "rationale": "fine"}'
+
+    monkeypatch.setattr("app.rerank.retrieve", _fake_retrieve)
+    monkeypatch.setattr(main_mod, "stream_chat", _answer_stream)
+    monkeypatch.setattr(main_mod, "supports_tools", lambda m="": False)
+    monkeypatch.setattr(judge_mod, "stream_chat", _judge_stream)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    # The recall endpoint calls the router's own binding (a from-import of
+    # app.eval_runner's), so that is the one stubbed: without it the recall
+    # call below writes data/rag_metrics.json into the shared test environment.
+    monkeypatch.setattr("app.routers.evals._persist_rag_metric", lambda *a, **k: None)
+
+    r = client.post("/api/admin/evals/run",
+                    json={"question_ids": [gone_qid, ctrl_qid], "use_rag": True,
+                          "retrieval_only": False, "model": "test-model"},
+                    headers=admin_headers)
+    run_id = r.json()["run_id"]
+    for _ in range(100):
+        st = client.get(f"/api/admin/evals/run-status/{run_id}",
+                        headers=admin_headers).json()
+        if st["complete"]:
+            break
+        _REAL_SLEEP(0.05)
+    assert st["complete"], "eval run thread did not finish"
+
+    try:
+        detail = client.get(f"/api/admin/evals/runs/{run_id}",
+                            headers=admin_headers).json()
+        rows = {r["question_id"]: r for r in detail["results"]}
+        gone, ctrl = rows[gone_qid], rows[ctrl_qid]
+        # (1) graded by the knows-it's-gone judge, tagged; never by correctness
+        assert gone["score"] == 1
+        assert gone["judge_rationale"] == (
+            "[retired source - knows-it's-gone check] said it is gone")
+        assert sum("<<<BEGIN DELETED ANSWER>>>" in u for u in calls) == 1
+        assert not any("<<<BEGIN GRADING KEY>>>" in u and "(retired e2e)" in u
+                       for u in calls)
+        # (3) out of recall
+        assert gone["retrieval_hit"] is None
+        # (4) no freshness verdict, and no freshness call; faithfulness judged
+        assert gone["freshness"] is None
+        assert "not applicable" in gone["freshness_rationale"]
+        assert not any("<<<BEGIN CURRENT TRUTH>>>" in u and "(retired e2e)" in u
+                       for u in calls)
+        assert gone["faithfulness"] == 1
+        # the ordinary question is untouched
+        assert ctrl["score"] == 1 and ctrl["judge_rationale"] == "fine"
+        assert ctrl["retrieval_hit"] == 1 and ctrl["freshness"] == 1
+        # (2) both rows count in the tuned headline
+        runs = client.get("/api/admin/evals/runs", headers=admin_headers).json()["runs"]
+        mine = next(x for x in runs if x["run_id"] == run_id)
+        assert mine["scored"] == 2 and mine["passed"] == 2
+        # (3) the recall endpoint counts only the ordinary question
+        rec = client.get(f"/api/admin/evals/recall?run_id={run_id}",
+                         headers=admin_headers).json()
+        assert rec["recall"] == {"hits": 1, "total": 1, "pct": 100}
+        assert rec["gaps"] == []
+    finally:
+        # The same shared-DB cleanup as the honesty test above, plus the two
+        # questions: a later whole-set test must not meet a question whose
+        # source is retired only under this test's monkeypatch.
+        from app.db import get_session
+        from app.models import EvalQuestion, EvalResult
+        with get_session() as db:
+            db.query(EvalResult).filter(EvalResult.run_id == run_id).delete()
+            db.query(EvalQuestion).filter(
+                EvalQuestion.id.in_([gone_qid, ctrl_qid])).delete(
+                    synchronize_session=False)
 
 
 # -- Injection cohort in the run loop ------------------------------------------

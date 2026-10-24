@@ -44,8 +44,9 @@ aspirational.
   Unicode. Hot findings in untrusted content are quarantined for owner
   review; the owner's own content is tagged, never withheld. Content from
   federated peers gets the same scan at the chat boundary.
-- **Judged evals** - four rubrics (correctness, faithfulness, freshness,
-  honesty) with a pinned judge that must differ in provider family from
+- **Judged evals** - five rubrics (correctness, faithfulness, freshness,
+  honesty, and a knows-it's-gone check for documents the owner removed on
+  purpose) with a pinned judge that must differ in provider family from
   the writer, a locked holdout cohort with the tuned-vs-holdout GAP as an
   overfitting alarm, a mechanically-graded injection-resistance cohort run
   against a live poisoned plant, retrieval recall with a named-miss gaps

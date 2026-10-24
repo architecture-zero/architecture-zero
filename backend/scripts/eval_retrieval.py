@@ -93,7 +93,8 @@ def _acquire_lock() -> bool:
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.eval_runner import _score_retrieval, _source_matches  # noqa: E402  (module init is idempotent)
+from app.eval_runner import (  # noqa: E402  (module init is idempotent)
+    RETIRED_SOURCES, _needles, _retired_ruling, _score_retrieval, _source_matches)
 from app.db import get_session          # noqa: E402
 from app.models import EvalQuestion     # noqa: E402
 from app.rerank import retrieve         # noqa: E402
@@ -167,14 +168,6 @@ def _mean(vals: list[float]) -> float | None:
     return round(sum(vals) / len(vals), 4) if vals else None
 
 
-def _needles(expected_source: str) -> list[str]:
-    """Mirror _score_retrieval's needle parsing: '|' alternates, per-needle
-    'local:' scheme strip, lowercase."""
-    needles = [n.strip().split(":", 1)[-1].strip().lower()
-               for n in (expected_source or "").lower().split("|")]
-    return [n for n in needles if n]
-
-
 def _matches(needle: str, source: str) -> bool:
     """The scorer's own rule (eval_runner._source_matches), not a copy of it:
     a separate copy keeps the old rule whenever the scorer changes, and the
@@ -202,10 +195,19 @@ def fetch_questions():
             "setup_turns": r.setup_turns})() for r in rows]
 
 
+# RETIRED_SOURCES (imported above) lives in app/eval_runner.py, beside the
+# runner that grades those questions as knows-it's-gone checks. The pre-flight
+# names each retired source instead of refusing the run: without that, one
+# document the owner removed on purpose would abort every run of this script
+# at the pre-flight, for as long as its questions stay in the set.
+
+
 def preflight(questions) -> bool:
     """Verify every expected source is visible to THIS process's Chroma
     handle. Prints the marker-source chunk counts; returns False if anything
-    expected is invisible (then the run's numbers must not be trusted)."""
+    expected is invisible (then the run's numbers must not be trusted) -
+    unless the owner retired it (RETIRED_SOURCES), which is printed with its
+    ruling."""
     sources = list_sources()  # all collections, [{source, count, department}]
     print(f"\n=== PRE-FLIGHT: corpus visibility from THIS process "
           f"({len(sources)} sources) ===")
@@ -219,6 +221,12 @@ def preflight(questions) -> bool:
             hits = [s for s in sources if _matches(nd, s["source"])]
             total = sum(s["count"] for s in hits)
             depts = ",".join(sorted({s["department"] for s in hits})) or "-"
+            if not hits and nd in RETIRED_SOURCES:
+                print(f"  RETIRED {nd:<44} {RETIRED_SOURCES[nd]}")
+                continue
+            if hits and nd in RETIRED_SOURCES:
+                print(f"  WARNING {nd} is listed as RETIRED but is in the corpus "
+                      f"again - take it out of RETIRED_SOURCES")
             print(f"  {'OK ' if hits else 'MISSING'} {nd:<44} "
                   f"chunks={total:<5} depts={depts}")
             if not hits:
@@ -304,6 +312,10 @@ def _pass_metrics(rows: list[dict]) -> dict:
     hon, hon_adj = split(lambda r: r["cat"] == "honesty")
     faith_rows = [r for r in rows if not r["holdout"]
                   and r["cat"] != "honesty"]
+    # Knows-it's-gone checks: a retired-source row stays in its cohort above,
+    # graded by its own rubric; counted here as well so an exhibit names how
+    # many there were and how many held.
+    retired = [r for r in rows if r.get("retired") and r["score"] is not None]
     out = {
         "rows": len(rows),
         "errored": sum(1 for r in rows if r["errored"]),
@@ -311,6 +323,8 @@ def _pass_metrics(rows: list[dict]) -> dict:
         "tuned": tuned, "tuned_adj": tuned_adj,
         "holdout": hold, "holdout_adj": hold_adj,
         "honesty": hon, "honesty_adj": hon_adj,
+        "retired_passed": sum(1 for r in retired if r["score"] == 1),
+        "retired_scored": len(retired),
         "faith": pct(sum(1 for r in faith_rows if r["faith"] == 1),
                      sum(1 for r in faith_rows if r["faith"] is not None)),
         "fresh": pct(sum(1 for r in faith_rows if r["fresh"] == 1),
@@ -374,17 +388,21 @@ def run_answers(questions, n_results, label=""):
 
     _run_eval_job(run_id, run_at, payload, model, True, n_results, False)
 
+    retired_ids = {q.id for q in questions if _retired_ruling(q.expected_source)}
     with get_session() as db:
         rows = [{"score": r.score, "faith": r.faithfulness, "fresh": r.freshness,
                  "cat": r.category, "holdout": r.holdout,
                  "corpus": r.corpus_fingerprint,
+                 "retired": r.question_id in retired_ids,
                  "errored": (r.response or "").startswith("[ERROR:")}
                 for r in db.query(EvalResult).filter(EvalResult.run_id == run_id).all()]
 
     out = {"label": label, "run_id": run_id, **_pass_metrics(rows)}
+    gone = (f" | knows-it's-gone {out['retired_passed']}/{out['retired_scored']}"
+            if out["retired_scored"] else "")
     print(f"  tuned {out['tuned']} | holdout {out['holdout']} | GAP {out['gap']} | "
-          f"faith {out['faith']} | fresh {out['fresh']} | honesty {out['honesty']} | "
-          f"errored {out['errored']}/{out['rows']}", flush=True)
+          f"faith {out['faith']} | fresh {out['fresh']} | honesty {out['honesty']}"
+          f"{gone} | errored {out['errored']}/{out['rows']}", flush=True)
     if out["errored"]:
         print(f"  ERROR-ADJUSTED (writer-API failures excluded): tuned {out['tuned_adj']} "
               f"| holdout {out['holdout_adj']} | GAP {out['gap_adj']} - the raw line "

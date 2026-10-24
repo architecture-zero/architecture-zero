@@ -190,9 +190,10 @@ def test_recall_surface_excludes_injection_from_recall_and_gaps(client, admin_he
     run_id = "inj-recall-test-run"
     _seed_results(run_id)
     # The endpoint persists a rag-metric file as a side effect; keep this
-    # call pure so tests asserting a pristine environment stay valid.
-    import app.eval_runner as main_mod
-    monkeypatch.setattr(main_mod, "_persist_rag_metric", lambda *a, **k: None)
+    # call pure so tests asserting a pristine environment stay valid. The
+    # router imported its own name for the writer, so the stub goes there -
+    # stubbing app.eval_runner's name never reached the endpoint.
+    monkeypatch.setattr("app.routers.evals._persist_rag_metric", lambda *a, **k: None)
     body = client.get(f"/api/admin/evals/recall?run_id={run_id}",
                       headers=admin_headers).json()
     # Corpus recall counts only the tuned row - injection's retrieval_hit is

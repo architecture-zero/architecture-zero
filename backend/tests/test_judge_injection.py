@@ -37,13 +37,15 @@ def _capture(monkeypatch):
 
 
 def test_every_rubric_ships_the_boundary_rule(monkeypatch):
-    """All four judges, not three. A rubric that silently skips the rule would
-    ship the hole to every instance running this code."""
+    """All five judges (the knows-it's-gone rubric is the fifth). A rubric that
+    silently skips the rule would ship the hole to every instance running this
+    code."""
     for call in (
         lambda: ej.judge_answer("q", "key", INJECT, "m"),
         lambda: ej.judge_faithfulness("q", "grounding", INJECT, "m"),
         lambda: ej.judge_freshness("q", INJECT, "key", "m"),
         lambda: ej.judge_honesty("q", "key", "grounding", INJECT, "m"),
+        lambda: ej.judge_retired("q", "key", "grounding", INJECT, "m"),
     ):
         seen = _capture(monkeypatch)
         call()
@@ -67,6 +69,7 @@ def test_poisoned_grounding_is_delimited_on_both_corpus_rubrics(monkeypatch):
     for call, field in (
         (lambda: ej.judge_faithfulness("q", INJECT, "ans", "m"), "GROUNDING MATERIAL"),
         (lambda: ej.judge_freshness("q", INJECT, "key", "m"), "GROUNDING MATERIAL"),
+        (lambda: ej.judge_retired("q", "key", INJECT, "ans", "m"), "GROUNDING MATERIAL"),
     ):
         seen = _capture(monkeypatch)
         call()
@@ -106,4 +109,5 @@ def test_unjudgeable_rows_short_circuit_before_any_prompt(monkeypatch):
     assert ej.judge_faithfulness("q", "  ", "a", "m")[0] is None
     assert ej.judge_freshness("q", "", "key", "m")[0] is None
     assert ej.judge_honesty("q", "", "g", "a", "m")[0] is None
+    assert ej.judge_retired("q", "", "g", "a", "m")[0] is None
     assert not seen, "no judge call should have been made"

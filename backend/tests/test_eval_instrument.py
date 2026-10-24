@@ -58,6 +58,22 @@ def test_pass_metrics_mid_run_corpus_change_is_visible():
     assert len(m["corpus"]) == 2
 
 
+def test_pass_metrics_counts_knows_its_gone_rows_inside_their_cohorts():
+    """A retired-source row stays in its cohort - its verdict counts there -
+    and is counted again on its own line, so an exhibit can say how many
+    knows-it's-gone checks held."""
+    rows = [_row(1), _row(0),
+            {**_row(1, holdout=1), "retired": True},
+            {**_row(0, holdout=1), "retired": True},
+            _row(1, holdout=1)]
+    m = ev._pass_metrics(rows)
+    assert m["tuned"] == 50.0
+    assert m["holdout"] == round(100 * 2 / 3, 1)
+    assert (m["retired_passed"], m["retired_scored"]) == (1, 2)
+    # Rows built without the flag (older callers) count as ordinary rows.
+    assert ev._pass_metrics([_row(1)])["retired_scored"] == 0
+
+
 # -- pre-flight knn probe: visibility is not retrievability -------------------
 
 class _FakeCol:
@@ -115,6 +131,58 @@ def _preflight_with(monkeypatch, cols, questions):
 
 def _q(expected="local:doc.md"):
     return type("Q", (), {"expected_source": expected})()
+
+
+# A retired source for the pre-flight tests. This surface ships
+# RETIRED_SOURCES empty, so the tests bring an invented entry; the pre-flight
+# reads the script's own binding of the list, so that is the one patched.
+_FIXTURE_RETIRED = {"boat/restoration-plan.md":
+                    "fixture: the boat was sold (2026-01-01)"}
+
+
+def test_preflight_names_a_retired_source_and_still_runs(monkeypatch, capsys):
+    """A source the owner removed on purpose is missing by design: its
+    questions stay as written (knows-it's-gone checks, graded in
+    app/eval_runner.py), so the pre-flight names it with its ruling and the
+    run goes on. Without the list, one deliberate removal would abort every
+    run here."""
+    monkeypatch.setattr(ev, "RETIRED_SOURCES", _FIXTURE_RETIRED)
+    cols = [_FakeCol("knowledge_base", 10, knn_ok=True)]
+    retired = "local:boat/restoration-plan.md"
+    assert _preflight_with(monkeypatch, cols, [_q(), _q(retired)]) is True
+    out = capsys.readouterr().out
+    assert "RETIRED boat/restoration-plan.md" in out
+    assert "the boat was sold (2026-01-01)" in out
+
+
+def test_preflight_still_refuses_an_unretired_missing_source(monkeypatch):
+    """The list excuses only what it names: any other missing source still
+    refuses the run."""
+    monkeypatch.setattr(ev, "RETIRED_SOURCES", _FIXTURE_RETIRED)
+    cols = [_FakeCol("knowledge_base", 10, knn_ok=True)]
+    assert _preflight_with(monkeypatch, cols,
+                           [_q(), _q("local:never-ingested.md")]) is False
+
+
+def test_preflight_warns_when_a_retired_source_is_back(monkeypatch, capsys):
+    """A retired source that is in the corpus again counts as visible, and the
+    stale entry is named so it gets taken out of the list."""
+    monkeypatch.setattr(ev, "RETIRED_SOURCES",
+                        {"doc.md": "fixture: withdrawn by the owner (2026-01-01)"})
+    cols = [_FakeCol("knowledge_base", 10, knn_ok=True)]
+    assert _preflight_with(monkeypatch, cols, [_q()]) is True
+    out = capsys.readouterr().out
+    assert "WARNING doc.md is listed as RETIRED but is in the corpus again" in out
+    assert "OK  doc.md" in out
+
+
+def test_every_retired_source_names_its_dated_ruling():
+    """An entry without its ruling and date is a fault being excused. Empty on
+    this surface, so this guards whatever a deployment adds."""
+    import re
+    for source, ruling in ev.RETIRED_SOURCES.items():
+        assert re.search(r"\d{4}-\d{2}-\d{2}", ruling or ""), (
+            f"{source}: a retirement without its dated ruling is a fault being excused")
 
 
 def test_preflight_fails_when_a_nonempty_collection_refuses_knn(monkeypatch):

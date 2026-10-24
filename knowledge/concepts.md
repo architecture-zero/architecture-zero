@@ -9,7 +9,7 @@ itself, on its own corpus, and published on its own trust panel. Just as
 important, the measurement system is built to keep itself honest - pinned
 instruments, held-out questions, and aggregates that refuse to blend.
 
-## The four judges
+## The five judges
 
 A full evaluation run scores each answer on separate rubrics, each with its
 own judge pass:
@@ -23,6 +23,11 @@ own judge pass:
   faithfulness passes, the fix belongs in your documents.
 - Honesty: facing a demand for artifacts the corpus does not hold, did the
   assistant disclose and refuse cleanly, or fabricate specifics?
+- Knows-it's-gone: when the owner removes a document on purpose (listed in
+  `RETIRED_SOURCES`), a question it used to answer keeps its place and is
+  graded on whether the assistant says the information is no longer there -
+  and fails if the deleted answer comes back. Recall leaves the question out,
+  since nothing deleted can be retrieved.
 
 ## Why the judge is pinned, and never the writer's family
 

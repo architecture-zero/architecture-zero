@@ -110,27 +110,67 @@ def sync_eval_questions_from_seed() -> dict:
               "unchanged": unchanged, "db_only": db_only, "repeated": repeated}
     log("eval_seed_sync", **{k: v for k, v in result.items() if k != "status"})
     return result
+
+
+def _needles(expected_source: str | None) -> list[str]:
+    """A question's expected_source as the needles every scorer matches.
+
+    A fact can legitimately live in more than one file (corpus duplication),
+    so expected_source may list several with "|". The scheme prefix
+    ("local:") is stripped PER NEEDLE - splitting the scheme off the whole
+    string first leaves needles 2+ prefixed and unmatchable, so multi-source
+    labels silently never hit on their alternates. scripts/eval_retrieval.py
+    imports this rather than keeping its own copy."""
+    needles = [n.strip().split(":", 1)[-1].strip().lower()
+               for n in (expected_source or "").lower().split("|")]
+    return [n for n in needles if n]
+
+
+# Expected sources RETIRED on purpose by the deployment owner, not lost to a
+# fault. Data removal is normal - the thing a document described is gone, or
+# the owner withdrew the document - so the eval handles it by design: a
+# question whose EVERY expected source is listed here keeps its text and its
+# cohort (questions never change once seeded) and is graded as a
+# knows-it's-gone check (eval_judge.judge_retired) - a pass when the answer
+# says honestly the information is not there, a fail when the deleted answer
+# comes back - and recall leaves it out, since nothing deleted can be
+# retrieved. scripts/eval_retrieval.py's pre-flight names each entry instead
+# of refusing the run over a source that is missing on purpose.
+#
+# Key: a needle as _needles parses it (lowercase, no "local:" scheme).
+# Value: the owner's ruling WITH ITS DATE - an entry without one is a fault
+# being excused. For example:
+#   "handbook/travel-policy.md":
+#       "the travel policy was withdrawn by the owner (2026-01-15)",
+# Empty on purpose: no source has been retired on this deployment.
+RETIRED_SOURCES: dict[str, str] = {}
+
+
+def _retired_ruling(expected_source: str | None) -> str | None:
+    """The ruling that retired this question's answer, or None.
+
+    Retired only when EVERY expected source is: an alternate still in the
+    corpus can still answer the question, so it stays an ordinary one."""
+    needles = _needles(expected_source)
+    if not needles or not all(n in RETIRED_SOURCES for n in needles):
+        return None
+    return "; ".join(dict.fromkeys(RETIRED_SOURCES[n] for n in needles))
+
+
 def _score_retrieval(expected_source: str | None, retrieved_sources: list[str]) -> tuple[int | None, int | None]:
     """Given a question's scoped expected_source and the sources retrieval
     returned, report (hit, rank): hit=1/0, rank=1-based position of the match
-    (None if miss). Returns (None, None) when there's nothing to score (no
-    expected_source - e.g. a guardrail question).
+    (None if miss). Returns (None, None) when there's nothing to score: no
+    expected_source (e.g. a guardrail question), or every expected source
+    retired by the owner (RETIRED_SOURCES - nothing deleted can be retrieved,
+    so recall leaves the question out).
 
     Matching is basename-aware because a descriptive expected_source like
     "local:handbook/onboarding.md" must still hit a retrieved source named
-    just "onboarding.md" - see _source_matches for exactly when."""
-    if not expected_source:
-        return None, None
-    # A fact can legitimately live in more than one file (corpus
-    # duplication), so expected_source may list several with "|". A hit = ANY
-    # of them retrieved. The scheme prefix ("local:") is stripped PER NEEDLE
-    # - splitting the scheme off the whole string first leaves needles 2+
-    # prefixed and unmatchable, so multi-source labels silently never hit on
-    # their alternates.
-    needles = [n.strip().split(":", 1)[-1].strip().lower()
-               for n in expected_source.lower().split("|")]
-    needles = [n for n in needles if n]
-    if not needles:
+    just "onboarding.md" - see _source_matches for exactly when. A hit = ANY
+    of the "|" alternates retrieved (see _needles)."""
+    needles = _needles(expected_source)
+    if not needles or all(n in RETIRED_SOURCES for n in needles):
         return None, None
     for i, src in enumerate(retrieved_sources, start=1):
         for nd in needles:
@@ -345,6 +385,10 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                     peer_context = format_peer_context(peer_chunks)
 
             hit, rank = _score_retrieval(q.get("expected_source"), retrieved_sources)
+            # The owner removed this question's answer on purpose
+            # (RETIRED_SOURCES): it is graded as a knows-it's-gone check
+            # below, and the None hit above already leaves it out of recall.
+            retired = _retired_ruling(q.get("expected_source"))
 
             # Recall is a RETRIEVAL metric - it needs no generation.
             # retrieval_only skips the LLM answer + the rate-limit sleeps.
@@ -502,10 +546,21 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                         "[injection cohort - mechanical grade; rubric not applicable]")
                 else:
                     from app.eval_judge import (judge_answer, judge_faithfulness,
-                                                judge_freshness, judge_honesty)
+                                                judge_freshness, judge_honesty,
+                                                judge_retired)
                     judge_model = model_catalog.resolve(_config_or_default(
                         "eval_judge_model", EVAL_JUDGE_MODEL_DEFAULT))
-                    if q["category"] == "honesty":
+                    if retired:
+                        # Fifth rubric: the key describes DELETED data, so
+                        # correctness would demand the deleted answer and fail
+                        # every honest run. The row keeps its cohort; the tag
+                        # says which rubric its score is.
+                        judge_score, judge_rationale = judge_retired(
+                            q["question"], q.get("notes") or "", grounding,
+                            response, judge_model)
+                        judge_rationale = ("[retired source - knows-it's-gone "
+                                           f"check] {judge_rationale}")
+                    elif q["category"] == "honesty":
                         # Fourth rubric: the honesty cohort's primary verdict
                         # is refuse-vs-fabricate, not correctness - its
                         # questions demand artifacts the corpus does not
@@ -527,9 +582,17 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                     # was shown itself current, or a stale copy? Judged
                     # against the grading key (current truth); needs both
                     # grounding and notes or the row stays unjudged. Isolates
-                    # synthesis-stale.
-                    freshness, fresh_rationale = judge_freshness(
-                        q["question"], grounding, q.get("notes") or "", judge_model)
+                    # synthesis-stale. A retired question's key is not current
+                    # truth - it is the deleted answer - so the rubric does
+                    # not apply to it.
+                    if retired:
+                        freshness, fresh_rationale = None, (
+                            "[retired source - its key is the deleted answer, "
+                            "not current truth; rubric not applicable]")
+                    else:
+                        freshness, fresh_rationale = judge_freshness(
+                            q["question"], grounding, q.get("notes") or "",
+                            judge_model)
 
             with get_session() as db:
                 result = EvalResult(
