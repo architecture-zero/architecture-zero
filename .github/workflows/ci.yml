@@ -182,6 +182,13 @@ jobs:
           # since 11.1.0), every one fixed only in 13.0.0; fastembed 0.9.0 (released
           # 2026-10-07, the newest) still requires pillow<13; test_pillow_unreached
           # still passes. The same re-open conditions stand.
+          # Re-triaged 2026-10-23 on two more ids outside the list (OSV published
+          # them 2026-10-19 and 2026-10-21): CVE-2026-112398, a heap overflow in
+          # the FlashPix JPEG decoder, and CVE-2026-114501, stale heap memory in
+          # the Arrow export when PILLOW_ALIGNMENT > 1 - the same class, fixed
+          # only in 13.0.0; fastembed 0.9.0 is still the newest and still
+          # requires pillow<13; test_pillow_unreached still passes. The same
+          # re-open conditions stand.
           ignore-vulns: |
             CVE-2026-45830
             CVE-2026-45831
@@ -234,6 +241,8 @@ jobs:
             CVE-2026-96644
             CVE-2026-96778
             GHSA-78g4-xqwv-q3g8
+            CVE-2026-112398
+            CVE-2026-114501
 
   # SAST over this repository's own Python rather than its dependencies:
   # injection shapes, unsafe deserialization, weak crypto, credentials in
