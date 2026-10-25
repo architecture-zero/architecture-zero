@@ -485,7 +485,7 @@ def run_cohort(questions, top_k, misses_only, label="", stamp=False):
             try:
                 results = retrieve(query, top_k=top_k)
             except RetrievalUnavailable as e:
-                # The index is DOWN (every queried collection failed). Scored,
+                # The index is DOWN (an outage - see database.RetrievalUnavailable). Scored,
                 # the rest of the pass would count the outage as misses and
                 # publish it as a retrieval regression - so the pass aborts
                 # like a mislabelled arm: nothing stamped, and an A/B stops

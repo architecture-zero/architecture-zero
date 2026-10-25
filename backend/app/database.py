@@ -666,12 +666,13 @@ def add_documents_batch(entries: list[tuple[str, str, dict]],
 
 
 class RetrievalUnavailable(RuntimeError):
-    """Every queried collection failed - retrieval is DOWN, not empty.
+    """Retrieval is DOWN, not empty - an outage.
 
     Exists so callers can tell an infrastructure outage from "the corpus has
     nothing on this". Without it the two are the same value ([]), and the chat
     path speaks an outage to the user as a confident "I don't have that
-    information". Raised only on TOTAL failure; a partial failure returns the
+    information". Raised on an outage - the query could not be embedded, or a collection
+    failed and none that answered returned a candidate; a partial failure returns the
     surviving candidates, because those are real.
     """
 
