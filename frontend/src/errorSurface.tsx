@@ -85,15 +85,27 @@ export function ErrorSurface({ onLogout }: { onLogout?: () => void }) {
   const [expired, setExpired] = useState(false)
 
   useEffect(() => {
+    // Each toast's dismiss timer dies with the surface. One left running fires
+    // after unmount - in a test run, after the file's environment is torn down,
+    // as an unhandled "window is not defined" that fails a run whose tests all
+    // passed (2026-10-24; toastTimer.test.tsx pins it).
+    const timers = new Set<ReturnType<typeof setTimeout>>()
     sub = {
       toast: (msg: string) => {
         const id = Date.now() + Math.random()
         setToasts(prev => [...prev.slice(-3), { id, msg }])
-        setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 6000)
+        const timer = setTimeout(() => {
+          timers.delete(timer)
+          setToasts(prev => prev.filter(t => t.id !== id))
+        }, 6000)
+        timers.add(timer)
       },
       expired: () => setExpired(true),
     }
-    return () => { sub = null }
+    return () => {
+      sub = null
+      timers.forEach(t => clearTimeout(t))
+    }
   }, [])
 
   return (
