@@ -50,10 +50,23 @@ GLOBAL_COLLECTION = "knowledge_base"
 HELP_DEPARTMENT = "help"
 HELP_COLLECTION = "kb_help"   # == _collection_name(HELP_DEPARTMENT), pinned by a test
 
+# A kb_general minted before 2026-10-26, when a department typed "General"
+# got a collection of its own (_collection_name says why that ended). Every
+# listing labels a kb_* collection by its suffix, so this one read "general" -
+# the global collection's label - and a delete aimed at it from a listing hit
+# the global collection instead. Nothing writes or reads it now; it is kept
+# out of every enumeration and named at boot (legacy_general_count). Report,
+# don't destroy: its content was readable only by that department's members
+# and the Owner, so merging it into the collection everyone reads would widen
+# who sees it.
+LEGACY_GENERAL_COLLECTION = "kb_general"
+
 
 def _is_corpus_collection(name: str) -> bool:
-    """A kb_* DEPARTMENT collection - the global and help collections are not."""
-    return name.startswith("kb_") and name not in (GLOBAL_COLLECTION, HELP_COLLECTION)
+    """A kb_* DEPARTMENT collection - the global, help and legacy kb_general
+    collections are not."""
+    return name.startswith("kb_") and name not in (
+        GLOBAL_COLLECTION, HELP_COLLECTION, LEGACY_GENERAL_COLLECTION)
 
 
 def collection_metadata() -> dict:
@@ -135,11 +148,18 @@ def _get_collection(department: str | None = None) -> chromadb.Collection:
 
 def _collection_name(department: str | None = None) -> str:
     """The collection name for a department - ONE derivation, shared by the
-    get-or-create path and the does-it-exist path so they cannot disagree."""
-    if not department or department == "general":
+    get-or-create path and the does-it-exist path so they cannot disagree.
+
+    The SANITIZED name decides the global collection, not the spelling: until
+    2026-10-26 only the exact "general" mapped there, so "General" minted
+    kb_general, whose listing label is "general" (LEGACY_GENERAL_COLLECTION
+    has the rest)."""
+    if not department:
         return GLOBAL_COLLECTION
     # Sanitize: lowercase, replace spaces/special chars with underscore
     safe = re.sub(r"[^a-z0-9_-]", "_", department.lower())
+    if safe == "general":
+        return GLOBAL_COLLECTION
     return f"kb_{safe}"
 
 
@@ -977,6 +997,21 @@ def department_residue() -> list[str]:
     return _department_partition()[1]
 
 
+def legacy_general_count() -> int | None:
+    """Records in a pre-2026-10-26 kb_general, or None when there is none.
+
+    Startup names a non-None answer, because those records are unreachable by
+    construction (every spelling of "general" resolves to the global
+    collection now) and left out of every listing - silent, they would just
+    be lost. Moving them is the operator's call: re-ingest under "general" if
+    everyone may read them, or under a department that is not a spelling of
+    "general" if not."""
+    for col in client.list_collections():
+        if col.name == LEGACY_GENERAL_COLLECTION:
+            return col.count()
+    return None
+
+
 def list_departments() -> list[str]:
     """Return the REAL departments: "general" plus every kb_* collection that
     actually holds documents.
@@ -1007,8 +1042,9 @@ def count_documents(department: str | None = None) -> int:
         return col.count() if col is not None else 0
     total = 0
     for col in client.list_collections():
-        if col.name == HELP_COLLECTION:
-            continue   # product help pages are not the operator's documents
+        if col.name in (HELP_COLLECTION, LEGACY_GENERAL_COLLECTION):
+            continue   # product help pages are not the operator's documents;
+                       # a legacy kb_general is unreachable (its constant)
         try:
             total += col.count()
         except Exception:

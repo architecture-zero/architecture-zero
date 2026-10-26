@@ -191,3 +191,94 @@ def test_deleting_from_a_present_department_still_deletes(monkeypatch):
     database.delete_source("s", "present")
     assert deleted.get("ids") == ["a1"]
     assert client.minted == []
+
+
+# -- A department spelled like "general" IS general (2026-10-26) --------------
+#
+# Until then only the exact spelling reached the global collection: "General"
+# minted kb_general, every listing labeled it by its suffix - "general", the
+# global collection's label - and a delete aimed at it from a listing hit the
+# global collection. The sanitized name decides now; a kb_general minted before
+# the fix is kept out of every listing and named at boot, never deleted.
+
+class _NamedCol(_Col):
+    """A collection holding one chunk per named source, for listing and delete."""
+    def __init__(self, name, sources):
+        super().__init__(name, len(sources))
+        self._sources = list(sources)
+        self.deleted = []
+
+    def get(self, where=None, include=None):
+        rows = [(f"{self.name}-{i}", s) for i, s in enumerate(self._sources)
+                if where is None or where.get("source") == s]
+        return {"ids": [i for i, _ in rows],
+                "metadatas": [{"source": s} for _, s in rows]}
+
+    def delete(self, ids=None):
+        self.deleted.extend(ids)
+
+
+def test_every_spelling_of_general_is_the_global_collection():
+    for spelling in ("general", "General", "GENERAL", "gEnErAl", "", None):
+        assert database._collection_name(spelling) == database.GLOBAL_COLLECTION, spelling
+    # A name that only CONTAINS it is a department of its own, and its label
+    # cannot be mistaken for "general".
+    assert database._collection_name("General Ledger") == "kb_general_ledger"
+    assert database._collection_name(" general") == "kb__general"
+
+
+def test_a_general_spelling_mints_no_collection_of_its_own(monkeypatch):
+    client = _MintTrackingClient([_Col("knowledge_base", 4)])
+    monkeypatch.setattr(database, "client", client)
+    database._get_collection("General")
+    assert client.minted == []
+
+
+def test_a_legacy_kb_general_never_wears_the_general_label(monkeypatch):
+    """The collision itself: the legacy collection's sources used to merge
+    into the global collection's under one "general" label (a shared name
+    summed into one count), and the department list said "general" twice."""
+    monkeypatch.setattr(database, "client", _MintTrackingClient([
+        _NamedCol("knowledge_base", ["handbook.md"]),
+        _NamedCol("kb_general", ["handbook.md", "ledger.md"]),
+        _NamedCol("kb_restricted", ["ops.md"]),
+    ]))
+    # The per-source count's key differs by surface ("count" / "chunks").
+    assert [(r["source"], r["department"], r.get("count", r.get("chunks")))
+            for r in database.list_sources()] == [
+        ("handbook.md", "general", 1),
+        ("ops.md", "restricted", 1),
+    ]
+    assert database.list_departments() == ["general", "restricted"]
+    assert database.department_residue() == []
+    assert database.count_documents() == 2
+
+
+def test_a_delete_aimed_at_general_never_reaches_the_legacy_collection(monkeypatch):
+    """Every spelling deletes from the global collection; the legacy one is
+    the operator's to move (report, don't destroy)."""
+    glob = _NamedCol("knowledge_base", ["handbook.md"])
+    legacy = _NamedCol("kb_general", ["handbook.md"])
+    monkeypatch.setattr(database, "client", _MintTrackingClient([glob, legacy]))
+    monkeypatch.setattr(database, "_invalidate_lexical_index",
+                        lambda *a, **k: None, raising=False)
+    for spelling in ("general", "General"):
+        database.delete_source("handbook.md", spelling)
+    assert legacy.deleted == []
+    assert glob.deleted == ["knowledge_base-0", "knowledge_base-0"]
+
+
+def test_a_legacy_kb_general_is_named_not_hidden(monkeypatch):
+    monkeypatch.setattr(database, "client", _Client([
+        _Col("knowledge_base", 3), _Col("kb_general", 7)]))
+    assert database.legacy_general_count() == 7
+    monkeypatch.setattr(database, "client", _Client([_Col("knowledge_base", 3)]))
+    assert database.legacy_general_count() is None
+
+
+def test_the_endpoint_lists_general_once(client, admin_headers, monkeypatch):
+    monkeypatch.setattr(database, "client", _Client([
+        _Col("kb_general", 5), _Col("kb_restricted", 2)]))
+    r = client.get("/api/ingest/departments", headers=admin_headers)
+    assert r.status_code == 200
+    assert r.json()["departments"] == ["general", "restricted"]

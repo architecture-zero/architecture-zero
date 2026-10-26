@@ -409,6 +409,16 @@ async def startup_tasks():
                 log("department_residue_clean")
         except Exception as e:
             log_error("department_residue_check_crashed", error=str(e))
+        # A kb_general from before 2026-10-26 (database.LEGACY_GENERAL_COLLECTION):
+        # unreachable and unlisted by construction, so named here or nowhere.
+        try:
+            from app.database import legacy_general_count
+            n = await asyncio.get_running_loop().run_in_executor(
+                None, legacy_general_count)
+            if n is not None:
+                log_error("legacy_kb_general_found", records=n)
+        except Exception as e:
+            log_error("legacy_kb_general_check_crashed", error=str(e))
 
         runtime_config._startup_ingest_active = False
         asyncio.create_task(_watch_knowledge_dir())
