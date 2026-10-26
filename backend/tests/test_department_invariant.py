@@ -282,3 +282,30 @@ def test_the_endpoint_lists_general_once(client, admin_headers, monkeypatch):
     r = client.get("/api/ingest/departments", headers=admin_headers)
     assert r.status_code == 200
     assert r.json()["departments"] == ["general", "restricted"]
+
+
+class _SearchCol(_Col):
+    """A collection that counts how often it is searched."""
+    def __init__(self, name, count=2):
+        super().__init__(name, count)
+        self.searched = 0
+
+    def query(self, query_embeddings=None, n_results=None, include=None, **kw):
+        self.searched += 1
+        return {"ids": [[f"{self.name}-0"]], "documents": [[f"from {self.name}"]],
+                "distances": [[0.1]], "metadatas": [[{"source": self.name}]]}
+
+
+def test_a_general_spelling_searches_the_global_collection_once(monkeypatch):
+    """"General" resolves to the global collection, which a query already
+    searches; three surfaces appended it a second time (found at the
+    2026-10-26 wrap), so its chunks entered the ranking pool twice."""
+    glob = _SearchCol("knowledge_base")
+    monkeypatch.setattr(database, "client",
+                        _MintTrackingClient([glob, _SearchCol("kb_sales")]))
+    monkeypatch.setattr(database, "_embed", lambda *a, **k: [0.0] * 8)
+    monkeypatch.setattr(database, "_lexical_top_ids", lambda *a, **k: [], raising=False)
+    monkeypatch.setattr(database, "_hybrid_rank",
+                        lambda docs, *a, **k: [{"doc": d} for d in docs])
+    database.query_similar("q", n_results=3, department="General")
+    assert glob.searched == 1

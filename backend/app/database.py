@@ -139,7 +139,7 @@ def flush_vector_segments() -> dict:
 def _get_collection(department: str | None = None) -> chromadb.Collection:
     """Return the ChromaDB collection for the given department.
 
-    None / "general" -> global knowledge_base collection.
+    None and every spelling of "general" -> global knowledge_base collection.
     Any other value  -> kb_<department> collection (created on first use).
     """
     return client.get_or_create_collection(
