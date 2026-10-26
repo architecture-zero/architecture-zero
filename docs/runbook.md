@@ -133,6 +133,22 @@ Four things change on disk:
 
 A later boot finds nothing left to do and prints none of those lines.
 
+One more line can appear, on any boot rather than only the first:
+`legacy_kb_general_found` with a record count. Until 2026-10-26 a department
+typed with other capitals - "General" - got a collection of its own,
+`kb_general`, which every listing showed as "general", the shared
+department's name, so a delete aimed at it could land on the shared one.
+Every spelling now means the shared department, and the old collection is no
+longer searched, listed or counted. Nothing deletes it for you: its documents
+were readable only by that department's members and the Owner, and the shared
+department is read by everyone. Upload them again under `general` if everyone
+may read them, or under another department if not. Then remove the old
+collection with the backend stopped, so nothing else has the index open:
+
+    docker compose stop backend
+    docker compose run --rm --no-deps backend python -c "from app.database import client; client.delete_collection('kb_general')"
+    docker compose start backend
+
 ### What changes for anything that calls the API
 
 Since v0.1.x, for a script or a client of your own:
