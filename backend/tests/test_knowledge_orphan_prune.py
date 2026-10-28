@@ -397,6 +397,7 @@ def test_a_knowledge_file_deleted_while_down_is_pruned_by_the_startup_sync(
     monkeypatch.setattr(ingest_mod, "_save_ingest_state",
                         lambda s: (state.clear(), state.update(s)))
 
+    ingest_mod._ingest_file_locked("shipping.md", (k / "shipping.md").read_text(encoding="utf-8"))  # TEMP diagnostic
     first = ingest_mod._sync_knowledge_dir(force=False)
     assert first["returns.md"]["status"] == "ok" and first["shipping.md"]["status"] == "ok", first
     gen = index.get_collection(database.GLOBAL_COLLECTION)
