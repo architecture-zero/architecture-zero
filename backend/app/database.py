@@ -881,6 +881,45 @@ def list_sources(department: str | None = None) -> list[dict]:
     ]
 
 
+def list_file_sources() -> list[dict]:
+    """Every indexed source with its chunk count AND how many of those chunks
+    the file sync wrote (metadata from_file="true", stamped by
+    ingest_sync._ingest_file_locked), per department. The knowledge orphan
+    prune reads it, and must touch only sources the file sync wholly owns: an
+    upload is named by its file name - the same shape as a knowledge file -
+    and carries no from_file stamp, and neither do API ingests or generated
+    records.
+
+    Enumerated through _is_corpus_collection like every corpus-wide listing:
+    the help pages carry the same from_file stamp and have no file under
+    KNOWLEDGE_DIR, so a listing that reached kb_help would offer every help
+    page to the prune. A collection that cannot be read is skipped (its
+    sources are simply not candidates), never guessed at."""
+    names = [GLOBAL_COLLECTION] + [
+        c.name for c in client.list_collections() if _is_corpus_collection(c.name)
+    ]
+    merged: dict[tuple[str, str], list[int]] = {}
+    for col_name in names:
+        dept_label = "general" if col_name == GLOBAL_COLLECTION else col_name[3:]
+        col = _existing_collection(None if col_name == GLOBAL_COLLECTION else dept_label)
+        if col is None:
+            continue
+        try:
+            metas = col.get(include=["metadatas"])["metadatas"]
+        except Exception as e:
+            log.warning("list_file_sources: collection %s unreadable, its sources "
+                        "are not prune candidates: %s", col_name, e)
+            continue
+        for meta in metas:
+            m = meta or {}
+            row = merged.setdefault((m.get("source", "unknown"), dept_label), [0, 0])
+            row[0] += 1
+            if m.get("from_file") == "true":
+                row[1] += 1
+    return [{"source": s, "department": d, "count": c, "file_chunks": f}
+            for (s, d), (c, f) in sorted(merged.items())]
+
+
 def corpus_fingerprint() -> str:
     """A compact, deterministic identity for the corpus AS IT IS RIGHT NOW.
 

@@ -26,7 +26,8 @@ import threading
 from app.chunking import (chunk_dated_markdown, chunk_markdown_sections,
                           CHUNKER_VERSION)
 from app.database import (add_documents_batch, list_sources, delete_source,
-                          get_source_ids, delete_documents, delete_file_chunks)
+                          get_source_ids, delete_documents, delete_file_chunks,
+                          list_file_sources)
 from app.logger import log, log_error
 from app.rag_config import dept_for_source as _dept_for_source
 
@@ -121,8 +122,9 @@ from app.rag_config import dept_for_source as _dept_for_source  # noqa: E402  (m
 #
 # Every writer of a source takes that source's lock. In this module: the delta
 # ingest through _ingest_file (the watcher, the startup and manual syncs), the
-# watcher's delete, the docs orphan prune and the knowledge sync's legacy-key
-# purge - the last two re-check the disk once they hold it. Outside it: the
+# watcher's delete, the docs and knowledge orphan prunes and the knowledge
+# sync's legacy-key purge - the last three re-check the disk once they hold
+# it. Outside it: the
 # upload and the source-delete route (routers/kb.py), the quarantine release -
 # which re-checks that its row is still held once it holds the lock - and the
 # queued-ingest worker (app/jobs.py). /api/ingest writes one caller-named chunk
@@ -301,7 +303,95 @@ def _sync_knowledge_dir(force: bool = True) -> dict:
             results[rel] = {"status": "ok", "chunks": n}
         except Exception as e:
             results[rel] = {"status": "error", "error": str(e)}
+    # Prune knowledge sources whose file is gone. The watcher removes a deleted
+    # file's chunks only while it runs, so a file deleted while the backend was
+    # down kept serving with nothing left to remove it - the job _sync_docs's
+    # prune does for docs/, and its failure is reported for the same reason.
+    try:
+        pr = _prune_orphan_knowledge()
+        for d in pr["deleted"]:
+            results[d["source"]] = {"status": "pruned", "chunks": d.get("count")}
+        if pr.get("skipped"):
+            results["knowledge/_prune"] = {"status": "skipped", "reason": pr["skipped"]}
+    except Exception as e:
+        results["knowledge/_prune"] = {"status": "error", "error": str(e)}
+        log_error("knowledge_orphan_prune_failed", error=str(e))
     return results
+
+
+def _valid_knowledge_sources() -> set[str]:
+    """The KNOWLEDGE_DIR-relative keys that SHOULD exist: every eligible file
+    on disk, keyed exactly as _sync_knowledge_dir keys it."""
+    root = pathlib.Path(KNOWLEDGE_DIR)
+    return {p.relative_to(root).as_posix() for p in root.rglob("*")
+            if p.is_file() and p.suffix.lower() in _WATCHED_EXTS}
+
+
+# More candidates than this in one pass is a refusal, not a prune: a
+# half-mounted or swapped knowledge volume reads as "every file was deleted",
+# and this must never be the thing that empties the index. The operator lever
+# (POST /api/admin/kb/prune-orphans?force=true) takes a larger set on purpose.
+_KNOWLEDGE_PRUNE_CAP = 10
+
+
+def _prune_orphan_knowledge(force: bool = False, dry_run: bool = False) -> dict:
+    """Delete knowledge/ sources whose file is gone.
+
+    The watcher removes a deleted file's chunks only while it is running, so a
+    deletion that lands between processes - a pull during an update, a file
+    removed while the container was stopped - left the chunks retrievable
+    indefinitely.
+
+    A candidate is a source the FILE SYNC wholly owns - every chunk stamped
+    from_file="true" by _ingest_file_locked - whose key is not a file on disk
+    and is not docs/ (that namespace is _prune_orphan_docs's). An upload is
+    named by its file name, the same shape, but carries no from_file stamp,
+    and neither do API ingests or generated records, so none of them can be a
+    candidate; a source with mixed chunks is reported, not deleted. The help
+    pages carry the stamp too, and list_file_sources never lists them.
+    Fail-safe: a missing or empty knowledge dir prunes nothing, and more than
+    _KNOWLEDGE_PRUNE_CAP candidates prunes nothing unless force. dry_run lists
+    what it would remove and removes nothing."""
+    root = pathlib.Path(KNOWLEDGE_DIR)
+    if not root.is_dir():
+        return {"deleted": [], "skipped": "knowledge dir missing"}
+    valid = _valid_knowledge_sources()
+    if not valid:
+        return {"deleted": [], "skipped": "knowledge dir holds no eligible file"}
+    orphans = [s for s in list_file_sources()
+               if s["file_chunks"] and not s["source"].startswith("docs/")
+               and s["source"] not in valid]
+    candidates = [s for s in orphans if s["file_chunks"] == s["count"]]
+    mixed = [{"source": s["source"], "department": s["department"],
+              "count": s["count"], "file_chunks": s["file_chunks"]}
+             for s in orphans if s["file_chunks"] != s["count"]]
+    plan = [{"source": s["source"], "department": s["department"], "count": s["count"]}
+            for s in candidates]
+    if dry_run:
+        return {"deleted": [], "would_delete": plan, "mixed": mixed}
+    if len(candidates) > _KNOWLEDGE_PRUNE_CAP and not force:
+        log_error("knowledge_orphan_prune_refused", candidates=len(candidates),
+                  cap=_KNOWLEDGE_PRUNE_CAP)
+        return {"deleted": [], "would_delete": plan, "mixed": mixed,
+                "skipped": f"{len(candidates)} candidates exceed the cap of "
+                           f"{_KNOWLEDGE_PRUNE_CAP}"}
+    deleted = []
+    for s in candidates:
+        with _source_lock(s["source"]):
+            # Re-checked under the lock: a sync or the watcher may have written
+            # the file back since the listing, and deleting now would drop
+            # what it wrote.
+            if (root / s["source"]).is_file():
+                continue
+            delete_source(s["source"], s["department"])
+            state = _load_ingest_state()
+            if state.pop(s["source"], None) is not None:
+                _save_ingest_state(state)
+        log("kb_orphan_pruned", file=s["source"], department=s["department"],
+            chunks=s["count"])
+        deleted.append({"source": s["source"], "department": s["department"],
+                        "count": s["count"]})
+    return {"deleted": deleted, "mixed": mixed}
 
 
 # The most entries one _knowledge_dir_has_documents call looks at.
@@ -428,13 +518,14 @@ def _valid_doc_sources() -> set[str]:
     return valid
 
 
-def _prune_orphan_docs() -> dict:
+def _prune_orphan_docs(dry_run: bool = False) -> dict:
     """Delete 'docs/' sources whose backing file is gone - they otherwise
     linger in the index and pollute retrieval. Safe: the 'docs/' source
     namespace is exclusively file-derived (uploads and generated records never
     prefixed 'docs/'). Deletes from each source's ACTUAL department, and
     returns what it removed plus the remaining docs/ sources in the index -
-    so the purge is observable, not silent."""
+    so the purge is observable, not silent. dry_run lists what it would
+    remove and removes nothing."""
     valid = _valid_doc_sources()
     all_srcs = list_sources()
     deleted = []
@@ -442,18 +533,22 @@ def _prune_orphan_docs() -> dict:
         name = str(s.get("source", ""))
         if name.startswith("docs/") and name not in valid:
             dept = s.get("department") or "general"
-            with _source_lock(name):
-                # Re-checked under the lock: a file of this name written back
-                # since the listing above is the watcher's to ingest, and
-                # deleting now would drop what it wrote.
-                if name in _valid_doc_sources():
-                    continue
-                delete_source(name, dept)
+            if not dry_run:
+                with _source_lock(name):
+                    # Re-checked under the lock: a file of this name written
+                    # back since the listing above is the watcher's to ingest,
+                    # and deleting now would drop what it wrote.
+                    if name in _valid_doc_sources():
+                        continue
+                    delete_source(name, dept)
             deleted.append({"source": name, "department": dept, "count": s.get("count")})
     docs_in_index = sorted(
         ({"source": str(s.get("source")), "department": s.get("department"), "count": s.get("count")}
          for s in all_srcs if str(s.get("source", "")).startswith("docs/")),
         key=lambda x: x["source"] or "")
+    if dry_run:
+        return {"deleted": [], "would_delete": deleted,
+                "docs_sources_in_index": docs_in_index}
     return {"deleted": deleted, "docs_sources_in_index": docs_in_index}
 
 

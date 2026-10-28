@@ -36,7 +36,7 @@ Users, then create the account with a username, a password, a role and a departm
 
 ## Adding documents
 
-- The server folder: files placed there are ingested automatically, subfolders included, and a file deleted while the assistant is running is removed. A restart picks up files that changed while the assistant was stopped.
+- The server folder: files placed there are ingested automatically, subfolders included, and a file deleted while the assistant is running is removed. A restart picks up files that changed while the assistant was stopped, and removes files deleted while it was stopped; more than ten at once waits for the owner (the runbook says how).
 - Knowledge Base, Upload: PDF, Word, text, Markdown, JSON, YAML and source files. The backend's limit is MAX_UPLOAD_MB; the shipped proxy allows uploads up to 64 MB.
 - Uploads go to the general department or your own. A department not yet listed in the access map is owner-only until it is; the map is described in the security model.
 

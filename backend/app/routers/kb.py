@@ -4,9 +4,9 @@ Eighth router out of main.py. Same rules: no prefix, full literal paths, guards
 verbatim on the handlers, never `from app.main import ...`.
 
 The ingest-sync machinery this router calls into (_sync_knowledge_dir,
-_sync_docs, _prune_orphan_docs, _source_lock, KNOWLEDGE_DIR, _WATCHED_EXTS)
-now lives in app/ingest_sync.py, which main's startup hooks drive as well. Both
-import it; neither re-exports it.
+_sync_docs, _prune_orphan_docs, _prune_orphan_knowledge, _source_lock,
+KNOWLEDGE_DIR, _WATCHED_EXTS) now lives in app/ingest_sync.py, which main's
+startup hooks drive as well. Both import it; neither re-exports it.
 
 MAX_UPLOAD_MB and _UPLOAD_CHUNK_BYTES move here rather than to runtime_config:
 the upload handler is their only reader. tests/test_review_remediation imports
@@ -34,7 +34,8 @@ from app.database import (add_document, list_sources, delete_source,
                           delete_documents)
 from app.db import get_session
 from app.ingest_sync import (KNOWLEDGE_DIR, _WATCHED_EXTS, _sync_knowledge_dir,
-                             _sync_docs, _prune_orphan_docs, _source_lock)
+                             _sync_docs, _prune_orphan_docs, _prune_orphan_knowledge,
+                             _source_lock)
 from app.jwt_auth import require_owner, require_permission
 from app.logger import log, log_error
 from app.metrics import increment
@@ -296,6 +297,11 @@ def ingest(request: IngestRequest, current_user: dict = Depends(require_permissi
     # dress arbitrary text as the instance's own live truth, whatever trust tier
     # the line below then assigns. Only app.system_records writes it.
     meta.pop("auto_generated", None)
+    # Nor is `from_file`. It marks a chunk the knowledge file sync wrote, and the
+    # sync's orphan prune deletes a source whose every chunk carries it once no
+    # file of that name is on disk - so a claimed stamp would put this document
+    # up for deletion at the next boot. Only app.ingest_sync writes it.
+    meta.pop("from_file", None)
     meta["trust"] = _ingest_trust(current_user, meta.get("trust"))
     if PII_SCAN_MODE != "off":
         findings = scan_pii(text)
@@ -604,11 +610,24 @@ def admin_ingest_jobs(limit: int = Query(50, ge=1, le=200),
 
 
 @router.post("/api/admin/kb/prune-orphans")
-def prune_orphans_endpoint(current_user: dict = Depends(require_owner)):
-    """Observable orphan purge: delete docs/ sources with no file on disk,
-    and report exactly what was removed + which docs/ sources remain in the
-    index."""
-    return _prune_orphan_docs()
+def prune_orphans_endpoint(dry_run: bool = Query(False), force: bool = Query(False),
+                           current_user: dict = Depends(require_owner)):
+    """Observable orphan purge: delete docs/ AND knowledge/ sources with no
+    file on disk, and report exactly what was removed + which docs/ sources
+    remain in the index. `deleted` carries both namespaces. dry_run lists what
+    WOULD go and removes nothing; force lifts the knowledge prune's cap
+    (_KNOWLEDGE_PRUNE_CAP) for a deliberate mass removal - the startup sync
+    refuses one larger than that."""
+    docs = _prune_orphan_docs(dry_run=dry_run)
+    know = _prune_orphan_knowledge(force=force, dry_run=dry_run)
+    out = {"deleted": docs["deleted"] + know["deleted"],
+           "docs_sources_in_index": docs.get("docs_sources_in_index", []),
+           "knowledge_mixed": know.get("mixed", [])}
+    if dry_run:
+        out["would_delete"] = docs.get("would_delete", []) + know.get("would_delete", [])
+    if know.get("skipped"):
+        out["knowledge_skipped"] = know["skipped"]
+    return out
 
 
 @router.get("/api/admin/kb/rerank-status")

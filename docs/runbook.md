@@ -149,6 +149,14 @@ collection with the backend stopped, so nothing else has the index open:
     docker compose run --rm --no-deps backend python -c "from app.database import client; client.delete_collection('kb_general')"
     docker compose start backend
 
+Any boot, the first after an update included, may also remove documents: a
+file deleted from `knowledge/` while the backend was down is pruned from the
+index (`kb_orphan_pruned` names each one), because the watcher removes a
+deleted file only while it runs. More than 10 at once is refused
+(`knowledge_orphan_prune_refused`) and nothing is removed;
+`POST /api/admin/kb/prune-orphans?dry_run=true` (Owner only) lists them and
+`?force=true` removes them.
+
 ### What changes for anything that calls the API
 
 Since v0.1.x, for a script or a client of your own:
@@ -166,6 +174,9 @@ Since v0.1.x, for a script or a client of your own:
   `{"status": "unchanged"}` and writes nothing (it used to reset the account's
   explicit permission list); changing your own role is refused (403); an id
   that names no active account is a 404, with nothing written.
+- `POST /api/ingest` drops a `from_file` key from the metadata it is sent,
+  as it drops `auto_generated`: that key marks a document the knowledge sync
+  wrote, and the sync deletes one once no file of its name is on disk.
 
 ### Going back
 
