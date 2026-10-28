@@ -410,7 +410,7 @@ def test_a_knowledge_file_deleted_while_down_is_pruned_by_the_startup_sync(
             raise
     monkeypatch.setattr(ingest_mod, "_ingest_file", _recording)
     first = ingest_mod._sync_knowledge_dir(force=False)
-    assert first["returns.md"]["status"] == "ok" and first["shipping.md"]["status"] == "ok", (first, tbs[:1])
+    assert first["returns.md"]["status"] == "ok" and first["shipping.md"]["status"] == "ok", "TB>>" + (tbs[0] if tbs else "none").replace("\n", " || ")
     gen = index.get_collection(database.GLOBAL_COLLECTION)
     assert set(_sources(gen)) == {"returns.md", "shipping.md"}
 
