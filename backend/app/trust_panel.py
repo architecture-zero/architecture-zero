@@ -5,6 +5,12 @@ Design rules:
 - A public panel shows THIS instance's own per-corpus numbers, with
   provenance, and shows BANDS (spread across identical-config runs), never a
   single lucky point.
+- Every band names the rows behind it (2026-10-28): the latest run's passed
+  and scored for that axis, beside the spread. A band's `runs` counts runs,
+  so a rate without its denominator read the same over 3 graded rows as over
+  300, and the correctness and holdout tiles never said how many questions
+  they grade. Honesty always carried its n; the gap carries none, being a
+  difference of two rates that each carry their own.
 - Honesty is its own metric, derived ONLY from category='honesty' rows, and
   the mechanically-graded injection cohort likewise never blends into any
   answer-quality axis - every other axis EXCLUDES both cohorts (mirrors the
@@ -42,6 +48,13 @@ def _pct(vals) -> float | None:
     if not vals:
         return None
     return round(100.0 * sum(vals) / len(vals), 1)
+
+
+def _counts(vals) -> tuple[int, int]:
+    """(passed, scored) behind _pct's rate - the same filter, so the two can
+    never disagree: a row with no verdict is neither passed nor scored."""
+    vals = [v for v in vals if v is not None]
+    return sum(vals), len(vals)
 
 
 def _short_fp(fp: str | None) -> str | None:
@@ -106,6 +119,14 @@ def derive_trust_panel(admin: bool = False) -> dict:
         hold = [r for r in rest if r["holdout"]]
         tuned_pct = _pct([r["score"] for r in tuned])
         hold_pct = _pct([r["score"] for r in hold]) if hold else None
+        # The rows behind each rate ride beside it (2026-10-28), so a band can
+        # say how many questions its latest run graded. Holdout counts stay
+        # None where nothing is held out, like its rate.
+        tuned_passed, tuned_scored = _counts([r["score"] for r in tuned])
+        hold_passed, hold_scored = (_counts([r["score"] for r in hold])
+                                    if hold else (None, None))
+        faith_passed, faith_scored = _counts([r["faithfulness"] for r in rest])
+        fresh_passed, fresh_scored = _counts([r["freshness"] for r in rest])
         complete.append({
             "run_id": run_id,
             "run_at": max((r["run_at"] or "") for r in rr),
@@ -116,11 +137,19 @@ def derive_trust_panel(admin: bool = False) -> dict:
                                 if r["judge_instrument"]), None),
             "n_rest": len(rest),
             "correctness": tuned_pct,
+            "correctness_passed": tuned_passed,
+            "correctness_scored": tuned_scored,
             "holdout": hold_pct,
+            "holdout_passed": hold_passed,
+            "holdout_scored": hold_scored,
             "gap": (round(tuned_pct - hold_pct, 1)
                     if tuned_pct is not None and hold_pct is not None else None),
             "faithfulness": _pct([r["faithfulness"] for r in rest]),
+            "faithfulness_passed": faith_passed,
+            "faithfulness_scored": faith_scored,
             "freshness": _pct([r["freshness"] for r in rest]),
+            "freshness_passed": fresh_passed,
+            "freshness_scored": fresh_scored,
             "retrieval": _pct([r["retrieval_hit"] for r in rest
                                if r["retrieval_hit"] is not None]),
             "honesty": _pct([r["score"] for r in hon]) if hon else None,
@@ -155,11 +184,22 @@ def derive_trust_panel(admin: bool = False) -> dict:
     if latest["instrument"] is None:
         band_runs = [latest]
 
-    def _band(axis: str) -> dict | None:
-        vals = [c[axis] for c in band_runs if c[axis] is not None]
-        if not vals:
+    def _band(axis: str, counted: bool = True) -> dict | None:
+        scored = [c for c in band_runs if c[axis] is not None]
+        if not scored:
             return None
-        return {"low": min(vals), "high": max(vals), "runs": len(vals)}
+        vals = [c[axis] for c in scored]
+        band = {"low": min(vals), "high": max(vals), "runs": len(vals)}
+        # The LATEST run's rows behind the rate (2026-10-28) - the newest run
+        # that has the axis; band_runs keeps complete's run_at order. `runs`
+        # counts runs, so without these the tile never said how many
+        # questions it grades. The gap takes none: it is a difference of two
+        # rates, each of which carries its own.
+        if counted:
+            newest = scored[-1]
+            band["passed"] = newest[axis + "_passed"]
+            band["scored"] = newest[axis + "_scored"]
+        return band
 
     hon_runs = [c for c in complete if c["honesty"] is not None]
     latest_hon = hon_runs[-1] if hon_runs else None
@@ -172,7 +212,7 @@ def derive_trust_panel(admin: bool = False) -> dict:
                     if latest_hon else None),
         "correctness": _band("correctness"),
         "holdout": _band("holdout"),
-        "gap": _band("gap"),
+        "gap": _band("gap", counted=False),
         "faithfulness": _band("faithfulness"),
         "freshness": _band("freshness"),
         "retrieval": ({"pct": latest["retrieval"]}

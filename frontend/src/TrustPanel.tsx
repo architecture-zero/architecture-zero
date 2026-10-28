@@ -4,11 +4,18 @@ import { useEffect, useState } from 'react'
 // via GET /api/trust -
 // nothing here is hardcoded, and the band form (low-high across identical
 // runs) is deliberate: a spread is more honest than a lucky point.
+//
+// Each band also carries the LATEST run's passed/scored for its axis
+// (2026-10-28): `runs` counts runs, so a rate without its denominator read
+// the same over 3 graded rows as over 300. The gap carries none - it is a
+// difference of two rates that each carry their own.
 
 interface Band {
   low: number
   high: number
   runs: number
+  passed?: number | null
+  scored?: number | null
 }
 
 interface TrustData {
@@ -43,9 +50,16 @@ function bandText(b: Band | null | undefined): string {
   return `${b.low}-${b.high}%`
 }
 
+// The rows behind the latest run's rate, in plain words. Empty for a band
+// that carries no counts (the gap).
+function rowsNote(b: Band | null | undefined): string {
+  if (!b || b.passed == null || b.scored == null) return ''
+  return ` - ${b.passed} of ${b.scored} rows in the latest run`
+}
+
 function bandNote(b: Band | null | undefined, fallback: string): string {
-  if (!b || b.runs < 2) return fallback
-  return `${fallback} - band across ${b.runs} identical runs`
+  if (!b || b.runs < 2) return `${fallback}${rowsNote(b)}`
+  return `${fallback} - band across ${b.runs} identical runs${rowsNote(b)}`
 }
 
 // A perfect score renders in the "good" tone; everything else stays neutral
@@ -140,7 +154,7 @@ export default function TrustPanel() {
                   value={bandText(data.holdout)}
                   tone={valueTone(false)}
                   label="Held-out exam"
-                  note="questions the tuning never sees - the un-gameable score"
+                  note={`questions the tuning never sees - the un-gameable score${rowsNote(data.holdout)}`}
                 />
               )}
               {data.gap && (

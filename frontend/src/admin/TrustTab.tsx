@@ -4,7 +4,14 @@ import { PRIMARY_COLOR } from '../theme'
 
 // ── Tab: Trust ─────────────────────────────────────────────────────────────
 
-interface TrustBand { low: number; high: number; runs: number }
+// passed/scored are the LATEST run's rows behind the rate (2026-10-28): `runs`
+// counts runs, so a rate without its denominator read the same over 3 graded
+// rows as over 300. The gap carries none - a difference of two rates that
+// each carry their own.
+interface TrustBand {
+  low: number; high: number; runs: number
+  passed?: number | null; scored?: number | null
+}
 
 interface AdminTrustData {
   available: boolean
@@ -33,6 +40,13 @@ function trustBandText(b: TrustBand | null | undefined): string {
   if (!b) return 'not yet measured'
   if (b.low === b.high) return `${b.low}%`
   return `${b.low}-${b.high}%`
+}
+
+// The rows behind the latest run's rate, in plain words - the same line the
+// public panel shows. Empty for a band that carries no counts (the gap).
+function trustRowsNote(b: TrustBand | null | undefined): string {
+  if (!b || b.passed == null || b.scored == null) return ''
+  return ` - ${b.passed} of ${b.scored} rows in the latest run`
 }
 
 function trustGapText(b: TrustBand | null | undefined): string {
@@ -226,10 +240,12 @@ export function TrustTab({ api, headers, currentUser }: {
               note={`${data.honesty.n} demands for records that do not exist - refused or corrected, none invented`} />
           )}
           <TrustTile value={trustBandText(data.correctness)}
-            label="Answer correctness" note="tuned cohort, graded against owner-written keys" />
+            label="Answer correctness"
+            note={`tuned cohort, graded against owner-written keys${trustRowsNote(data.correctness)}`} />
           {data.holdout && (
             <TrustTile value={trustBandText(data.holdout)}
-              label="Held-out exam" note="questions the tuning never sees" />
+              label="Held-out exam"
+              note={`questions the tuning never sees${trustRowsNote(data.holdout)}`} />
           )}
           {data.gap && (
             <TrustTile value={trustGapText(data.gap)} good={gapGood}
@@ -239,9 +255,11 @@ export function TrustTab({ api, headers, currentUser }: {
           )}
           <TrustTile value={trustBandText(data.faithfulness)}
             good={!!data.faithfulness && data.faithfulness.low === 100}
-            label="Claims grounded in sources" note="claims must trace to retrieved documents" />
+            label="Claims grounded in sources"
+            note={`claims must trace to retrieved documents${trustRowsNote(data.faithfulness)}`} />
           <TrustTile value={trustBandText(data.freshness)}
-            label="Source freshness" note="the material served is current" />
+            label="Source freshness"
+            note={`the material served is current${trustRowsNote(data.freshness)}`} />
           {data.retrieval && (
             <TrustTile value={`${data.retrieval.pct}%`}
               label="Right document found" note="for questions with a known home document" />
