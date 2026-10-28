@@ -126,6 +126,13 @@ def index(request, monkeypatch):
     System is shared per settings, so start from (and leave) no collections
     of these names."""
     if request.param == "real":
+        # A fresh System per test, as test_chroma_maintenance.py does: the
+        # in-memory System is cached per settings, and a test that starts and
+        # stops the app (the API test above the end-to-end one) leaves the
+        # cached one stopped, so the next real store answered every call with
+        # an empty error.
+        from chromadb.api.shared_system_client import SharedSystemClient
+        SharedSystemClient.clear_system_cache()
         store = chromadb.EphemeralClient(
             settings=_RealSettings(is_persistent=False, anonymized_telemetry=False))
     else:
