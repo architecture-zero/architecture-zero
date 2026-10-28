@@ -391,7 +391,7 @@ def test_a_knowledge_file_deleted_while_down_is_pruned_by_the_startup_sync(
                         lambda s: (state.clear(), state.update(s)))
 
     first = ingest_mod._sync_knowledge_dir(force=False)
-    assert first["returns.md"]["status"] == "ok" and first["shipping.md"]["status"] == "ok"
+    assert first["returns.md"]["status"] == "ok" and first["shipping.md"]["status"] == "ok", first
     gen = index.get_collection(database.GLOBAL_COLLECTION)
     assert set(_sources(gen)) == {"returns.md", "shipping.md"}
 
