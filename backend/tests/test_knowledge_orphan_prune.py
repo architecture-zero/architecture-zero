@@ -127,10 +127,7 @@ def index(request, monkeypatch):
     of these names."""
     if request.param == "real":
         # A fresh System per test, as test_chroma_maintenance.py does: the
-        # in-memory System is cached per settings, and a test that starts and
-        # stops the app (the API test above the end-to-end one) leaves the
-        # cached one stopped, so the next real store answered every call with
-        # an empty error.
+        # in-memory System is cached per settings, so no state carries over.
         from chromadb.api.shared_system_client import SharedSystemClient
         SharedSystemClient.clear_system_cache()
         store = chromadb.EphemeralClient(
@@ -148,10 +145,14 @@ def index(request, monkeypatch):
 
     drop_all()
     monkeypatch.setattr(database, "client", store)
+    # The production metadata, as every real collection is created with
+    # (collection_metadata). list_sources creates the collection with it, so a
+    # stand-in asking for other metadata on the same name made real chroma
+    # refuse every later call - the end-to-end test's first sync errored.
     monkeypatch.setattr(database, "_get_collection",
                         lambda department=None: store.get_or_create_collection(
                             database._collection_name(department),
-                            metadata={"hnsw:space": "cosine"}))
+                            metadata=database.collection_metadata()))
     monkeypatch.setattr(database, "_embed_batch", lambda texts: [EMBEDDING] * len(texts))
     yield store
     drop_all()
@@ -397,7 +398,6 @@ def test_a_knowledge_file_deleted_while_down_is_pruned_by_the_startup_sync(
     monkeypatch.setattr(ingest_mod, "_save_ingest_state",
                         lambda s: (state.clear(), state.update(s)))
 
-    ingest_mod._ingest_file_locked("shipping.md", (k / "shipping.md").read_text(encoding="utf-8"))  # TEMP diagnostic
     first = ingest_mod._sync_knowledge_dir(force=False)
     assert first["returns.md"]["status"] == "ok" and first["shipping.md"]["status"] == "ok", first
     gen = index.get_collection(database.GLOBAL_COLLECTION)
