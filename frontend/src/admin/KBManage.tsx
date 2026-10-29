@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { guardedJson } from '../errorSurface'
+import { actionError, emitError, guardedJson } from '../errorSurface'
 
 // ── Tab: Knowledge Base ────────────────────────────────────────────────────
 // Upload, list and remove sources, by department. A browse-and-search view
@@ -76,9 +76,14 @@ export function KBManage({ api, headers }: { api: string; headers: () => Record<
     }
   }
 
+  // The DELETE's answer is read through actionError, the guard every admin
+  // mutation uses (2026-10-29). It was awaited and dropped: a 403 or a 500
+  // repainted the same list and said nothing, so a refused remove read as
+  // "nothing happened". The refusal is toasted; the list reloads either way.
   const remove = async (source: string, dept: string) => {
     const url = `${api}/api/ingest/source/${encodeURIComponent(source)}?department=${encodeURIComponent(dept)}`
-    await fetch(url, { method: 'DELETE', headers: headers() })
+    const err = await actionError(fetch(url, { method: 'DELETE', headers: headers() }), `Removing ${source}`)
+    if (err) emitError(err)
     loadSources(filterDept || undefined)
   }
 
