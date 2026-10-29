@@ -22,6 +22,7 @@ import hashlib
 import logging
 import pathlib
 import threading
+import contextlib
 
 from app.chunking import (chunk_dated_markdown, chunk_markdown_sections,
                           CHUNKER_VERSION)
@@ -118,7 +119,14 @@ from app.rag_config import dept_for_source as _dept_for_source  # noqa: E402  (m
 #
 # PER-SOURCE, not global: different files are independent, and one global lock
 # would serialise a whole sync behind its slowest file for no safety gain. The
-# registry keeps one Lock per source name it has seen - a few bytes each.
+# registry keeps one Lock per source name WITH WORK IN FLIGHT and nothing else
+# (bounded 2026-10-29): until then it kept one per name it had ever seen, for
+# the life of the process - every sync, upload and delete added one, a DELETE
+# of a name never ingested included. A few bytes each, so a slow leak, never a
+# wrong answer; but a process that stays up grows without bound. A hold counts
+# itself in under the guard as it resolves its entry and the last hold out
+# drops the entry; the count is what keeps a waiter from being handed a fresh
+# Lock for a name whose holder just left.
 #
 # Every writer of a source takes that source's lock. In this module: the delta
 # ingest through _ingest_file (the watcher, the startup and manual syncs), the
@@ -130,6 +138,7 @@ from app.rag_config import dept_for_source as _dept_for_source  # noqa: E402  (m
 # queued-ingest worker (app/jobs.py). /api/ingest writes one caller-named chunk
 # in a single upsert, with no diff to interleave, and does not take it.
 _ingest_locks: dict[str, threading.Lock] = {}
+_ingest_lock_waiters: dict[str, int] = {}    # holds in flight per name: same keys, same guard
 _ingest_locks_guard = threading.Lock()
 
 
@@ -140,12 +149,36 @@ _ingest_locks_guard = threading.Lock()
 # prunes, the source delete, the quarantine release, the queued worker - takes
 # the global lock at all. Every holder runs off the event loop: a threadpool
 # route, the watcher's executor hop, the startup executor, the worker thread.
-def _source_lock(source: str) -> threading.Lock:
-    """The lock for one source. NEVER acquire it on the event loop: a blocking
-    acquire there, while a sync holds it, stalls every request for the length
-    of that ingest - which is why the watcher hops to an executor first."""
+@contextlib.contextmanager
+def _source_lock(source: str):
+    """A hold on one source's lock, for `with`. NEVER acquire it on the event
+    loop: a blocking acquire there, while a sync holds it, stalls every request
+    for the length of that ingest - which is why the watcher hops to an
+    executor first.
+
+    A context manager, not the Lock (2026-10-29; it returned the table's Lock
+    until then, which left the table no way to learn that a hold had ended, so
+    an entry stayed for the life of the process): the entry is resolved and
+    this hold counted in under one take of the guard, so no exit can drop the
+    entry in between; the Lock is held across the body, the guard never across
+    the acquire; and on the way out the last hold counted drops the entry.
+    Every caller takes it as `with _source_lock(name):` - the one shape that
+    pairs the count-in with the count-out.
+    """
     with _ingest_locks_guard:
-        return _ingest_locks.setdefault(source, threading.Lock())
+        lock = _ingest_locks.setdefault(source, threading.Lock())
+        _ingest_lock_waiters[source] = _ingest_lock_waiters.get(source, 0) + 1
+    try:
+        with lock:
+            yield lock
+    finally:
+        with _ingest_locks_guard:
+            left = _ingest_lock_waiters[source] - 1
+            if left:
+                _ingest_lock_waiters[source] = left
+            else:
+                del _ingest_lock_waiters[source]
+                del _ingest_locks[source]
 
 
 def _ingest_file(name: str, text: str) -> int:

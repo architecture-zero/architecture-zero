@@ -8,7 +8,8 @@ corrupts an HNSW index.
 
 These pin what makes the lock worth having and safe to hold: one writer per
 source but never one writer in all, the watcher's delete and the two purges
-behind the same lock, and the watcher never taking it on the event loop.
+behind the same lock, the watcher never taking it on the event loop - and,
+since 2026-10-29, the registry holding only the names with work in flight.
 """
 import asyncio
 import enum
@@ -17,6 +18,8 @@ import sys
 import threading
 import time
 import types
+
+import pytest
 
 from app import ingest_sync
 
@@ -38,6 +41,12 @@ def _held(source):
     """Whether this source's lock is held right now (no registry reads as no)."""
     lock = getattr(ingest_sync, "_ingest_locks", {}).get(source)
     return bool(lock and lock.locked())
+
+
+def _in_table(source):
+    """Whether the registry holds an entry for this source right now."""
+    return (source in getattr(ingest_sync, "_ingest_locks", {})
+            or source in getattr(ingest_sync, "_ingest_lock_waiters", {}))
 
 
 class _Writers:
@@ -110,10 +119,84 @@ def test_different_sources_do_not_wait_for_each_other(monkeypatch):
     assert all(met) and writers.most_all == 2, "one source's writer waited on another's"
 
 
-def test_one_source_name_is_one_lock():
-    a = ingest_sync._source_lock("docs/a.md")
-    assert ingest_sync._source_lock("docs/a.md") is a
-    assert ingest_sync._source_lock("docs/b.md") is not a
+def test_two_holds_of_one_name_share_one_entry_until_the_last_releases():
+    """One entry per name in flight: the second hold waits on the Lock the
+    first holds (until 2026-10-29 this test pinned that as `_source_lock`
+    returning the same Lock object twice; a hold is a context manager now, so
+    the sharing shows as the wait). The entry stays while either is in flight
+    - dropped under a waiter, the next arrival would get a fresh Lock and the
+    source two writers - and goes when the last one out releases. A different
+    name is a different entry: its hold enters beside this one."""
+    name, other = "docs/in-flight.md", "docs/other-name.md"
+    first_in, first_go = threading.Event(), threading.Event()
+    second_in, second_go = threading.Event(), threading.Event()
+    other_in, other_go = threading.Event(), threading.Event()
+
+    def hold(source, entered, go):
+        with ingest_sync._source_lock(source):
+            entered.set()
+            go.wait(timeout=5)
+
+    first = threading.Thread(target=hold, args=(name, first_in, first_go))
+    second = threading.Thread(target=hold, args=(name, second_in, second_go))
+    other_hold = threading.Thread(target=hold, args=(other, other_in, other_go),
+                                  daemon=True)   # a global lock would hang it here
+    first.start()
+    assert first_in.wait(timeout=5)
+    second.start()
+    assert not second_in.wait(timeout=0.3), "the second hold entered beside the first"
+    assert _held(name)
+    other_hold.start()
+    assert other_in.wait(timeout=2), "a different name waited on this one"
+    first_go.set()
+    assert second_in.wait(timeout=5), "the second hold never got the lock the first released"
+    first.join(timeout=5)
+    assert _held(name) and _in_table(name), "the entry went while the second hold was inside"
+    second_go.set()
+    second.join(timeout=5)
+    assert not _in_table(name), "the last hold out left the entry behind"
+    other_go.set()
+    other_hold.join(timeout=5)
+    assert not _in_table(other)
+
+
+def test_released_names_leave_the_table():
+    """The registry kept one Lock per name ever handed to it, for the life of
+    the process, until 2026-10-29: every sync, upload and delete added one -
+    deleted names and names that never existed included - so a long-lived
+    process grew by one Lock per name it had ever seen. The table holds only
+    names with work in flight: lock and release N fresh names, and none
+    remain."""
+    names = [f"docs/released-{i}.md" for i in range(25)]
+    for n in names:
+        with ingest_sync._source_lock(n):
+            assert _held(n)
+    left = [n for n in names if _in_table(n)]
+    assert left == [], f"{len(left)} of {len(names)} released names still in the table"
+
+
+def test_a_hold_that_raises_still_releases_and_drops_its_entry():
+    name = "docs/raises.md"
+    with pytest.raises(RuntimeError):
+        with ingest_sync._source_lock(name):
+            raise RuntimeError("mid-write")
+    assert not _in_table(name)
+    with ingest_sync._source_lock(name):    # and the name is free for the next writer
+        assert _held(name)
+    assert not _in_table(name)
+
+
+def test_a_watcher_delete_of_an_unknown_name_leaves_no_entry(monkeypatch, tmp_path):
+    """The leak's cheapest vector: a delete of a name never ingested - nothing
+    on disk, nothing in the index - took the lock and left its Lock behind."""
+    monkeypatch.setattr(ingest_sync, "KNOWLEDGE_DIR", str(tmp_path))
+    monkeypatch.setattr(ingest_sync, "_DOCS_DIR", tmp_path / "docs")
+    monkeypatch.setattr(ingest_sync, "_DOCS_ROOT_FILES", [])
+    monkeypatch.setattr(ingest_sync, "delete_source", lambda source, dept=None: None)
+    monkeypatch.setattr(ingest_sync, "_load_ingest_state", lambda: {})
+    monkeypatch.setattr(ingest_sync, "_save_ingest_state", lambda state: None)
+    ingest_sync._handle_watched_change(True, tmp_path / "never-there.md")
+    assert not _in_table("never-there.md")
 
 
 def _fake_watchfiles(changes):
