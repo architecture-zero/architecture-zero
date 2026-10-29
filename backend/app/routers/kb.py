@@ -32,7 +32,8 @@ from app import jobs
 from app.chunking import chunk_plain
 from app.database import (add_document, list_sources, delete_source,
                           list_departments, list_pii_sources, get_source_ids,
-                          delete_documents, restamp_reused_chunks)
+                          delete_documents, restamp_reused_chunks,
+                          chunk_metadata, restore_chunk_metadata)
 from app.db import get_session
 from app.ingest_sync import (KNOWLEDGE_DIR, _sync_knowledge_dir, _sync_docs,
                              _prune_orphan_docs, _prune_orphan_knowledge,
@@ -175,6 +176,7 @@ def admin_release_quarantine(item_id: int,
                 raise HTTPException(status_code=404, detail="No held quarantine item with that id.")
         existing = set(get_source_ids(source, department))
         added_ids: list[str] = []
+        reused_before: dict[str, dict] = {}
         try:
             for doc_id, (i, chunk) in desired.items():
                 if doc_id in existing:
@@ -187,10 +189,11 @@ def admin_release_quarantine(item_id: int,
             # deleted this release) and its curated tier instead of the
             # release's untrusted one (2026-10-29). They are this release's
             # now, under the same waiver: the tag kept, not re-quarantined.
-            restamp_reused_chunks(
-                [(doc_id, chunk, {"source": source, "chunk": i, **meta})
-                 for doc_id, (i, chunk) in desired.items() if doc_id in existing],
-                department, quarantine_exempt=True)
+            # Their metadata is read first, for the rollback below to put back.
+            reused = [(doc_id, chunk, {"source": source, "chunk": i, **meta})
+                      for doc_id, (i, chunk) in desired.items() if doc_id in existing]
+            reused_before = chunk_metadata([doc_id for doc_id, _, _ in reused], department)
+            restamp_reused_chunks(reused, department, quarantine_exempt=True)
             stale = sorted(existing - desired.keys())
             if stale:
                 delete_documents(stale, department)
@@ -213,6 +216,18 @@ def admin_release_quarantine(item_id: int,
                     logger.exception(
                         "quarantine release rollback FAILED for %s - %d chunks may be "
                         "indexed while the item reads held", source, len(added_ids))
+            # And put back what the restamp changed (2026-10-29): a failure
+            # after it - the stale delete - left the reused rows reading as
+            # this release's (untrusted, tagged, not file-owned) while the
+            # item reads held.
+            if reused_before:
+                try:
+                    restore_chunk_metadata(reused_before, department)
+                except Exception:
+                    logger.exception(
+                        "quarantine release rollback FAILED for %s - %d reused chunks "
+                        "may carry the release's metadata while the item reads held",
+                        source, len(reused_before))
             with get_session() as db:
                 r = db.get(QuarantinedDoc, item_id)
                 if r:

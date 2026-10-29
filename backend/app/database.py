@@ -748,6 +748,37 @@ def restamp_reused_chunks(entries: list[tuple[str, str, dict]],
     return len(ids)
 
 
+def chunk_metadata(ids: list[str], department: str | None = None) -> dict[str, dict]:
+    """The stored metadata of each id that is indexed, keyed by id; an id that
+    is not stored is absent. The quarantine release's snapshot before it
+    re-stamps the ids it reuses (2026-10-29), for restore_chunk_metadata to
+    put back if the release then fails. Read in EMBED_BATCH_SIZE slices."""
+    col = _existing_collection(department) if ids else None
+    if col is None:
+        return {}
+    out: dict[str, dict] = {}
+    for start in range(0, len(ids), EMBED_BATCH_SIZE):
+        got = col.get(ids=ids[start:start + EMBED_BATCH_SIZE], include=["metadatas"])
+        out.update({i: dict(m) for i, m in zip(got["ids"], got["metadatas"]) if m})
+    return out
+
+
+def restore_chunk_metadata(snapshot: dict[str, dict], department: str | None = None) -> int:
+    """Write a chunk_metadata snapshot back: every key each row held returns
+    to its value - the from_file stamp and the trust tier among them. A key
+    written since that the row did not hold stays (chroma's update MERGES
+    metadata and its API refuses None, so a key cannot be removed). No
+    re-embed. Returns the count written."""
+    col = _existing_collection(department) if snapshot else None
+    if col is None:
+        return 0
+    ids = list(snapshot)
+    for start in range(0, len(ids), EMBED_BATCH_SIZE):
+        sl = ids[start:start + EMBED_BATCH_SIZE]
+        col.update(ids=sl, metadatas=[snapshot[i] for i in sl])
+    return len(ids)
+
+
 class RetrievalUnavailable(RuntimeError):
     """Retrieval is DOWN, not empty - an outage.
 
