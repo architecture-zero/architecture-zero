@@ -104,6 +104,52 @@ def test_kb_files_omits_restricted_names_below_the_floor(client, admin_headers, 
     assert [f["name"] for f in r.json()["files"]] == ["board-minutes.md", "faq.md"]
 
 
+def test_kb_files_walks_the_knowledge_tree_like_the_sync(client, admin_headers, admin_role_headers,
+                                                         tmp_path, monkeypatch):
+    """The sync ingests the whole tree and keys each source by its path
+    relative to the knowledge root in posix form (ingest_sync
+    _sync_knowledge_dir), so the listing walks the same tree and names each
+    file the same way: a root file by its bare name, a subfolder file by its
+    relative path. The ingested flag and the department clearance both key
+    by that name - the default RESTRICTED_PREFIXES is a path prefix, so a
+    subfolder name above the caller's level is omitted exactly like a root
+    one - and the sync's extension skip holds. Until 2026-10-28 the listing
+    read the root alone (iterdir), so a subfolder file was ingested and
+    never listed."""
+    (tmp_path / "faq.md").write_text("public floor", encoding="utf-8")
+    (tmp_path / "guides").mkdir()
+    (tmp_path / "guides" / "setup.md").write_text("in a subfolder", encoding="utf-8")
+    (tmp_path / "guides" / "notes.bin").write_text("not a watched extension", encoding="utf-8")
+    (tmp_path / "internal").mkdir()
+    (tmp_path / "internal" / "plan.md").write_text("owner only", encoding="utf-8")
+    monkeypatch.setattr("app.routers.kb.KNOWLEDGE_DIR", str(tmp_path))
+    monkeypatch.setattr("app.rag_config.RESTRICTED_PREFIXES", ("internal/",))
+    monkeypatch.setattr("app.rag_config.RESTRICTED_SOURCES", set())
+    # The index holds the subfolder files under their relative names, the
+    # way the sync stamps them; the root file is on disk but not indexed.
+    monkeypatch.setattr("app.routers.kb.list_sources",
+                        lambda department=None: [
+                            {"source": "guides/setup.md", "count": 3, "department": "general"},
+                            {"source": "internal/plan.md", "count": 9, "department": "restricted"},
+                        ])
+
+    r = client.get("/api/kb/files", headers=admin_headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["directory"] == str(tmp_path)
+    assert [f["name"] for f in r.json()["files"]] == ["faq.md", "guides/setup.md", "internal/plan.md"]
+    files = {f["name"]: f for f in r.json()["files"]}
+    assert files["guides/setup.md"]["ingested"] is True
+    assert files["internal/plan.md"]["ingested"] is True
+    assert files["faq.md"]["ingested"] is False
+    assert files["guides/setup.md"]["size"] == len("in a subfolder")
+    assert set(files["guides/setup.md"]) == {"name", "size", "modified", "ingested"}
+
+    r = client.get("/api/kb/files", headers=admin_role_headers)
+    assert r.status_code == 200, r.text
+    assert [f["name"] for f in r.json()["files"]] == ["faq.md", "guides/setup.md"]
+    assert "plan.md" not in r.text
+
+
 def test_ingest_sources_omits_departments_below_the_floor(client, admin_headers, admin_role_headers,
                                                           monkeypatch):
     # The stub honours the department argument the way database.list_sources

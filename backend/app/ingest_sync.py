@@ -319,10 +319,16 @@ def _sync_knowledge_dir(force: bool = True) -> dict:
     return results
 
 
-def _valid_knowledge_sources() -> set[str]:
+def _valid_knowledge_sources(knowledge_dir: str | None = None) -> set[str]:
     """The KNOWLEDGE_DIR-relative keys that SHOULD exist: every eligible file
-    on disk, keyed exactly as _sync_knowledge_dir keys it."""
-    root = pathlib.Path(KNOWLEDGE_DIR)
+    on disk, keyed exactly as _sync_knowledge_dir keys it.
+
+    The KB file listing (routers/kb.py kb_files) walks the tree through this
+    helper too, since 2026-10-28, passing its own KNOWLEDGE_DIR binding (the
+    one its tests patch): one walk, so the listing can neither show a file
+    the sync would not ingest nor miss one it would - the root-only iterdir
+    listing it replaced never showed a subfolder file at all."""
+    root = pathlib.Path(KNOWLEDGE_DIR if knowledge_dir is None else knowledge_dir)
     return {p.relative_to(root).as_posix() for p in root.rglob("*")
             if p.is_file() and p.suffix.lower() in _WATCHED_EXTS}
 

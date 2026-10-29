@@ -5,8 +5,9 @@ verbatim on the handlers, never `from app.main import ...`.
 
 The ingest-sync machinery this router calls into (_sync_knowledge_dir,
 _sync_docs, _prune_orphan_docs, _prune_orphan_knowledge, _source_lock,
-KNOWLEDGE_DIR, _WATCHED_EXTS) now lives in app/ingest_sync.py, which main's
-startup hooks drive as well. Both import it; neither re-exports it.
+_valid_knowledge_sources, KNOWLEDGE_DIR) now lives in app/ingest_sync.py,
+which main's startup hooks drive as well. Both import it; neither re-exports
+it.
 
 MAX_UPLOAD_MB and _UPLOAD_CHUNK_BYTES move here rather than to runtime_config:
 the upload handler is their only reader. tests/test_review_remediation imports
@@ -33,9 +34,9 @@ from app.database import (add_document, list_sources, delete_source,
                           list_departments, list_pii_sources, get_source_ids,
                           delete_documents)
 from app.db import get_session
-from app.ingest_sync import (KNOWLEDGE_DIR, _WATCHED_EXTS, _sync_knowledge_dir,
-                             _sync_docs, _prune_orphan_docs, _prune_orphan_knowledge,
-                             _source_lock)
+from app.ingest_sync import (KNOWLEDGE_DIR, _sync_knowledge_dir, _sync_docs,
+                             _prune_orphan_docs, _prune_orphan_knowledge,
+                             _source_lock, _valid_knowledge_sources)
 from app.jwt_auth import require_owner, require_permission
 from app.logger import log, log_error
 from app.metrics import increment
@@ -355,23 +356,35 @@ def kb_files(current_user: dict = Depends(require_permission("manage_kb"))):
     if not os.path.isdir(KNOWLEDGE_DIR):
         return {"files": [], "directory": KNOWLEDGE_DIR}
     ingested_names = {s["source"] for s in list_sources()}
-    # A knowledge-root file's department is what the classifier says
-    # (rag_config.dept_for_source, by the same name the sync stamps: a
-    # top-level file is keyed by p.name); a name above the caller's level is
-    # left out of the listing.
+    # The walk is the sync's own (ingest_sync._valid_knowledge_sources: the
+    # whole tree, the watched extensions, each file keyed by its path
+    # relative to the knowledge root in posix form - a root file by its bare
+    # name), so the listing names exactly what the sync ingests, under the
+    # name it stamps, and the ingested flag compares that name. Until
+    # 2026-10-28 this read the root alone (iterdir) and keyed by basename: a
+    # subfolder file was ingested and never listed, and its flag could not
+    # be computed. The department is what the classifier says of that same
+    # name (rag_config.dept_for_source keys by it - RESTRICTED_PREFIXES is a
+    # path prefix); a name above the caller's level is left out of the
+    # listing, subfolder or root alike. Only names the walk itself produced
+    # reach the filesystem, nothing from the request; a file gone between
+    # the walk and its stat is simply not listed.
     from app.rag_config import dept_for_source
+    root = pathlib.Path(KNOWLEDGE_DIR)
     files = []
-    for p in sorted(pathlib.Path(KNOWLEDGE_DIR).iterdir()):
-        if p.is_file() and p.suffix.lower() in _WATCHED_EXTS:
-            if not _clears_department(current_user, dept_for_source(p.name)):
-                continue
-            stat = p.stat()
-            files.append({
-                "name":     p.name,
-                "size":     stat.st_size,
-                "modified": _dt.datetime.fromtimestamp(stat.st_mtime, tz=_dt.timezone.utc).isoformat(),
-                "ingested": p.name in ingested_names,
-            })
+    for rel in sorted(_valid_knowledge_sources(KNOWLEDGE_DIR)):
+        if not _clears_department(current_user, dept_for_source(rel)):
+            continue
+        try:
+            stat = (root / rel).stat()
+        except OSError:
+            continue
+        files.append({
+            "name":     rel,
+            "size":     stat.st_size,
+            "modified": _dt.datetime.fromtimestamp(stat.st_mtime, tz=_dt.timezone.utc).isoformat(),
+            "ingested": rel in ingested_names,
+        })
     return {"files": files, "directory": KNOWLEDGE_DIR}
 
 
