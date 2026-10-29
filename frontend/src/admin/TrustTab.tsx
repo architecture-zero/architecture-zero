@@ -7,11 +7,11 @@ import { PRIMARY_COLOR } from '../theme'
 // passed/scored are the LATEST run's rows behind the rate (2026-10-28): `runs`
 // counts runs, so a rate without its denominator read the same over 3 graded
 // rows as over 300. The gap carries none - a difference of two rates that
-// each carry their own.
-interface TrustBand {
-  low: number; high: number; runs: number
-  passed?: number | null; scored?: number | null
-}
+// each carry their own. The retrieval tile, a point from the latest run
+// rather than a band, carries the same two (also 2026-10-28) - it was the
+// one bare rate left on the panel.
+interface TrustCounts { passed?: number | null; scored?: number | null }
+interface TrustBand extends TrustCounts { low: number; high: number; runs: number }
 
 interface AdminTrustData {
   available: boolean
@@ -22,7 +22,7 @@ interface AdminTrustData {
   gap?: TrustBand | null
   faithfulness?: TrustBand | null
   freshness?: TrustBand | null
-  retrieval?: { pct: number } | null
+  retrieval?: ({ pct: number } & TrustCounts) | null
   measured_at?: string | null
   corpus_fingerprint_short?: string | null
   cross_family_judging?: boolean
@@ -43,8 +43,8 @@ function trustBandText(b: TrustBand | null | undefined): string {
 }
 
 // The rows behind the latest run's rate, in plain words - the same line the
-// public panel shows. Empty for a band that carries no counts (the gap).
-function trustRowsNote(b: TrustBand | null | undefined): string {
+// public panel shows. Empty for a tile that carries no counts (the gap).
+function trustRowsNote(b: TrustCounts | null | undefined): string {
   if (!b || b.passed == null || b.scored == null) return ''
   return ` - ${b.passed} of ${b.scored} rows in the latest run`
 }
@@ -262,7 +262,8 @@ export function TrustTab({ api, headers, currentUser }: {
             note={`the material served is current${trustRowsNote(data.freshness)}`} />
           {data.retrieval && (
             <TrustTile value={`${data.retrieval.pct}%`}
-              label="Right document found" note="for questions with a known home document" />
+              label="Right document found"
+              note={`for questions with a known home document${trustRowsNote(data.retrieval)}`} />
           )}
         </div>
         <p className="text-xs text-gray-500 mt-3">

@@ -8,14 +8,20 @@ import { useEffect, useState } from 'react'
 // Each band also carries the LATEST run's passed/scored for its axis
 // (2026-10-28): `runs` counts runs, so a rate without its denominator read
 // the same over 3 graded rows as over 300. The gap carries none - it is a
-// difference of two rates that each carry their own.
+// difference of two rates that each carry their own. The retrieval tile, a
+// point from the latest run rather than a band, carries the same two (also
+// 2026-10-28) - it was the one bare rate left on the panel.
 
-interface Band {
+// The rows behind a rate: the latest run's passed and scored for its axis.
+interface Counts {
+  passed?: number | null
+  scored?: number | null
+}
+
+interface Band extends Counts {
   low: number
   high: number
   runs: number
-  passed?: number | null
-  scored?: number | null
 }
 
 interface TrustData {
@@ -27,7 +33,7 @@ interface TrustData {
   gap?: Band | null
   faithfulness?: Band | null
   freshness?: Band | null
-  retrieval?: { pct: number } | null
+  retrieval?: ({ pct: number } & Counts) | null
   measured_at?: string | null
   corpus_fingerprint_short?: string | null
   cross_family_judging?: boolean
@@ -50,9 +56,9 @@ function bandText(b: Band | null | undefined): string {
   return `${b.low}-${b.high}%`
 }
 
-// The rows behind the latest run's rate, in plain words. Empty for a band
+// The rows behind the latest run's rate, in plain words. Empty for a tile
 // that carries no counts (the gap).
-function rowsNote(b: Band | null | undefined): string {
+function rowsNote(b: Counts | null | undefined): string {
   if (!b || b.passed == null || b.scored == null) return ''
   return ` - ${b.passed} of ${b.scored} rows in the latest run`
 }
@@ -187,7 +193,7 @@ export default function TrustPanel() {
                   value={`${data.retrieval.pct}%`}
                   tone={valueTone(false)}
                   label="Right document found"
-                  note="for questions with a known home document"
+                  note={`for questions with a known home document${rowsNote(data.retrieval)}`}
                 />
               )}
             </div>

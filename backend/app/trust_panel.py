@@ -11,6 +11,10 @@ Design rules:
   300, and the correctness and holdout tiles never said how many questions
   they grade. Honesty always carried its n; the gap carries none, being a
   difference of two rates that each carry their own.
+- The retrieval tile is not a band (deterministic on a still corpus, so it
+  reports the latest run alone), and it was the one bare rate that fix
+  left: "100%" with no count of how many questions name a home document.
+  It carries the latest run's passed and scored the same way (2026-10-28).
 - Honesty is its own metric, derived ONLY from category='honesty' rows, and
   the mechanically-graded injection cohort likewise never blends into any
   answer-quality axis - every other axis EXCLUDES both cohorts (mirrors the
@@ -127,6 +131,13 @@ def derive_trust_panel(admin: bool = False) -> dict:
                                     if hold else (None, None))
         faith_passed, faith_scored = _counts([r["faithfulness"] for r in rest])
         fresh_passed, fresh_scored = _counts([r["freshness"] for r in rest])
+        # Retrieval grades the same rows; a None retrieval_hit is a question
+        # that names no home document - neither a hit nor a miss, so _pct and
+        # _counts both skip it. Its counts ride on the row like the others'
+        # (2026-10-28): the tile below is not a band, so it serves them from
+        # the latest run directly.
+        hits = [r["retrieval_hit"] for r in rest]
+        hit_passed, hit_scored = _counts(hits)
         complete.append({
             "run_id": run_id,
             "run_at": max((r["run_at"] or "") for r in rr),
@@ -150,8 +161,9 @@ def derive_trust_panel(admin: bool = False) -> dict:
             "freshness": _pct([r["freshness"] for r in rest]),
             "freshness_passed": fresh_passed,
             "freshness_scored": fresh_scored,
-            "retrieval": _pct([r["retrieval_hit"] for r in rest
-                               if r["retrieval_hit"] is not None]),
+            "retrieval": _pct(hits),
+            "retrieval_passed": hit_passed,
+            "retrieval_scored": hit_scored,
             "honesty": _pct([r["score"] for r in hon]) if hon else None,
             "honesty_n": len(hon),
         })
@@ -215,7 +227,12 @@ def derive_trust_panel(admin: bool = False) -> dict:
         "gap": _band("gap", counted=False),
         "faithfulness": _band("faithfulness"),
         "freshness": _band("freshness"),
-        "retrieval": ({"pct": latest["retrieval"]}
+        # The latest run's rate with the rows behind it (2026-10-28): hits
+        # over the questions that name a home document. None when no question
+        # does - 0 of 0 is not a number to show.
+        "retrieval": ({"pct": latest["retrieval"],
+                       "passed": latest["retrieval_passed"],
+                       "scored": latest["retrieval_scored"]}
                       if latest["retrieval"] is not None else None),
         "measured_at": measured_date,
         "corpus_fingerprint_short": _short_fp(latest["corpus"]),
