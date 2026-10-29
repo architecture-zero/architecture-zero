@@ -38,7 +38,12 @@ from app.providers import stream_chat
 # Env-overridable (default 768): a verdict is tiny, but judge models that
 # spend output tokens on internal reasoning can truncate mid-JSON at the
 # default - raise per-run without a code change.
-JUDGE_MAX_TOKENS = int(os.getenv("JUDGE_MAX_TOKENS", "768"))
+# 4096 since 2026-10-29 (768 before): a judge that thinks before it answers
+# spends its thinking inside this cap (the OpenAI-compatible door sends it raw),
+# and at 768 a 132-row pass logged 32 to 45 verdicts cut mid-rationale, two of
+# them on a one-row cohort - unscored rows. The salvage in _parse_verdict reads
+# a cut verdict's bool; the room keeps the rationale. A host pin wins over this.
+JUDGE_MAX_TOKENS = int(os.getenv("JUDGE_MAX_TOKENS", "4096"))
 
 _JUDGE_SYSTEM = (
     "You are a strict, consistent evaluation judge for a personal AI assistant's "
