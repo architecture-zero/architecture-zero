@@ -387,7 +387,10 @@ def _prune_orphan_knowledge(force: bool = False, dry_run: bool = False) -> dict:
     named by its file name, the same shape, but carries no from_file stamp,
     and neither do API ingests or generated records, so none of them can be a
     candidate; a source with mixed chunks is reported, not deleted. The help
-    pages carry the stamp too, and list_file_sources never lists them.
+    pages carry the stamp too, and list_file_sources never lists them. The
+    candidate list is a snapshot: under each source's lock the file-on-disk
+    check and the provenance read both run again, and a source no longer
+    wholly file-owned by then is skipped with a log line, every chunk left.
     Fail-safe: a missing or empty knowledge dir prunes nothing, and more than
     _KNOWLEDGE_PRUNE_CAP candidates prunes nothing unless force. dry_run lists
     what it would remove and removes nothing."""
@@ -422,14 +425,42 @@ def _prune_orphan_knowledge(force: bool = False, dry_run: bool = False) -> dict:
             # what it wrote.
             if (root / s["source"]).is_file():
                 continue
+            # The provenance is re-read under the lock too (2026-10-29): the
+            # candidate list was taken before any lock, and an upload named
+            # like the deleted file takes this same lock, replaces the
+            # file-owned chunks with its own unstamped ones and writes no
+            # knowledge file - so a source that read as an orphan at the
+            # listing is an upload by the time this lock is held, and the
+            # disk check above cannot tell. Until this re-read the prune
+            # deleted that upload whole. The listing is the one the snapshot
+            # used, taken again now (one corpus listing per candidate, bounded
+            # by the cap unless forced); only a source that still reads wholly
+            # file-owned is deleted, with the count it holds now. A source
+            # that reads mixed here is left whole, as the snapshot leaves a
+            # mixed source - not trimmed with delete_file_chunks: the upload
+            # skips a chunk id already indexed, so a chunk whose text it shares
+            # with the old file keeps that file's stamp, and the file-owned
+            # rows of a raced source can be the upload's own text; and the dry
+            # run never offered a partial delete.
+            live = next((r for r in list_file_sources()
+                         if r["source"] == s["source"]
+                         and r["department"] == s["department"]), None)
+            if live is None or live["file_chunks"] != live["count"]:
+                log("kb_orphan_prune_skipped", file=s["source"],
+                    department=s["department"],
+                    count=live["count"] if live else 0,
+                    file_chunks=live["file_chunks"] if live else 0,
+                    reason="nothing indexed under the lock" if live is None
+                           else "not wholly file-owned under the lock")
+                continue
             delete_source(s["source"], s["department"])
             state = _load_ingest_state()
             if state.pop(s["source"], None) is not None:
                 _save_ingest_state(state)
         log("kb_orphan_pruned", file=s["source"], department=s["department"],
-            chunks=s["count"])
+            chunks=live["count"])
         deleted.append({"source": s["source"], "department": s["department"],
-                        "count": s["count"]})
+                        "count": live["count"]})
     return {"deleted": deleted, "mixed": mixed}
 
 

@@ -7,7 +7,8 @@ processes kept serving forever.
 
 What these pin: only sources the FILE SYNC wholly owns (every chunk stamped
 from_file="true") can be pruned - an upload is named by its file name, the
-same shape, and must survive; a mixed source is reported, not deleted; the
+same shape, and must survive, even when it replaces a candidate between the
+listing and the prune's lock; a mixed source is reported, not deleted; the
 help pages carry the same stamp and are never candidates; a missing or empty
 knowledge dir prunes nothing; more candidates than the cap prunes nothing
 unless forced; dry_run removes nothing; the sync and the admin endpoint
@@ -15,6 +16,8 @@ report what went; /api/ingest cannot claim the stamp. The CONTROL cases pass
 on the code before the prune too: the docs/ prune and the legacy basename
 purge are unchanged.
 """
+import hashlib
+
 import chromadb
 import pytest
 from chromadb.config import Settings as _RealSettings
@@ -419,6 +422,65 @@ def test_a_knowledge_file_deleted_while_down_is_pruned_by_the_startup_sync(
     assert second["shipping.md"]["status"] == "skipped"
     assert _sources(gen) == {"shipping.md": 1}
     assert set(state) == {"shipping.md"}
+
+
+def test_an_upload_that_replaces_a_candidate_under_the_lock_is_kept(kdir, index, monkeypatch):
+    """The candidate list is taken before any lock. An upload named like a
+    deleted knowledge file takes the same source lock, replaces the file-owned
+    chunks with its own unstamped ones and writes no knowledge file - so a
+    source that read as an orphan at the listing is an upload by the time the
+    prune holds its lock, and the disk re-check cannot tell the two apart.
+    Pinned here (2026-10-29): under the lock the prune re-reads provenance and
+    skips a source that is no longer wholly file-owned, logging the skip; the
+    upload's chunks stay. The plain orphan beside it still prunes (the
+    control). On the code before the re-read the upload was deleted whole."""
+    gen = index.create_collection(database.GLOBAL_COLLECTION)
+    gen.add(ids=["f1", "f2", "p1"],
+            documents=["The old file.", "More of it.", "A retired guide."],
+            metadatas=[{"source": "policy.md", "chunk": 0, "from_file": "true"},
+                       {"source": "policy.md", "chunk": 1, "from_file": "true"},
+                       {"source": "retired-guide.md", "chunk": 0, "from_file": "true"}],
+            embeddings=[EMBEDDING] * 3)
+    monkeypatch.setattr(database, "_embed", lambda text, **kw: EMBEDDING)
+    events: list = []
+    monkeypatch.setattr(ingest_mod, "log", lambda event, **kw: events.append((event, kw)))
+    uploaded = ["Uploaded policy.", "A new section."]
+    upload_ids = [hashlib.md5(f"general::policy.md::{c}".encode(),
+                              usedforsecurity=False).hexdigest() for c in uploaded]
+    real_lock = ingest_mod._source_lock
+    raced: list = []
+
+    def upload_then_lock(source):
+        if source == "policy.md" and not raced:
+            raced.append(source)
+            # The upload route's write (routers/kb.py _ingest_upload), under
+            # its own hold of this lock: the set diff against what is indexed,
+            # the new chunks added with no from_file stamp, the stale ones -
+            # here every file-owned chunk - deleted last.
+            with real_lock(source):
+                existing = set(database.get_source_ids(source, "general"))
+                for i, (doc_id, chunk) in enumerate(zip(upload_ids, uploaded)):
+                    if doc_id not in existing:
+                        database.add_document(doc_id, chunk,
+                                              {"source": source, "chunk": i, "trust": "curated"},
+                                              department="general")
+                stale = sorted(existing - set(upload_ids))
+                if stale:
+                    database.delete_documents(stale, "general")
+        return real_lock(source)
+
+    monkeypatch.setattr(ingest_mod, "_source_lock", upload_then_lock)
+    out = ingest_mod._prune_orphan_knowledge()
+    assert raced == ["policy.md"]
+    assert [d["source"] for d in out["deleted"]] == ["retired-guide.md"]
+    left = gen.get(where={"source": "policy.md"}, include=["metadatas"])
+    assert sorted(left["ids"]) == sorted(upload_ids), "the prune deleted the upload"
+    assert all("from_file" not in m for m in left["metadatas"])
+    assert _sources(gen) == {"policy.md": 2}
+    assert [kw["file"] for e, kw in events if e == "kb_orphan_pruned"] == ["retired-guide.md"]
+    skipped = [kw for e, kw in events if e == "kb_orphan_prune_skipped"]
+    assert [kw["file"] for kw in skipped] == ["policy.md"]
+    assert (skipped[0]["count"], skipped[0]["file_chunks"]) == (2, 0)
 
 
 # -- CONTROLs: pass before the prune existed and after ---------------------------
