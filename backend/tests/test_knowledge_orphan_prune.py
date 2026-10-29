@@ -76,8 +76,10 @@ class _FakeCol:
         return meta.get(key) == want
 
     def add(self, ids, documents, metadatas, embeddings=None):
+        # chroma 0.5's add skips an id already stored (the row stays as it
+        # was); test_the_stores_add_keeps_a_stored_id pins it on both legs.
         for i, d, m in zip(ids, documents, metadatas):
-            self._rows[i] = (d, dict(m))
+            self._rows.setdefault(i, (d, dict(m)))
 
     def upsert(self, ids, documents, metadatas, embeddings=None):
         # chroma 0.5's upsert on a stored id MERGES metadata as update does (a
@@ -330,6 +332,23 @@ def test_the_admin_endpoint_forces_past_the_cap(client, admin_headers, kdir, del
     assert body["deleted"] == [] and "exceed the cap" in body["knowledge_skipped"]
     body = client.post("/api/admin/kb/prune-orphans?force=true", headers=admin_headers).json()
     assert len(body["deleted"]) == ingest_mod._KNOWLEDGE_PRUNE_CAP + 1
+
+
+def test_the_stores_add_keeps_a_stored_id(index):
+    """add on an id already stored leaves that row as it was - text and
+    metadata - in real chroma, so the fake does the same (2026-10-29; it
+    replaced the row, which no writer here relies on: every index write goes
+    through upsert or update, and the cases' add calls seed fresh ids). The
+    fake's upsert and update merge as chroma's do; this is the third write
+    shape, pinned on both legs."""
+    gen = index.create_collection(database.GLOBAL_COLLECTION)
+    gen.add(ids=["x"], documents=["The first text."],
+            metadatas=[{"source": "a.md", "from_file": "true"}], embeddings=[EMBEDDING])
+    gen.add(ids=["x"], documents=["A second text."],
+            metadatas=[{"source": "b.md"}], embeddings=[EMBEDDING])
+    row = gen.get(ids=["x"], include=["metadatas", "documents"])
+    assert row["documents"] == ["The first text."]
+    assert row["metadatas"] == [{"source": "a.md", "from_file": "true"}]
 
 
 def test_list_file_sources_counts_the_stamp_against_the_store(index):
