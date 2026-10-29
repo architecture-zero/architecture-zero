@@ -31,6 +31,7 @@ not. Re-run the planted suite whenever a prompt changes.
 import datetime
 import json
 import os
+import re
 
 from app.providers import stream_chat
 
@@ -409,6 +410,17 @@ _RETIRED_SYSTEM = (
 )
 
 
+# A verdict cut at the judge's output cap (2026-10-29, an answer pass's
+# correction row: the object opened, "pass" complete, the rationale running
+# when the cap hit - twice, the retry cut the same way) or holding a raw
+# newline inside its rationale is not JSON, but the verdict is whole: "pass"
+# is the first field by the format the prompt demands. The salvage below
+# reads the bool and keeps the rationale's surviving text, marked; anything
+# short of a complete bool reads as nothing, as before.
+_CUT_VERDICT_RE = re.compile(
+    r'\{\s*"pass"\s*:\s*(true|false)\b(?:\s*,\s*"rationale"\s*:\s*"(.*))?', re.S)
+
+
 def _parse_verdict(raw: str) -> dict | None:
     """Extract the {"pass": bool, "rationale": str} object from judge output.
     Tolerates code fences and stray prose; returns None if unparseable."""
@@ -430,6 +442,17 @@ def _parse_verdict(raw: str) -> dict | None:
         if isinstance(data, dict) and isinstance(data.get("pass"), bool):
             return {"pass": data["pass"],
                     "rationale": str(data.get("rationale") or "").strip()}
+    m = _CUT_VERDICT_RE.search(text)
+    if m:
+        rationale = (m.group(2) or "").strip()
+        # A whole object that failed to decode (a raw newline inside the
+        # string) ends with its own closing - not rationale text.
+        for closing in ("}", '"'):
+            if rationale.endswith(closing):
+                rationale = rationale[:-1].rstrip()
+        return {"pass": m.group(1) == "true",
+                "rationale": (rationale + " [salvaged: the judge's reply was cut "
+                              "or not valid JSON]").strip()}
     return None
 
 

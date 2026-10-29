@@ -397,6 +397,30 @@ def test_judge_parse_verdict_tolerates_model_formatting():
     assert _parse_verdict("") is None
 
 
+def test_parse_verdict_salvages_a_verdict_cut_at_the_token_cap():
+    """A judge reply cut at its output cap mid-rationale still carries the
+    verdict whole: "pass" is the first field by the format the prompt
+    demands. Read it and keep the rationale's surviving text, marked, rather
+    than score the row unscored (an answer pass lost its one correction row
+    this way, the retry cut the same way)."""
+    from app.eval_judge import _parse_verdict
+    cut = '{"pass": false, "rationale": "The assistant served a draft despite'
+    v = _parse_verdict(cut)
+    assert v is not None and v["pass"] is False
+    assert v["rationale"].startswith("The assistant served a draft despite")
+    assert "cut" in v["rationale"]
+    # A rationale with a raw newline inside its quotes is not JSON either; the
+    # verdict is still whole, and the object's own closing is not kept as text.
+    v = _parse_verdict('{"pass": true, "rationale": "line one\nline two"}')
+    assert v is not None and v["pass"] is True
+    assert v["rationale"].startswith("line one") and not v["rationale"].rstrip().endswith("}")
+    # Cut before the bool completes, or a non-bool pass, still reads as nothing.
+    assert _parse_verdict('{"pass": tr') is None
+    assert _parse_verdict('{"pass": "yes", "rationale": "x') is None
+    # A complete object is untouched by the salvage.
+    assert _parse_verdict('{"pass": true, "rationale": "ok"}') == {"pass": True, "rationale": "ok"}
+
+
 def test_judge_answer_contract(monkeypatch):
     import app.eval_judge as judge_mod
 
