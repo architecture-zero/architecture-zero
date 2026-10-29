@@ -443,15 +443,14 @@ def test_a_knowledge_file_deleted_while_down_is_pruned_by_the_startup_sync(
     the startup sync (force=False) - the removed file's chunks and its
     fingerprint go; the other file is untouched.
 
-    Fake store only. Through this file's patched seams, the full ingest path on
-    real in-memory chroma raises StopIteration inside chroma's own segment
-    lookup (a collection with no usable segment) - a harness interaction, not
-    the prune: production ingests through the same calls, and the real-store
-    behavior the prune depends on is pinned by this file's other real-chroma
-    variants."""
-    if not isinstance(index, _FakeClient):
-        pytest.skip("the real-chroma ingest path trips a harness-only StopIteration "
-                    "in chroma's segment lookup; see the docstring")
+    The collection is created first, bare, as this file's other real-store
+    cases do (2026-10-29): the in-memory store refuses the production
+    collection metadata on CREATE (its hnsw persistence keys are the
+    persistent index's), and the sync's first write then failed inside
+    chroma's segment lookup - the "harness-only StopIteration" this real leg
+    was skipped for. get_or_create on an existing collection does not
+    re-validate them; the production settings are unchanged."""
+    index.create_collection(database.GLOBAL_COLLECTION)
     k = tmp_path / "knowledge"
     k.mkdir()
     (k / "returns.md").write_text("## Returns\n\nThirty days.\n\n## Refunds\n\nTo the card.\n",
