@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { actionError, guardedJson } from '../errorSurface'
+import { actionError, emitError, guardedJson } from '../errorSurface'
 
 // ── Quarantine review ───────────────────────────────────────────────────────
 
@@ -61,7 +61,11 @@ export function QuarantineTab({ api, headers, currentUser }: {
         : fetch(`${api}/api/admin/kb/quarantine/${id}`, { method: 'DELETE', headers: headers() }),
       verb === 'release' ? 'Releasing document' : 'Discarding document')
     setBusy(null)
-    if (!err) load()
+    // actionError returns the text and shows nothing itself (2026-10-29: this
+    // reloaded on success and said nothing on a refusal, the opposite of the
+    // comment above). The refusal is toasted; the list stays as it is.
+    if (err) emitError(err)
+    else load()
   }
 
   return (

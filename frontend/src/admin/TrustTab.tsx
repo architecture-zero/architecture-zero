@@ -101,7 +101,9 @@ export function TrustTab({ api, headers, currentUser }: {
       const synced = await actionError(
         fetch(`${api}/api/admin/evals/questions/sync`, { method: 'POST', headers: headers() }),
         'Preparing the question set')
-      if (synced) return
+      // actionError returns the text and shows nothing itself (2026-10-29: a
+      // refused sync ended the run with the button back and no word why).
+      if (synced) { emitError(synced); return }
       setProgress('Running retrieval...')
       const started = await fetch(`${api}/api/admin/evals/run`, {
         method: 'POST',
