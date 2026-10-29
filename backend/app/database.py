@@ -686,7 +686,8 @@ def add_documents_batch(entries: list[tuple[str, str, dict]],
 
 
 def restamp_reused_chunks(entries: list[tuple[str, str, dict]],
-                          department: str | None = None) -> int:
+                          department: str | None = None,
+                          quarantine_exempt: bool = False) -> int:
     """Give the chunks an upload REUSED the upload's own metadata.
 
     Chunk ids are content-addressed with one formula for every writer, and the
@@ -699,7 +700,11 @@ def restamp_reused_chunks(entries: list[tuple[str, str, dict]],
     of them before anything is written; nothing is re-embedded (same text,
     same vector). chroma's update MERGES metadata and its API refuses None, so
     a stored key cannot be removed: the stamp is overwritten with "false",
-    which every reader of it (== "true") reads as not the file sync's."""
+    which every reader of it (== "true") reads as not the file sync's.
+
+    quarantine_exempt is add_document's: the quarantine release passes it
+    (2026-10-29), so the Owner's waiver covers the ids the release reuses as
+    it covers the ones it adds - the tag stays, the block is waived."""
     if not entries:
         return 0
     col = _existing_collection(department)
@@ -708,7 +713,7 @@ def restamp_reused_chunks(entries: list[tuple[str, str, dict]],
     ids: list[str] = []
     metas: list[dict] = []
     for doc_id, text, metadata in entries:
-        meta = _gate_chunk(doc_id, text, metadata, department, False)
+        meta = _gate_chunk(doc_id, text, metadata, department, quarantine_exempt)
         meta["from_file"] = "false"
         ids.append(doc_id)
         metas.append(meta)

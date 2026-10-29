@@ -182,6 +182,15 @@ def admin_release_quarantine(item_id: int,
                 add_document(doc_id, chunk, {"source": source, "chunk": i, **meta},
                              department=department, quarantine_exempt=True)
                 added_ids.append(doc_id)
+            # The ids skipped above kept the previous writer's metadata - a
+            # deleted knowledge file's from_file stamp (the orphan prune then
+            # deleted this release) and its curated tier instead of the
+            # release's untrusted one (2026-10-29). They are this release's
+            # now, under the same waiver: the tag kept, not re-quarantined.
+            restamp_reused_chunks(
+                [(doc_id, chunk, {"source": source, "chunk": i, **meta})
+                 for doc_id, (i, chunk) in desired.items() if doc_id in existing],
+                department, quarantine_exempt=True)
             stale = sorted(existing - desired.keys())
             if stale:
                 delete_documents(stale, department)
