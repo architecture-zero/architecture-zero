@@ -245,7 +245,10 @@ REQUIRED_GUARD = {
     ("DELETE", "/api/history/{session_id}/tail"): "require_permission:chat",
     ("POST", "/api/ingest"): "require_permission:manage_kb",
     ("GET", "/api/ingest/departments"): "require_permission:manage_kb",
-    ("DELETE", "/api/ingest/source/{source}"): "require_permission:manage_kb",
+    # The path convertor since 2026-10-28: a source keyed by a subfolder path
+    # holds a slash, which a one-segment parameter never matched. The pin
+    # reads the route's registered path string, convertor included.
+    ("DELETE", "/api/ingest/source/{source:path}"): "require_permission:manage_kb",
     # The four source listings (this one, kb/files, pii-sources and
     # injection-sources) omit entries above the caller's level in the body
     # since 2026-09-23 - test_read_axis_listings.py carries the claim.

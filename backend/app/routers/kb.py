@@ -393,7 +393,14 @@ def get_departments(current_user: dict = Depends(require_permission("manage_kb")
     return {"departments": list_departments()}
 
 
-@router.delete("/api/ingest/source/{source}")
+# {source:path}, 2026-10-28: the sync keys a subfolder file by its path
+# relative to the knowledge root, so a listed source can hold a slash. With a
+# one-segment parameter such a name missed the route - the server decodes the
+# request path before matching, so docs%2Fx.md and docs/x.md both answered
+# 404 - and the source was listed and could not be deleted. The name is an
+# index key, never a filesystem path: the body below hands it to the index
+# verbatim and builds nothing from it.
+@router.delete("/api/ingest/source/{source:path}")
 def remove_source(source: str, department: str | None = None, current_user: dict = Depends(require_permission("manage_kb"))):
     # The help pages are not the operator's to delete (they would return at
     # the next boot anyway) - the reserved name is refused here too.
