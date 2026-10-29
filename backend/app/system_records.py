@@ -376,13 +376,30 @@ def build_measurement(snap: dict) -> str:
             "produced a complete run here.")
         return "\n".join(lines) + "\n"
 
+    def rows(tile, lead=""):
+        # The rows behind a rate, when the panel carries them (2026-10-29).
+        # The panel's tiles have named passed/scored beside every rate since
+        # 2026-10-28, and this record - what the assistant retrieves when
+        # asked about its own numbers - still printed a band's run count and
+        # the retrieval rate bare, so it would speak "100 percent" with no
+        # sample size: the panel's defect, one layer down. Both counts must
+        # pass the value rule or neither renders; a withheld placeholder
+        # inside the parenthesis would read as a number, and a half-stated
+        # sample size is worse than none. Absent counts leave the line as it
+        # was.
+        passed, scored = _num(tile.get("passed")), _num(tile.get("scored"))
+        if _REDACTED in (passed, scored):
+            return ""
+        return " (" + lead + passed + " of " + scored + " rows)"
+
     def band(key, label):
         b = panel.get(key)
         if not isinstance(b, dict):
             return None
         return ("- " + label + ": " + _num(b.get("low")) + " to "
                 + _num(b.get("high")) + " percent across "
-                + _num(b.get("runs")) + " comparable run(s)")
+                + _num(b.get("runs")) + " comparable run(s)"
+                + rows(b, "latest run "))
 
     lines += ["## Scores", ""]
     for key, label in (("correctness", "Answer correctness"),
@@ -400,7 +417,8 @@ def build_measurement(snap: dict) -> str:
                      + _num(hon.get("n")) + " question(s)")
     ret = panel.get("retrieval")
     if isinstance(ret, dict) and ret.get("pct") is not None:
-        lines.append("- Retrieval hit rate: " + _num(ret.get("pct")) + " percent")
+        lines.append("- Retrieval hit rate: " + _num(ret.get("pct")) + " percent"
+                     + rows(ret))
 
     lines += [
         "",
