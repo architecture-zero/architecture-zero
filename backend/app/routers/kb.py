@@ -402,6 +402,15 @@ def get_departments(current_user: dict = Depends(require_permission("manage_kb")
 # verbatim and builds nothing from it.
 @router.delete("/api/ingest/source/{source:path}")
 def remove_source(source: str, department: str | None = None, current_user: dict = Depends(require_permission("manage_kb"))):
+    # An empty or whitespace-only name answers the route miss's own 404
+    # (2026-10-29). The convertor above made the empty remainder match:
+    # DELETE /api/ingest/source/ (and the bare path, through its 307) reached
+    # here, deleted nothing, and answered 200 "deleted" - before the convertor
+    # that request missed every route and answered 404. Same status and
+    # detail as that miss, so the answer tells a caller nothing a missing
+    # route would not, and the index is never asked.
+    if not source.strip():
+        raise HTTPException(status_code=404, detail="Not Found")
     # The help pages are not the operator's to delete (they would return at
     # the next boot anyway) - the reserved name is refused here too.
     from app.help_docs import refuse_reserved_department
