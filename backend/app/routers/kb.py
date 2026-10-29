@@ -306,7 +306,12 @@ def ingest(request: IngestRequest, current_user: dict = Depends(require_permissi
     # the front of the pool on status questions - so a caller who can set it can
     # dress arbitrary text as the instance's own live truth, whatever trust tier
     # the line below then assigns. Only app.system_records writes it.
-    meta.pop("auto_generated", None)
+    #
+    # Written "false", not just dropped (2026-10-29), for the reason given for
+    # from_file below: the upsert MERGES metadata on a stored id, so a doc_id
+    # equal to a system record's id kept that row's "true" under the caller's
+    # text. Every reader compares == "true".
+    meta["auto_generated"] = "false"
     # Nor is `from_file`. It marks a chunk the knowledge file sync wrote, and the
     # sync's orphan prune deletes a source whose every chunk carries it once no
     # file of that name is on disk - so a claimed stamp would put this document

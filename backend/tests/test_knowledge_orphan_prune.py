@@ -437,6 +437,36 @@ def test_api_ingest_over_a_file_synced_id_is_not_file_owned(kdir, index, client,
     assert _sources(gen) == {"policy.md": 1}, "the prune deleted the API-ingested text"
 
 
+def test_api_ingest_over_a_system_records_id_is_not_a_live_record(index, client,
+                                                                   admin_headers, monkeypatch):
+    """The same merge, on the other key a caller may not claim: a doc_id
+    equal to a generated system record's id kept that row's
+    auto_generated="true" under the caller's text, and auto_generated is what
+    lifts a chunk on status questions and labels it a LIVE SYSTEM RECORD.
+    Pinned here (2026-10-29): the route writes auto_generated="false"
+    explicitly, as it does from_file (every reader compares == "true")."""
+    from app import system_records
+    dept = system_records.DEPARTMENT
+    col = index.create_collection(database._collection_name(dept))
+    col.add(ids=["record-id"], documents=["The instance's posture record."],
+            metadatas=[{"source": system_records.POSTURE_SOURCE, "chunk": 0,
+                        "auto_generated": "true", "trust": "system"}],
+            embeddings=[EMBEDDING])
+    monkeypatch.setattr(database, "_embed", lambda text, **kw: EMBEDDING)
+    r = client.post("/api/ingest",
+                    json={"doc_id": "record-id", "text": "API-ingested text.",
+                          "department": dept,
+                          "metadata": {"source": system_records.POSTURE_SOURCE}},
+                    headers=admin_headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "ingested", r.json()
+    row = col.get(ids=["record-id"], include=["metadatas", "documents"])
+    assert row["documents"] == ["API-ingested text."]
+    meta = row["metadatas"][0]
+    assert meta.get("auto_generated") != "true", meta
+    assert database.derive_trust(meta) != "system", meta
+
+
 def test_a_knowledge_file_deleted_while_down_is_pruned_by_the_startup_sync(
         tmp_path, monkeypatch, index):
     """End to end: two files synced, one removed with no watcher running, then

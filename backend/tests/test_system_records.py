@@ -351,7 +351,9 @@ def test_a_caller_cannot_dress_content_as_a_live_system_record(client, admin_hea
                                            "auto_generated": "true"}},
                         headers=admin_headers)
     assert r.status_code == 200, r.text
-    assert "auto_generated" not in captured, "caller forged the live-record label"
+    # The route writes "false" itself since 2026-10-29 (an upsert merges, so a
+    # dropped key let a stored "true" survive); every reader asks == "true".
+    assert captured.get("auto_generated") != "true", "caller forged the live-record label"
 
 
 def test_a_flagged_generated_chunk_is_not_labelled_clean():
