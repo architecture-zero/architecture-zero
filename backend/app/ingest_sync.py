@@ -28,7 +28,7 @@ from app.chunking import (chunk_dated_markdown, chunk_markdown_sections,
                           CHUNKER_VERSION)
 from app.database import (add_documents_batch, list_sources, delete_source,
                           get_source_ids, delete_documents, delete_file_chunks,
-                          list_file_sources)
+                          list_file_sources, restamp_reused_chunks)
 from app.logger import log, log_error
 from app.rag_config import dept_for_source as _dept_for_source
 
@@ -231,12 +231,15 @@ def _ingest_file_locked(name: str, text: str) -> int:
     # (one embed round trip PER CHUNK makes a boot re-ingest serial and
     # slow). Delta semantics unchanged: only new chunk ids reach the batch.
     new_entries = []
+    kept_entries = []
     for doc_id, (i, part) in desired.items():
-        if doc_id in existing:
-            continue  # unchanged chunk: already embedded, never re-embed it
         meta = {"source": name, "chunk": i, "from_file": "true"}
         if part["entry_date"]:
             meta["entry_date"] = part["entry_date"]
+        if doc_id in existing:
+            # unchanged chunk: already embedded, never re-embed it
+            kept_entries.append((doc_id, part["text"], meta))
+            continue
         new_entries.append((doc_id, part["text"], meta))
     # ADD FIRST, PRUNE LAST - the same order the upload path uses.
     #
@@ -252,6 +255,15 @@ def _ingest_file_locked(name: str, text: str) -> int:
     # two replacement algorithms in one codebase, one of them safe. They agree
     # now, and test_replacement_durability covers both.
     added = add_documents_batch(new_entries, department=dept) if new_entries else 0
+    # A kept id may be one an UPLOAD wrote (2026-10-29): the same id formula,
+    # so a file whose text repeats an upload of its name lands on the upload's
+    # rows, which kept the upload's metadata - no stamp, the uploader's tier -
+    # and this file's source read as not file-owned. They become the file's:
+    # the stamp and the curated tier, no re-embed. A row this sync already
+    # stamped is read, not rewritten. Before the prune below, the add-first
+    # order.
+    if kept_entries:
+        restamp_reused_chunks(kept_entries, department=dept)
     if stale:
         delete_documents(sorted(stale), dept)
     log("kb_delta_ingest", file=name, chunks=len(parts), added=added,

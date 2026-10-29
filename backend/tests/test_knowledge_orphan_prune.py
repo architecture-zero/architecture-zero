@@ -674,6 +674,113 @@ def test_a_released_document_that_reuses_a_deleted_files_chunk_ids_owns_them(
     assert _sources(gen) == {"policy.md": len(file_ids), "shipping.md": 1}
 
 
+def test_a_knowledge_file_synced_over_an_uploads_identical_text_owns_its_chunks(
+        tmp_path, monkeypatch, index, client):
+    """The reverse case (2026-10-29): an upload's text lands first, then a
+    knowledge file of the same name and the same bytes is synced. The file
+    sync skipped every id already indexed, so its rows kept the upload's
+    metadata - no stamp, the uploader's untrusted tier - and the file's own
+    source read as not file-owned: the operator's file on disk retrieved as
+    third-party text, and once the file was deleted the orphan prune could
+    not see it. The file sync owns what it writes: the stamp and the file's
+    curated tier, nothing re-embedded."""
+    index.create_collection(database.GLOBAL_COLLECTION)
+    k = tmp_path / "knowledge"
+    k.mkdir()
+    body = ("Returns are accepted within thirty days of delivery. Items must be "
+            "unused and in the original packaging. Refunds go to the original "
+            "card.\n") * 12
+    (k / "shipping.md").write_bytes(b"Two to five days.\n")
+    state: dict = {}
+    monkeypatch.setattr(ingest_mod, "KNOWLEDGE_DIR", str(k))
+    monkeypatch.setattr(ingest_mod, "_load_ingest_state", lambda: dict(state))
+    monkeypatch.setattr(ingest_mod, "_save_ingest_state",
+                        lambda s: (state.clear(), state.update(s)))
+    monkeypatch.setattr(database, "_embed", lambda text, **kw: EMBEDDING)
+    from app import jobs
+    job_id = jobs.create_job(source="policy.md", department="general")
+    jobs._run_ingest(job_id, "policy.md", body, "general", {"trust": "untrusted"})
+    upload_ids = set(database.get_source_ids("policy.md", "general"))
+    assert len(upload_ids) > 1
+    gen = index.get_collection(database.GLOBAL_COLLECTION)
+    assert all(m.get("from_file") != "true" and m["trust"] == "untrusted"
+               for m in gen.get(where={"source": "policy.md"},
+                                include=["metadatas"])["metadatas"])
+
+    (k / "policy.md").write_bytes(body.encode("utf-8"))
+    first = ingest_mod._sync_knowledge_dir(force=False)
+    assert first["policy.md"]["status"] == "ok", first
+    # The precondition of the find: the file sync minted the upload's ids.
+    assert set(database.get_source_ids("policy.md", "general")) == upload_ids
+    owned = {(r["source"], r["department"]): (r["count"], r["file_chunks"])
+             for r in database.list_file_sources()}
+    assert owned[("policy.md", "general")] == (len(upload_ids), len(upload_ids)), \
+        f"the file's chunks still read as the upload's: {owned[('policy.md', 'general')]}"
+    metas = gen.get(where={"source": "policy.md"}, include=["metadatas"])["metadatas"]
+    assert all(m["from_file"] == "true" and m["trust"] == "curated" for m in metas), metas
+
+    (k / "policy.md").unlink()   # and once the file is gone, the prune sees it
+    second = ingest_mod._sync_knowledge_dir(force=False)
+    assert second["policy.md"]["status"] == "pruned", second
+    assert _sources(gen) == {"shipping.md": 1}
+
+
+class _CallSpy:
+    """A collection that records the size of each get and update it is sent,
+    and passes every call through."""
+
+    def __init__(self, col):
+        self._col = col
+        self.calls: list[tuple[str, int]] = []
+
+    def __getattr__(self, name):
+        attr = getattr(self._col, name)
+        if name not in ("get", "update"):
+            return attr
+
+        def record(*a, **kw):
+            self.calls.append((name, len(kw.get("ids") or [])))
+            return attr(*a, **kw)
+        return record
+
+
+def test_the_restamp_rewrites_only_a_row_whose_provenance_is_not_the_writers(
+        monkeypatch, index):
+    """The knowledge file sync passes every id it kept, and a long file keeps
+    thousands: rewriting each one on every sync is a write per unchanged
+    chunk, and the pinned chroma refuses one update over its max batch size.
+    So the restamp reads the kept rows first and rewrites only a row whose
+    from_file stamp or trust tier is not the writer's, and it reads and
+    writes in EMBED_BATCH_SIZE slices (2026-10-29)."""
+    gen = index.create_collection(database.GLOBAL_COLLECTION)
+    ids = [f"c{n}" for n in range(5)]
+    texts = [f"Section {n} of the policy." for n in range(5)]
+    gen.add(ids=ids, documents=texts,
+            metadatas=[{"source": "policy.md", "chunk": n, "from_file": "true",
+                        "trust": "curated"} for n in range(5)],
+            embeddings=[EMBEDDING] * 5)
+    spy = _CallSpy(gen)
+    monkeypatch.setattr(database, "_get_collection", lambda department=None: spy)
+    monkeypatch.setattr(database, "EMBED_BATCH_SIZE", 2)
+
+    # The file sync again, over rows it already owns: read, never rewritten.
+    file_entries = [(i, t, {"source": "policy.md", "chunk": n, "from_file": "true"})
+                    for n, (i, t) in enumerate(zip(ids, texts))]
+    assert database.restamp_reused_chunks(file_entries) == 0
+    assert [c for c in spy.calls if c[0] == "update"] == [], spy.calls
+    assert all(size <= 2 for _, size in spy.calls), spy.calls
+
+    # An untrusted upload of the same text: every row is rewritten, in slices.
+    spy.calls.clear()
+    upload_entries = [(i, t, {"source": "policy.md", "chunk": n, "trust": "untrusted"})
+                      for n, (i, t) in enumerate(zip(ids, texts))]
+    assert database.restamp_reused_chunks(upload_entries) == 5
+    updates = [size for name, size in spy.calls if name == "update"]
+    assert sum(updates) == 5 and max(updates) <= 2, spy.calls
+    metas = gen.get(ids=ids, include=["metadatas"])["metadatas"]
+    assert all(m["from_file"] == "false" and m["trust"] == "untrusted" for m in metas), metas
+
+
 # -- CONTROLs: pass before the prune existed and after ---------------------------
 
 def test_control_an_upload_named_like_a_deleted_knowledge_file_survives(

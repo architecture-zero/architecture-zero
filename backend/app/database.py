@@ -688,19 +688,32 @@ def add_documents_batch(entries: list[tuple[str, str, dict]],
 def restamp_reused_chunks(entries: list[tuple[str, str, dict]],
                           department: str | None = None,
                           quarantine_exempt: bool = False) -> int:
-    """Give the chunks an upload REUSED the upload's own metadata.
+    """A writer owns every chunk it writes, the ids it REUSED included.
 
     Chunk ids are content-addressed with one formula for every writer, and the
-    delta diff skips an id already indexed - so an upload whose chunk text
+    delta diff skips an id already indexed - so a write whose chunk text
     matched a chunk already stored under the same name wrote nothing to that
     row, and the row kept the previous writer's metadata. When that writer was
-    the knowledge file sync, the row kept from_file="true", the source still
-    read as wholly file-owned, and the knowledge orphan prune deleted the
-    upload (2026-10-29). Each entry passes the same gate as add_document, all
-    of them before anything is written; nothing is re-embedded (same text,
-    same vector). chroma's update MERGES metadata and its API refuses None, so
-    a stored key cannot be removed: the stamp is overwritten with "false",
-    which every reader of it (== "true") reads as not the file sync's.
+    the knowledge file sync, an upload's row kept from_file="true", the source
+    still read as wholly file-owned, and the knowledge orphan prune deleted the
+    upload (2026-10-29). The reverse the same day: a knowledge file synced over
+    an upload's identical text kept the upload's rows - no stamp, the
+    uploader's tier - so the file sync passes the ids it kept here too.
+
+    entries are the (id, text, metadata) the writer would write for the ids it
+    kept. The stamp is the writer's: "true" when its metadata carries it (the
+    file sync, the one writer of it), else "false". A kept row whose stamp or
+    trust tier (derive_trust, both sides) is not the writer's gets the
+    writer's metadata through the same gate as add_document, every such row
+    gated before anything is written; nothing is re-embedded (same text, same
+    vector). A row already the writer's is left as it is - its other keys
+    follow from the same text - so a re-sync of a long file pays one metadata
+    read per slice and no write (2026-10-29: an unconditional write rewrote
+    every unchanged chunk on every sync). Reads and writes go in
+    EMBED_BATCH_SIZE slices: the pinned chroma refuses one call over its max
+    batch size. chroma's update MERGES metadata and its API refuses None, so a
+    stored key cannot be removed: the stamp is overwritten, and every reader
+    of it compares == "true". Returns the count rewritten.
 
     quarantine_exempt is add_document's: the quarantine release passes it
     (2026-10-29), so the Owner's waiver covers the ids the release reuses as
@@ -710,11 +723,23 @@ def restamp_reused_chunks(entries: list[tuple[str, str, dict]],
     col = _existing_collection(department)
     if col is None:
         return 0   # nothing indexed here, so nothing was reused
+    current: dict[str, dict] = {}
+    for start in range(0, len(entries), EMBED_BATCH_SIZE):
+        stored = col.get(ids=[doc_id for doc_id, _, _ in entries[start:start + EMBED_BATCH_SIZE]],
+                         include=["metadatas"])
+        current.update({i: (m or {}) for i, m in zip(stored["ids"], stored["metadatas"])})
     ids: list[str] = []
     metas: list[dict] = []
     for doc_id, text, metadata in entries:
+        if doc_id not in current:
+            continue
+        stamp = "true" if (metadata or {}).get("from_file") == "true" else "false"
+        old = current[doc_id]
+        if ((old.get("from_file") == "true") == (stamp == "true")
+                and derive_trust(old) == derive_trust(metadata)):
+            continue
         meta = _gate_chunk(doc_id, text, metadata, department, quarantine_exempt)
-        meta["from_file"] = "false"
+        meta["from_file"] = stamp
         ids.append(doc_id)
         metas.append(meta)
     for start in range(0, len(ids), EMBED_BATCH_SIZE):
