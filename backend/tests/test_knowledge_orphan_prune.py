@@ -81,6 +81,19 @@ class _FakeCol:
 
     upsert = add
 
+    def update(self, ids, metadatas=None, documents=None, embeddings=None):
+        # chroma 0.5's update as its API behaves, which the upload's re-stamp
+        # is written against: the given metadata MERGES into the stored row (a
+        # key it omits is kept), a None value is refused, and an id that is not
+        # stored is skipped.
+        for i, m in zip(ids, metadatas or [None] * len(ids)):
+            if m is not None and any(v is None for v in m.values()):
+                raise ValueError("Expected metadata value to be a str, int, float "
+                                 "or bool, got None")
+            if i in self._rows and m is not None:
+                doc, held = self._rows[i]
+                self._rows[i] = (doc, {**held, **m})
+
     def get(self, ids=None, where=None, include=None):
         hits = [(i, d, m) for i, (d, m) in self._rows.items()
                 if (ids is None or i in ids) and self._match(m, where)]
@@ -481,6 +494,80 @@ def test_an_upload_that_replaces_a_candidate_under_the_lock_is_kept(kdir, index,
     skipped = [kw for e, kw in events if e == "kb_orphan_prune_skipped"]
     assert [kw["file"] for kw in skipped] == ["policy.md"]
     assert (skipped[0]["count"], skipped[0]["file_chunks"]) == (2, 0)
+
+
+@pytest.mark.parametrize("leg", ["sync", "queued"])
+def test_an_upload_that_reuses_a_deleted_files_chunk_ids_owns_them(
+        leg, tmp_path, monkeypatch, index, client, admin_headers):
+    """Chunk ids are content-addressed with one formula for every writer, so an
+    upload named like a deleted knowledge file, its text byte-identical to the
+    file's, lands on the file's own ids. The upload's set diff skipped an id
+    already indexed, and nothing rewrote the row: every chunk kept the file
+    sync's from_file stamp, the source still read as wholly file-owned, and the
+    next prune deleted the upload (the re-read under the lock cannot tell -
+    the metadata says file-owned). Pinned here (2026-10-29): the upload
+    re-stamps the ids it reuses with its own metadata, on both the synchronous
+    upload and the queued worker, so the source reads file_chunks 0 and the
+    prune keeps it. The plain orphan beside it still prunes (the control).
+
+    The collection is created first, bare, as this file's other real-store
+    cases do: the in-memory store refuses the production collection metadata
+    on CREATE (its hnsw persistence keys are the persistent index's), and
+    get_or_create on an existing collection does not re-validate them."""
+    index.create_collection(database.GLOBAL_COLLECTION)
+    k = tmp_path / "knowledge"
+    k.mkdir()
+    body = ("Returns are accepted within thirty days of delivery. Items must be "
+            "unused and in the original packaging. Refunds go to the original "
+            "card.\n") * 12
+    (k / "policy.md").write_bytes(body.encode("utf-8"))
+    (k / "retired-guide.md").write_bytes(b"A retired guide.\n")
+    (k / "shipping.md").write_bytes(b"Two to five days.\n")
+    state: dict = {}
+    monkeypatch.setattr(ingest_mod, "KNOWLEDGE_DIR", str(k))
+    monkeypatch.setattr(ingest_mod, "_load_ingest_state", lambda: dict(state))
+    monkeypatch.setattr(ingest_mod, "_save_ingest_state",
+                        lambda s: (state.clear(), state.update(s)))
+    monkeypatch.setattr(database, "_embed", lambda text, **kw: EMBEDDING)
+
+    first = ingest_mod._sync_knowledge_dir(force=False)
+    assert {first[n]["status"] for n in ("policy.md", "retired-guide.md",
+                                         "shipping.md")} == {"ok"}, first
+    file_ids = set(database.get_source_ids("policy.md", "general"))
+    assert len(file_ids) > 1
+    (k / "policy.md").unlink()          # deleted while the backend was down
+    (k / "retired-guide.md").unlink()   # the plain orphan
+
+    if leg == "sync":
+        r = client.post("/api/ingest/upload",
+                        files={"file": ("policy.md", body.encode("utf-8"), "text/markdown")},
+                        data={"department": "general"}, headers=admin_headers)
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "ingested", r.json()
+    else:
+        from app import jobs
+        job_id = jobs.create_job(source="policy.md", department="general")
+        # Untrusted on this leg, so the upload's own tier is visible on the
+        # rows it reused (the file sync stamped them curated).
+        jobs._run_ingest(job_id, "policy.md", body, "general", {"trust": "untrusted"})
+        assert next(j for j in jobs.list_jobs()
+                    if j["job_id"] == job_id)["status"] == "complete"
+    # The same ids: the upload reused every one of them, nothing re-embedded.
+    assert set(database.get_source_ids("policy.md", "general")) == file_ids
+    owned = {(r["source"], r["department"]): (r["count"], r["file_chunks"])
+             for r in database.list_file_sources()}
+
+    second = ingest_mod._sync_knowledge_dir(force=False)
+    assert second["retired-guide.md"]["status"] == "pruned", second
+    assert "policy.md" not in second, "the prune deleted the upload"
+    gen = index.get_collection(database.GLOBAL_COLLECTION)
+    left = gen.get(where={"source": "policy.md"}, include=["metadatas"])
+    assert set(left["ids"]) == file_ids, "the prune deleted the upload"
+    assert owned[("policy.md", "general")] == (len(file_ids), 0)
+    upload_tier = "curated" if leg == "sync" else "untrusted"
+    assert all(m.get("from_file") != "true" and m["trust"] == upload_tier
+               for m in left["metadatas"]), left["metadatas"]
+    assert _sources(gen) == {"policy.md": len(file_ids), "shipping.md": 1}
 
 
 # -- CONTROLs: pass before the prune existed and after ---------------------------

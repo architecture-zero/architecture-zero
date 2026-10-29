@@ -32,7 +32,7 @@ from app import jobs
 from app.chunking import chunk_plain
 from app.database import (add_document, list_sources, delete_source,
                           list_departments, list_pii_sources, get_source_ids,
-                          delete_documents)
+                          delete_documents, restamp_reused_chunks)
 from app.db import get_session
 from app.ingest_sync import (KNOWLEDGE_DIR, _sync_knowledge_dir, _sync_docs,
                              _prune_orphan_docs, _prune_orphan_knowledge,
@@ -590,6 +590,14 @@ def _ingest_upload(name: str, ext: str, data: bytes, department: str,
                     continue
                 add_document(doc_id, chunk, {"source": name, "chunk": i, **chunk_meta},
                              department=department)
+            # An id this upload shares with what is indexed was skipped above
+            # and still carries the previous writer's metadata - the file
+            # sync's from_file stamp included, which put this upload up for
+            # the knowledge orphan prune (2026-10-29). It is this upload's now.
+            restamp_reused_chunks(
+                [(doc_id, chunk, {"source": name, "chunk": i, **chunk_meta})
+                 for doc_id, (i, chunk) in desired.items() if doc_id in existing],
+                department)
         except corpus_scan.QuarantinedContent as q:
             # Backstop for a pattern that anchors at a chunk boundary and fires
             # chunk-level-only: drop what this upload added and quarantine the

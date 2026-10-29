@@ -221,7 +221,8 @@ def _run_ingest_locked(job_id: str, filename: str, text: str, department: str,
     never enables this, and so a patched app.database is read at call time.
     """
     from app import chunking, corpus_scan
-    from app.database import add_document, delete_documents, get_source_ids
+    from app.database import (add_document, delete_documents, get_source_ids,
+                              restamp_reused_chunks)
     from app.logger import log, log_error
     from app.metrics import increment
 
@@ -268,6 +269,13 @@ def _run_ingest_locked(job_id: str, filename: str, text: str, department: str,
                 update_job(job_id, status="running",
                            chunks_processed=done_base + n + 1,
                            chunks_total=len(chunks))
+        # As the upload handler does: an id this job shares with what is
+        # indexed was skipped above and still carries the previous writer's
+        # metadata, the file sync's from_file stamp included (2026-10-29).
+        restamp_reused_chunks(
+            [(doc_id, chunk, {"source": filename, "chunk": i, **(extra_meta or {})})
+             for doc_id, (i, chunk) in desired.items() if doc_id in existing],
+            department)
         # Only once every chunk of the new version is indexed do the chunks it
         # no longer contains get dropped. A failure above leaves the previous
         # generation whole.

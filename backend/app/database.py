@@ -685,6 +685,39 @@ def add_documents_batch(entries: list[tuple[str, str, dict]],
     return len(ids)
 
 
+def restamp_reused_chunks(entries: list[tuple[str, str, dict]],
+                          department: str | None = None) -> int:
+    """Give the chunks an upload REUSED the upload's own metadata.
+
+    Chunk ids are content-addressed with one formula for every writer, and the
+    delta diff skips an id already indexed - so an upload whose chunk text
+    matched a chunk already stored under the same name wrote nothing to that
+    row, and the row kept the previous writer's metadata. When that writer was
+    the knowledge file sync, the row kept from_file="true", the source still
+    read as wholly file-owned, and the knowledge orphan prune deleted the
+    upload (2026-10-29). Each entry passes the same gate as add_document, all
+    of them before anything is written; nothing is re-embedded (same text,
+    same vector). chroma's update MERGES metadata and its API refuses None, so
+    a stored key cannot be removed: the stamp is overwritten with "false",
+    which every reader of it (== "true") reads as not the file sync's."""
+    if not entries:
+        return 0
+    col = _existing_collection(department)
+    if col is None:
+        return 0   # nothing indexed here, so nothing was reused
+    ids: list[str] = []
+    metas: list[dict] = []
+    for doc_id, text, metadata in entries:
+        meta = _gate_chunk(doc_id, text, metadata, department, False)
+        meta["from_file"] = "false"
+        ids.append(doc_id)
+        metas.append(meta)
+    for start in range(0, len(ids), EMBED_BATCH_SIZE):
+        sl = slice(start, start + EMBED_BATCH_SIZE)
+        col.update(ids=ids[sl], metadatas=metas[sl])
+    return len(ids)
+
+
 class RetrievalUnavailable(RuntimeError):
     """Retrieval is DOWN, not empty - an outage.
 

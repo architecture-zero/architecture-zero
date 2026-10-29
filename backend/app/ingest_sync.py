@@ -437,11 +437,12 @@ def _prune_orphan_knowledge(force: bool = False, dry_run: bool = False) -> dict:
             # by the cap unless forced); only a source that still reads wholly
             # file-owned is deleted, with the count it holds now. A source
             # that reads mixed here is left whole, as the snapshot leaves a
-            # mixed source - not trimmed with delete_file_chunks: the upload
-            # skips a chunk id already indexed, so a chunk whose text it shares
-            # with the old file keeps that file's stamp, and the file-owned
-            # rows of a raced source can be the upload's own text; and the dry
-            # run never offered a partial delete.
+            # mixed source - not trimmed with delete_file_chunks: the dry run
+            # never offered a partial delete. (Until 2026-10-29 the file-owned
+            # rows of a raced source could also be the upload's own text: a
+            # chunk id the upload shared with the old file kept that file's
+            # stamp. The upload re-stamps such ids now - restamp_reused_chunks
+            # in app/database.py.)
             live = next((r for r in list_file_sources()
                          if r["source"] == s["source"]
                          and r["department"] == s["department"]), None)
