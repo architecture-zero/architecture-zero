@@ -109,20 +109,20 @@ def test_delete_source_refuses_an_empty_name(client, admin_headers, monkeypatch)
     DELETE /api/ingest/source/ reached the handler, deleted nothing, and
     answered 200 "deleted" - before the convertor that request missed every
     route and answered 404 - and the bare /api/ingest/source lands on the
-    same place through its 307. An empty or whitespace-only name answers the
-    route miss's own 404 again (2026-10-29), status and detail, so it tells a
-    caller nothing a missing route would not, and the index is never asked.
-    A real name still deletes."""
+    same place through its 307. An empty or whitespace-only name is no
+    source's name and answers 400 with a fixed detail (2026-10-29), decided
+    from the string alone - the index is never asked. A real name still
+    deletes."""
     rows = {"real.md": 1}
     calls = _stand_in_index(monkeypatch, rows)
 
     for path in ("/api/ingest/source/", "/api/ingest/source/%20%20"):
         r = client.delete(path, headers=admin_headers)
-        assert r.status_code == 404, (path, r.status_code, r.text)
-        assert r.json() == {"detail": "Not Found"}, (path, r.text)
+        assert r.status_code == 400, (path, r.status_code, r.text)
+        assert r.json() == {"detail": "Invalid source name"}, (path, r.text)
     # The bare path follows its redirect to the empty remainder.
     r = client.delete("/api/ingest/source", headers=admin_headers)
-    assert r.status_code == 404, (r.status_code, r.text)
+    assert r.status_code == 400, (r.status_code, r.text)
     assert calls == [] and rows == {"real.md": 1}
 
     r = client.delete("/api/ingest/source/real.md", headers=admin_headers)
