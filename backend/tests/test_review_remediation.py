@@ -114,11 +114,14 @@ def test_crashed_eval_run_is_marked_complete_and_failed():
 
 # -- The ingest guard is armed before the task that sets it can be skipped -----
 
-def test_startup_ingest_flag_is_set_before_the_task_is_scheduled():
+def test_startup_ingest_flag_is_set_before_the_task_is_scheduled(monkeypatch):
     """The flag lives on the eval runner's refusal path. Setting it as the
     first line INSIDE the background coroutine left it False from create_task
     until the loop first ran that coroutine - a real window on the wrong side
     of the guard."""
+    # The boot sync is what this pins, and conftest turns it off for the
+    # suite (2026-10-29): opted back in here.
+    monkeypatch.setenv("BOOT_BACKGROUND_SYNC", "true")
     from app import main as m
     # The flag is a runtime_config module attribute now: a bare
     # `runtime_config._startup_ingest_active = ...` would create a phantom on app.main

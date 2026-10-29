@@ -244,8 +244,31 @@ async def _system_prompt_divergence_on_startup():
         log_error("system_prompt_divergence_check_crashed", error=str(e))
 
 
+# The boot's background sync - startup_tasks' _bg task: the SQL-only stages,
+# chroma maintenance, the knowledge and docs syncs with their orphan prunes,
+# the help pages and system records, then the knowledge watcher - runs unless
+# BOOT_BACKGROUND_SYNC=false. Only the test suite sets it (conftest,
+# 2026-10-29): the session TestClient's startup ran those prunes in executor
+# threads WHILE a test held their seams monkeypatched, so the admin prune's dry
+# run could see the boot thread's delete. Read at startup, not at import, so a
+# test that needs the boot sync opts in with monkeypatch.setenv. Anything but
+# "false" keeps it on: unset or mistyped boots as production always has.
+def _boot_sync_enabled() -> bool:
+    return os.getenv("BOOT_BACKGROUND_SYNC", "true").strip().lower() != "false"
+
+
 @app.on_event("startup")
 async def startup_tasks():
+    # The test suite's switch (2026-10-29), decided before the flag below is
+    # armed, so an instance booted without the background sync never reads as
+    # mid-ingest. Loud, never silent: such an instance serves whatever the
+    # index already held and watches no knowledge file. Not a return: the
+    # self-check timer at the end of this hook is not boot sync and starts
+    # either way.
+    boot_sync = _boot_sync_enabled()
+    if not boot_sync:
+        log_error("boot_background_sync_off",
+                  note="BOOT_BACKGROUND_SYNC=false: no boot sync, no knowledge watcher")
     # Set BEFORE create_task, not as the first line inside the coroutine. A
     # task is only scheduled by create_task, so the flag stayed False from
     # here until the loop first ran _bg - and the eval runner reads this flag
@@ -254,7 +277,8 @@ async def startup_tasks():
     # runtime_config.<name>, so a rebind here has to be visible there. A
     # surviving `global` would bind a phantom app.main attribute instead -
     # main arming its own copy while the router reads a permanent False.
-    runtime_config._startup_ingest_active = True
+    if boot_sync:
+        runtime_config._startup_ingest_active = True
 
     async def _bg():
 
@@ -435,7 +459,8 @@ async def startup_tasks():
         finally:
             runtime_config._startup_ingest_active = False
 
-    asyncio.create_task(_bg_guarded())
+    if boot_sync:
+        asyncio.create_task(_bg_guarded())
     # The instance checks itself (2026-10-02): disk, Ollama and the backup
     # heartbeats on a timer, through the same alerts the Monitoring tab's
     # reads raise - before this, an unwatched box sent nothing. What it

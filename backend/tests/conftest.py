@@ -23,6 +23,17 @@ os.environ["CORS_ORIGIN"] = "*"
 # session-scoped client boots the app: off here, so a long suite never runs a
 # probe pass mid-test. test_self_check.py drives the loop itself.
 os.environ["SELF_CHECK_INTERVAL_SECONDS"] = "0"
+# Nor does the boot's background sync run (2026-10-29): the session client's
+# startup launched it in executor threads - the SQL-only stages, chroma
+# maintenance, the knowledge and docs syncs with their orphan prunes, the help
+# pages and system records, then the knowledge watcher - and they ran against
+# whatever a test had monkeypatched at that moment, so the admin prune
+# endpoint's dry-run test could see the boot's docs prune take its patched
+# docs/GONE.md. Nothing the suite asserts depends on that boot: its eval seed
+# sync is a no-op here (EVAL_SEED_PATH is unset), and every test that needs a
+# sync calls it itself. A test that needs the boot sync opts in with
+# monkeypatch.setenv. Pinned by test_boot_sync_in_suite.py.
+os.environ["BOOT_BACKGROUND_SYNC"] = "false"
 # Isolate every data-path derivation (ingest-state file) from the real
 # backend/data dir - the chroma CLIENT is mocked below, but path-based code
 # would otherwise touch real files.
