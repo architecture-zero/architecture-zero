@@ -311,7 +311,12 @@ def ingest(request: IngestRequest, current_user: dict = Depends(require_permissi
     # sync's orphan prune deletes a source whose every chunk carries it once no
     # file of that name is on disk - so a claimed stamp would put this document
     # up for deletion at the next boot. Only app.ingest_sync writes it.
-    meta.pop("from_file", None)
+    #
+    # Written "false", not just dropped (2026-10-29): the caller chooses the
+    # doc_id and add_document upserts, which on a stored id MERGES metadata -
+    # a doc_id equal to a file-synced chunk's kept that row's "true", and the
+    # prune deleted this text. Every reader compares == "true".
+    meta["from_file"] = "false"
     meta["trust"] = _ingest_trust(current_user, meta.get("trust"))
     if PII_SCAN_MODE != "off":
         findings = scan_pii(text)

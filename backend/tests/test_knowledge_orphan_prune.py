@@ -79,7 +79,14 @@ class _FakeCol:
         for i, d, m in zip(ids, documents, metadatas):
             self._rows[i] = (d, dict(m))
 
-    upsert = add
+    def upsert(self, ids, documents, metadatas, embeddings=None):
+        # chroma 0.5's upsert on a stored id MERGES metadata as update does (a
+        # key the new metadata omits is kept) - probed on the in-memory store
+        # 2026-10-29. Replacing the row here hid that an /api/ingest over a
+        # file-synced id kept the from_file stamp.
+        for i, d, m in zip(ids, documents, metadatas):
+            held = self._rows[i][1] if i in self._rows else {}
+            self._rows[i] = (d, {**held, **m})
 
     def update(self, ids, metadatas=None, documents=None, embeddings=None):
         # chroma 0.5's update as its API behaves, which the upload's re-stamp
@@ -395,7 +402,39 @@ def test_api_ingest_drops_a_claimed_from_file(client, admin_headers):
                         headers=admin_headers)
     assert r.status_code == 200, r.text
     assert captured.get("source") == "stamp-probe.md"
-    assert "from_file" not in captured, "a caller claimed the file sync's stamp"
+    assert captured.get("from_file") != "true", "a caller claimed the file sync's stamp"
+
+
+def test_api_ingest_over_a_file_synced_id_is_not_file_owned(kdir, index, client,
+                                                             admin_headers, monkeypatch):
+    """The caller chooses the doc_id, and add_document upserts: on a stored id
+    chroma MERGES the metadata, so dropping a claimed stamp is not enough - an
+    ingest whose doc_id equals a file-synced chunk's id kept that row's
+    from_file="true", and the prune deleted the API-ingested text once no
+    file of that name was on disk. Pinned here (2026-10-29): the route writes
+    from_file="false" explicitly (every reader compares == "true"), so the row
+    reads not file-owned and the prune keeps it."""
+    gen = index.create_collection(database.GLOBAL_COLLECTION)
+    gen.add(ids=["shared-id"], documents=["The deleted file's text."],
+            metadatas=[{"source": "policy.md", "chunk": 0, "from_file": "true",
+                        "trust": "curated"}],
+            embeddings=[EMBEDDING])
+    monkeypatch.setattr(database, "_embed", lambda text, **kw: EMBEDDING)
+    r = client.post("/api/ingest",
+                    json={"doc_id": "shared-id", "text": "API-ingested text.",
+                          "department": "general",
+                          "metadata": {"source": "policy.md"}},
+                    headers=admin_headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "ingested", r.json()
+    row = gen.get(ids=["shared-id"], include=["metadatas", "documents"])
+    assert row["documents"] == ["API-ingested text."]
+    assert row["metadatas"][0].get("from_file") != "true", row["metadatas"]
+    owned = {(r["source"], r["department"]): (r["count"], r["file_chunks"])
+             for r in database.list_file_sources()}
+    assert owned[("policy.md", "general")] == (1, 0)
+    ingest_mod._prune_orphan_knowledge()   # policy.md is not on disk
+    assert _sources(gen) == {"policy.md": 1}, "the prune deleted the API-ingested text"
 
 
 def test_a_knowledge_file_deleted_while_down_is_pruned_by_the_startup_sync(
