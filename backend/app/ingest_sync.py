@@ -49,7 +49,8 @@ _WATCHED_EXTS                = {".md", ".txt", ".pdf", ".py", ".js", ".ts", ".js
 # applied inside rerank.retrieve) pulls the history pool back in for
 # history-shaped questions only. The source->department map lives in
 # app/rag_config (dept_for_source) so retrieval AND the file-tool gate share
-# ONE mapping; imported as _dept_for_source below.
+# ONE mapping; imported as _dept_for_source with the other imports above
+# (a second, late import of the same name sat here until 2026-10-29).
 
 # -- Ingest change-detection --------------------------------------------------
 # Startup must not re-embed the ENTIRE corpus on every boot - on a
@@ -106,7 +107,6 @@ def _ingest_fingerprint(name: str, text: str) -> str:
     return hashlib.md5(key.encode(), usedforsecurity=False).hexdigest()
 
 
-from app.rag_config import dept_for_source as _dept_for_source  # noqa: E402  (map lives in rag_config, shared with the file-tool gate)
 
 
 # -- Per-source ingest lock ----------------------------------------------------
