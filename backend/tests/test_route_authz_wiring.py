@@ -22,6 +22,7 @@ from fastapi.routing import APIRoute
 
 from app import jwt_auth as _ja
 from app.jwt_auth import get_current_user, require_owner
+from app.jwt_auth import require_any_permission as _real_require_any_permission
 from app.jwt_auth import require_permission as _real_require_permission
 from app.main import app
 from app.routers.chat import optional_user
@@ -244,7 +245,11 @@ REQUIRED_GUARD = {
     ("GET", "/api/history/{session_id}"): "require_permission:view_history",
     ("DELETE", "/api/history/{session_id}/tail"): "require_permission:chat",
     ("POST", "/api/ingest"): "require_permission:manage_kb",
-    ("GET", "/api/ingest/departments"): "require_permission:manage_kb",
+    # WIDENED, deliberately, for this one read (2026-10-30): the Users tab
+    # assigns departments, but read their names through a manage_kb route, so
+    # a manage_users holder got a 403 and a picker of `general`. Names only;
+    # test_department_names_read.py carries the behaviour.
+    ("GET", "/api/ingest/departments"): "require_any_permission:manage_kb|manage_users",
     # The path convertor since 2026-10-28: a source keyed by a subfolder path
     # holds a slash, which a one-segment parameter never matched. The pin
     # reads the route's registered path string, convertor included.
@@ -310,7 +315,10 @@ REQUIRED_GUARD = {
 # asserts the scope on the session half. If those are ever deleted, this
 # entry becomes an unbacked assertion and should go with them.
 _RANK = {"require_owner": 3, "require_permission": 2, "get_current_user": 1,
-         "_metrics_auth": 2, "optional_user": 0, "public": -1}
+         "_metrics_auth": 2, "optional_user": 0, "public": -1,
+         # One of named scopes (2026-10-30): a scoped guard, pinned with
+         # every scope it admits so a widening reads as a changed pin.
+         "require_any_permission": 2}
 
 
 def _rank(ident: str) -> int:
@@ -333,6 +341,7 @@ _GUARD_RANK = {
 # imported with the app, and a reload elsewhere in the suite must not move
 # this reference off them.
 _PERMISSION_CHECK_CODE = _real_require_permission("__pin_probe__").__code__
+_ANY_PERMISSION_CHECK_CODE = _real_require_any_permission("__pin_probe__").__code__
 
 
 def _dep_callables(dependant, acc):
@@ -343,14 +352,15 @@ def _dep_callables(dependant, acc):
         _dep_callables(d, acc)
 
 
-def _permission_scope(fn):
+def _permission_scope(fn, cell_name="scope"):
     """require_permission(scope) returns a closure; the scope is only reachable
-    through its cell, which is exactly why the yes/no sweep cannot see it."""
+    through its cell, which is exactly why the yes/no sweep cannot see it.
+    require_any_permission's cell is `scopes`, a tuple."""
     code, cells = getattr(fn, "__code__", None), getattr(fn, "__closure__", None)
     if not code or not cells:
         return None
     for name, cell in zip(code.co_freevars, cells):
-        if name == "scope":
+        if name == cell_name:
             return cell.cell_contents
     return None
 
@@ -373,6 +383,9 @@ def _guard_identity(route) -> str:
     for fn in acc:
         if getattr(fn, "__code__", None) is _PERMISSION_CHECK_CODE:
             ident, r = f"require_permission:{_permission_scope(fn)}", _RANK["require_permission"]
+        elif getattr(fn, "__code__", None) is _ANY_PERMISSION_CHECK_CODE:
+            scopes = "|".join(sorted(_permission_scope(fn, "scopes") or ()))
+            ident, r = f"require_any_permission:{scopes}", _RANK["require_any_permission"]
         elif fn in _GUARD_RANK:
             ident, r = _GUARD_RANK[fn]
         else:

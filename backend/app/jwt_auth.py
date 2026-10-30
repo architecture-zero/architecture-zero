@@ -503,6 +503,26 @@ def require_permission(scope: str):
     return _check
 
 
+def require_any_permission(*scopes: str):
+    """Dependency factory for a READ that holders of more than one scope
+    already reach through their writes: passes for the Owner (full bypass)
+    or any user whose resolved permissions include at least one of the
+    scopes; anyone else, 403 (2026-10-30). A factory of its own rather than
+    a second argument to require_permission, so the route pin in
+    tests/test_route_authz_wiring.py names every scope a route admits."""
+    async def _check_any(current_user: dict = Depends(get_current_user)) -> dict:
+        if is_owner(current_user):
+            return current_user
+        held = effective_permissions(current_user)
+        if not any(scope in held for scope in scopes):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Permission required: {' or '.join(scopes)}",
+            )
+        return current_user
+    return _check_any
+
+
 def permission_guard(scope: str):
     """require_permission(scope)'s question, asked of a raw Authorization
     header: the account, or the route's own 401 / 403 raised."""

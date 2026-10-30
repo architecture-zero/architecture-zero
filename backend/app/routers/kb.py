@@ -38,7 +38,7 @@ from app.db import get_session
 from app.ingest_sync import (KNOWLEDGE_DIR, _sync_knowledge_dir, _sync_docs,
                              _prune_orphan_docs, _prune_orphan_knowledge,
                              _source_lock, _valid_knowledge_sources)
-from app.jwt_auth import require_owner, require_permission
+from app.jwt_auth import require_any_permission, require_owner, require_permission
 from app.logger import log, log_error
 from app.metrics import increment
 from app.pii import scan_pii, redact_pii
@@ -483,8 +483,13 @@ def kb_files(current_user: dict = Depends(require_permission("manage_kb"))):
     return {"files": files, "directory": KNOWLEDGE_DIR}
 
 
+# The department NAMES, for the KB tab's picker and the Users tab's
+# (2026-10-30): a manage_users holder already creates a user in any
+# department, moves one between them and reads every account's department,
+# so reading the names is no new privilege. Names only; what a department
+# holds stays behind the read axis.
 @router.get("/api/ingest/departments")
-def get_departments(current_user: dict = Depends(require_permission("manage_kb"))):
+def get_departments(current_user: dict = Depends(require_any_permission("manage_kb", "manage_users"))):
     return {"departments": list_departments()}
 
 
