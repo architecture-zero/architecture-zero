@@ -744,7 +744,9 @@ def _ingest_upload(name: str, ext: str, data: bytes, department: str,
         try:
             resolve_moot_holds(name, department)
         except Exception as e:
-            log_error("quarantine_supersede_failed", source=name, error=str(e))
+            # Bounded to 300, the rule for an internal error's detail
+            # (2026-10-30); the queued path's twin in app/jobs.py too.
+            log_error("quarantine_supersede_failed", source=name, error=str(e)[:300])
 
     increment("ingest_total")
     log("ingest_upload", source=name, chunks=len(chunks), ext=ext, department=department)

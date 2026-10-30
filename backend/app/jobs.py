@@ -290,8 +290,9 @@ def _run_ingest_locked(job_id: str, filename: str, text: str, department: str,
             from app.quarantine import resolve_moot_holds
             resolve_moot_holds(filename, department)
         except Exception as e:
+            # Bounded to 300, as the upload handler's twin (2026-10-30).
             log_error("quarantine_supersede_failed", job_id=job_id,
-                      source=filename, error=str(e))
+                      source=filename, error=str(e)[:300])
         increment("ingest_total")
         log("ingest_async_complete", job_id=job_id, source=filename,
             chunks=len(chunks), department=department)
