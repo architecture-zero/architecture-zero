@@ -244,8 +244,11 @@ def admin_release_quarantine(item_id: int,
                 r = db.get(QuarantinedDoc, item_id)
                 if r:
                     r.release_error = str(e)[:500]
+            # The caller gets the fixed sentence below, never the store's
+            # words (file paths among them); the log gets those words bounded
+            # to 300, the one rule for an internal error's detail (2026-10-30).
             log_error("quarantine_release_failed", quarantine_id=item_id,
-                      source=source, admin_id=current_user["id"], error=str(e))
+                      source=source, admin_id=current_user["id"], error=str(e)[:300])
             raise HTTPException(status_code=500,
                                 detail="Release failed; item remains held. See logs.")
         # Indexed. Only now is it released - still under the lock, so no
