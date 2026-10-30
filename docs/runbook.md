@@ -174,9 +174,12 @@ Since v0.1.x, for a script or a client of your own:
   `{"status": "unchanged"}` and writes nothing (it used to reset the account's
   explicit permission list); changing your own role is refused (403); an id
   that names no active account is a 404, with nothing written.
-- `POST /api/ingest` drops a `from_file` key from the metadata it is sent,
-  as it drops `auto_generated`: that key marks a document the knowledge sync
-  wrote, and the sync deletes one once no file of its name is on disk.
+- `POST /api/ingest` writes `from_file` and `auto_generated` as `"false"`
+  whatever the metadata it is sent claims: the first marks a document the
+  knowledge sync wrote (the sync deletes one once no file of its name is on
+  disk), the second a system record. A `doc_id` that a knowledge file or a
+  system record already holds is refused (409) and nothing is written; any
+  other existing id is replaced, as before.
 
 ### Going back
 
