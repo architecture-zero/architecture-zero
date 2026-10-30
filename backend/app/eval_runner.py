@@ -260,6 +260,11 @@ def _peer_pieces(query: str, as_level) -> list[dict]:
 RETRIEVAL_DOWN_RESPONSE = ("[ERROR: retrieval unavailable - the knowledge base could not "
                            "be read for this question]")
 
+# An answer-mode question's reply cap, and the reply's room its turn reserves
+# when it is fitted to a bounded window (2026-10-29): one figure, so the cap
+# and the reservation cannot disagree.
+_EVAL_REPLY_TOKENS = 1024
+
 
 def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                   use_rag: bool, n_results: int, retrieval_only: bool,
@@ -472,17 +477,36 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                             "You may also use your file read tools to access actual file contents when needed.\n\n"
                             f"{blocks}QUESTION: {question_text}"
                         )
+                # THE GRADED TURN FITS THE WINDOW AS THE CHAT'S DOES
+                # (2026-10-29): the tool room is sized from the model's window
+                # and the scripted turns give way oldest first, by the chat's
+                # own two functions (routers/chat.py; imported here, as
+                # _peer_pieces imports the chat's floor). This loop took the
+                # whole configured tool budget on every window and sent the
+                # scripted turns whole, so on an 8192-token local window three
+                # full reads overflowed it, the system prompt was cut from the
+                # front, and the eval graded a turn no user gets. The reply's
+                # room is this turn's own cap, _EVAL_REPLY_TOKENS. A window
+                # this code does not know, or one the turn fits, changes
+                # nothing.
+                from app.routers.chat import _fit_history_to_window, _turn_tool_chars
+                tool_chars = _turn_tool_chars(system_prompt, prompt, tools,
+                                              _EVAL_REPLY_TOKENS, model)
+                fitted_turns = _fit_history_to_window(
+                    [dict(t) for t in setup_turns], system_prompt, prompt, tools,
+                    tool_chars, _EVAL_REPLY_TOKENS, model, f"eval:{run_id}:{q.get('id')}")
                 # Scripted turns precede the final question exactly as chat
                 # sends history; the context-bearing prompt stays the final
                 # user message.
                 msgs = ([{"role": "system", "content": system_prompt}]
-                        + [dict(t) for t in setup_turns]
+                        + fitted_turns
                         + [{"role": "user", "content": prompt}])
 
                 def _run_question(msgs, tools, tool_outputs):
                     # The chat's per-turn tool budget (2026-10-29): three
-                    # capped reads would overflow a small local window.
-                    tool_budget = TurnToolBudget()
+                    # capped reads would overflow a small local window. Sized
+                    # from the window, the figure the trim above reserved.
+                    tool_budget = TurnToolBudget(tool_chars)
                     if tools:
                         for _ in range(3):
                             data = non_stream_tool_call(msgs, model, tools)
@@ -524,7 +548,7 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                     # output-side PII), never the unfiltered text.
                     _eflt = _output_filter()
                     for token in stream_chat(msgs, model, system_prompt=base_system_prompt,
-                                             max_tokens=1024):
+                                             max_tokens=_EVAL_REPLY_TOKENS):
                         tokens.append(_eflt.push(token))
                     tokens.append(_eflt.flush())
                     return "".join(tokens)
