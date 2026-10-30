@@ -213,6 +213,40 @@ def test_anthropic_stream_error_event_raises():
             list(_anthropic_stream_events(_MSGS, "claude-sonnet-4-6"))
 
 
+# -- A non-2xx answer logs a bounded body (2026-10-29) ---------------------------
+# The non-2xx branch put the vendor's whole body into the exception, and so the
+# log, unbounded; the stream's error branches beside it cut at 200 characters.
+
+def _anthropic_non_2xx(status, body):
+    import pytest
+    from app.providers import _anthropic_stream_events
+    resp = _stream_resp([])
+    resp.ok = False
+    resp.status_code = status
+    resp.text = body
+    with patch("app.providers.req.post", return_value=resp), \
+         patch("app.providers._anthropic_headers", return_value={}):
+        with pytest.raises(ValueError) as exc:
+            list(_anthropic_stream_events(_MSGS, "claude-sonnet-4-6"))
+    return str(exc.value)
+
+
+def test_anthropic_non_2xx_long_body_is_bounded():
+    """FIX: a 529 with a 5000-character body raises the status prefix plus at
+    most 200 characters of the body."""
+    msg = _anthropic_non_2xx(529, "x" * 5000)
+    prefix = "Anthropic 529: "
+    assert msg.startswith(prefix), msg[:80]
+    assert len(msg) <= len(prefix) + 200, len(msg)
+
+
+def test_anthropic_non_2xx_short_body_appears_whole():
+    """CONTROL: a body under 200 characters reaches the message whole."""
+    body = '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}'
+    assert len(body) < 200
+    assert _anthropic_non_2xx(529, body) == f"Anthropic 529: {body}"
+
+
 def test_openai_stream_error_chunk_raises():
     import pytest
     from app.providers import _openai_stream_events

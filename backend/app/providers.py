@@ -519,7 +519,10 @@ def _anthropic_stream_events(messages: list, model: str, system_prompt: str = ""
     with req.post("https://api.anthropic.com/v1/messages",
                   headers=_anthropic_headers(), json=payload, stream=True, timeout=300) as resp:
         if not resp.ok:
-            raise ValueError(f"Anthropic {resp.status_code}: {resp.text}")
+            # Bounded as the stream's error branches below are (2026-10-29):
+            # the vendor's whole body went into the exception, and so the
+            # log; its error JSON leads with the type, so 200 keeps it.
+            raise ValueError(f"Anthropic {resp.status_code}: {resp.text[:200]}")
         for raw in resp.iter_lines():
             if not raw:
                 continue
