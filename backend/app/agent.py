@@ -259,6 +259,36 @@ def _read_stripped_capped(stream, limit: int, got: dict, key: str,
     got[key] = text[:limit] if more else text.rstrip()[:limit]
 
 
+# -- The environment a command runs with (2026-10-29) -------------------------
+# run_command's process inherited the server's whole environment, so `env`
+# (`set` under cmd), or any command echoing a variable, printed the server's
+# secrets - JWT_SECRET_KEY, the provider keys - into the model's context and,
+# on a vendor lane, to the vendor. A command now gets these names alone, each
+# with the server's own value where the server has one - an ALLOWLIST, never a
+# denylist, so a secret added to the server's environment later is never in
+# it:
+#   PATH         the shell finds the command's programs.
+#   PATHEXT      Windows: cmd finds `python` as python.exe.
+#   SYSTEMROOT   Windows: a process cannot start its runtime without it
+#                (Python fails to seed its random numbers).
+#   COMSPEC      Windows: the shell a command starts for its own children.
+#   HOME, USERPROFILE   the user's home (POSIX, Windows), which tools read
+#                for their settings.
+#   LANG, LC_ALL, LC_CTYPE   the locale, so the command prints in the
+#                encoding the read decodes.
+#   TMP, TEMP, TMPDIR   where the command may write temporary files.
+COMMAND_ENV_ALLOWLIST = ("PATH", "PATHEXT", "SYSTEMROOT", "COMSPEC",
+                         "HOME", "USERPROFILE", "LANG", "LC_ALL", "LC_CTYPE",
+                         "TMP", "TEMP", "TMPDIR")
+
+
+def _command_env() -> dict:
+    """The allowlisted names, with the server's own values, read at call
+    time; a name the server does not have is left out."""
+    return {name: os.environ[name] for name in COMMAND_ENV_ALLOWLIST
+            if name in os.environ}
+
+
 def _run_capped(command: str, timeout: int) -> tuple[str, str, int]:
     """subprocess.run(command, shell=True, cwd=AGENT_WORKSPACE,
     capture_output=True, text=True, timeout=timeout)'s stripped stdout,
@@ -270,6 +300,7 @@ def _run_capped(command: str, timeout: int) -> tuple[str, str, int]:
         command,
         shell=True,  # nosec B602 - see execute_tool's run_command comment; gated, off-by-default tool
         cwd=str(AGENT_WORKSPACE),
+        env=_command_env(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

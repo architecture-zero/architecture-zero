@@ -108,7 +108,11 @@ tools never read, list or write a secret file (`.env` and `.env.*` except
 `.env.example`, `*.pem`, `*.key`, ssh private keys, `credentials*.json`) for
 any caller, the Owner included; a file tool call that reaches one is in scope.
 The shell tool can print any file it can reach and is not bounded by that
-rule, so keep it off on a workspace that holds secrets.
+rule, so keep it off on a workspace that holds secrets. Its commands run with
+a minimal allowlisted environment (`agent.COMMAND_ENV_ALLOWLIST`: the path,
+the shell's own Windows variables, home, locale and temp directories), never
+the server's own, so a command cannot print the server's keys; a variable of
+the server's that reaches a command is in scope.
 
 **Keep the vector store embedded.** `database.py` builds a
 `chromadb.PersistentClient` in-process. Three CVEs against chromadb
