@@ -1032,6 +1032,7 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
         # -- Context window management --------------------------------------
         history_raw = [{"role": m.role, "content": m.content} for m in request.history]
         context_strategy = get_config("context_strategy", "warn")
+        warned = False
 
         if _estimate_tokens(history_raw) > MAX_CONTEXT_TOKENS:
             keep = 6  # preserve 3 most-recent turns
@@ -1067,6 +1068,7 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
                 ]
                 yield f"data: {json.dumps({'context_summarized': True})}\n\n"
             else:
+                warned = True
                 yield f"data: {json.dumps({'context_warning': True})}\n\n"
 
         # The tools, the identity card and the system prompt are settled
@@ -1084,9 +1086,17 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
         # On a bounded local window the oldest history gives way so the turn
         # fits and the system prompt is never cut (2026-10-29; the arithmetic
         # is at _fit_history_to_window). A cloud lane is unchanged.
-        history_raw = _fit_history_to_window(history_raw, system_content, prompt,
-                                             tools, response_tokens, request.model,
-                                             request.session_id)
+        fitted = _fit_history_to_window(history_raw, system_content, prompt,
+                                        tools, response_tokens, request.model,
+                                        request.session_id)
+        # EVERY TRIM TELLS THE CLIENT (2026-10-29): context_warning is how the
+        # client learns older messages are out of the model's view, and it
+        # rode only the MAX_CONTEXT_TOKENS check above - a trim of a shorter
+        # history (a long message, or the tool room, leaves less for it)
+        # showed nothing. Once a turn, before the answer.
+        if len(fitted) < len(history_raw) and not warned:
+            yield f"data: {json.dumps({'context_warning': True})}\n\n"
+        history_raw = fitted
         msgs = [{"role": "system", "content": system_content}]
         msgs += history_raw
         msgs.append({"role": "user", "content": prompt})
