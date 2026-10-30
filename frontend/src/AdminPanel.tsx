@@ -30,7 +30,9 @@ import { IngestQueueTab } from './admin/IngestQueueTab'
 interface AdminPanelProps {
   api: string
   headers: () => Record<string, string>
-  currentUser: { id: number; username: string; role: string }
+  // `permissions` is what /api/auth/me resolves; the login payload has none,
+  // so it can be absent until that read lands.
+  currentUser: { id: number; username: string; role: string; permissions?: string[] }
   onClose: () => void
   onLogout: () => void
 }
@@ -39,20 +41,27 @@ interface AdminPanelProps {
 
 type Tab = 'trust' | 'users' | 'kb' | 'quarantine' | 'prompt' | 'chat' | 'guest' | 'models' | 'audit' | 'monitoring' | 'backup' | 'queue' | 'settings'
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'trust', label: 'Trust' },
-  { id: 'settings', label: 'Settings' },
-  { id: 'users', label: 'Users' },
-  { id: 'kb', label: 'Knowledge Base' },
-  { id: 'quarantine', label: 'Quarantine' },
-  { id: 'prompt', label: 'System Prompt' },
-  { id: 'chat', label: 'Chat Controls' },
-  { id: 'guest', label: 'Guest Access' },
-  { id: 'models', label: 'Models' },
-  { id: 'audit', label: 'Audit Log' },
-  { id: 'monitoring', label: 'Monitoring' },
-  { id: 'backup', label: 'Backup' },
-  { id: 'queue', label: 'Ingestion Queue' },
+// `needs`: the scope a tab's LOAD routes take, read at the routes, so the
+// sidebar lists a tab only to an account the server lets through
+// (2026-10-30). It listed every tab to anyone who could open the panel, and
+// the admin preset holds manage_kb, manage_users and view_analytics only, so
+// an admin opened eight tabs whose loads answer 403. OWNER marks a tab whose
+// routes sit behind require_owner, which no scope reaches.
+const OWNER = 'owner'
+const TABS: { id: Tab; label: string; needs: string }[] = [
+  { id: 'trust', label: 'Trust', needs: 'view_analytics' },
+  { id: 'settings', label: 'Settings', needs: OWNER },
+  { id: 'users', label: 'Users', needs: 'manage_users' },
+  { id: 'kb', label: 'Knowledge Base', needs: 'manage_kb' },
+  { id: 'quarantine', label: 'Quarantine', needs: 'manage_kb' },
+  { id: 'prompt', label: 'System Prompt', needs: 'manage_system' },
+  { id: 'chat', label: 'Chat Controls', needs: 'manage_system' },
+  { id: 'guest', label: 'Guest Access', needs: 'manage_system' },
+  { id: 'models', label: 'Models', needs: 'manage_system' },
+  { id: 'audit', label: 'Audit Log', needs: 'view_audit_log' },
+  { id: 'monitoring', label: 'Monitoring', needs: OWNER },
+  { id: 'backup', label: 'Backup', needs: OWNER },
+  { id: 'queue', label: 'Ingestion Queue', needs: 'manage_kb' },
 ]
 
 // Sidebar structure: tabs grouped by what the operator is doing. Trust stands
@@ -66,10 +75,20 @@ const TAB_GROUPS: { label: string | null; tabs: Tab[] }[] = [
 ]
 
 export default function AdminPanel({ api, headers, currentUser, onClose, onLogout }: AdminPanelProps) {
-  const groups = TAB_GROUPS.filter(g => g.tabs.length > 0)
+  // The server's check_permission: the Owner passes everything; anyone else,
+  // admin included, by the resolved permissions alone.
+  const holds = (scope: string) =>
+    currentUser.role === 'owner' || (scope !== OWNER && (currentUser.permissions || []).includes(scope))
+  const shown = new Set(TABS.filter(t => holds(t.needs)).map(t => t.id))
+  const groups = TAB_GROUPS
+    .map(g => ({ ...g, tabs: g.tabs.filter(id => shown.has(id)) }))
+    .filter(g => g.tabs.length > 0)
   const tabLabel = (id: Tab) => TABS.find(t => t.id === id)?.label || id
-  // The demo tour opens on Trust - the measured story is the show.
-  const [tab, setTab] = useState<Tab>('trust')
+  // The demo tour opens on Trust - the measured story is the show - for an
+  // account that may load it; anyone else opens on the first tab listed to
+  // them, never on one the server refuses.
+  const [tab, setTab] = useState<Tab | null>(() =>
+    shown.has('trust') ? 'trust' : (groups[0]?.tabs[0] ?? null))
 
   return (
     <div className="flex h-screen bg-gray-950 text-white overflow-hidden">

@@ -72,7 +72,10 @@ export function ChatHeader({
       {answeringModel && (
         <span className="text-xs text-gray-500 bg-gray-800 px-2.5 py-1 rounded-full border border-gray-700">{answeringModel}</span>
       )}
-      {currentUser && (currentUser.role === 'owner' || currentUser.role === 'admin' || currentUser.permissions?.some(p => ['manage_users', 'manage_system', 'manage_kb', 'view_analytics'].includes(p))) && (
+      {/* view_audit_log is granted on its own, outside every preset but the
+          Owner's, so it opens the panel by itself - or the Audit Log tab is
+          out of reach for exactly the account it was granted to (2026-10-30). */}
+      {currentUser && (currentUser.role === 'owner' || currentUser.role === 'admin' || currentUser.permissions?.some(p => ['manage_users', 'manage_system', 'manage_kb', 'view_analytics', 'view_audit_log'].includes(p))) && (
         <button
           onClick={() => setView('admin')}
           title={currentUser ? 'Admin panel' : 'Read-only tour of the system behind this assistant: settings, knowledge base, models, and federation'}
