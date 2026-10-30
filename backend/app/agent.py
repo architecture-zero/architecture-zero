@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import glob as glob_module
 from pathlib import Path
@@ -44,6 +45,42 @@ def _may_read(resolved: Path, user_level: int | None) -> bool:
         return True
     rel = resolved.relative_to(AGENT_WORKSPACE).as_posix()
     return department_min_level(dept_for_source(rel)) <= user_level
+
+
+# -- Secret files: never read, listed or written (2026-10-29) -----------------
+# The Owner's file tools reach every workspace file, and so does None, the
+# internal caller. Where AGENT_WORKSPACE is a checkout that holds a .env or a
+# key, read_file put its text into the model's context - on a vendor lane, to
+# the vendor. One deny rule, checked for EVERY level before anything is read
+# or written: the names the repo's .gitignore marks as secrets (.env, .env.*
+# except the documented .env.example, *.pem, *.key), ssh private keys (id_rsa
+# and its siblings) and credentials*.json. Any path component counts, as a
+# .gitignore pattern ignores everything under a matching directory. Matched
+# without case: a case-insensitive filesystem opens .ENV as .env.
+_SECRET_NAME = re.compile(
+    r"\.env|\.env\..+|.*\.pem|.*\.key|id_(?:rsa|dsa|ecdsa|ed25519).*"
+    r"|credentials.*\.json")
+_SECRET_EXEMPT = frozenset({".env.example"})
+
+
+def _is_secret(path: Path) -> bool:
+    """True when any component of `path` below the workspace is a secret
+    file's name. Called with the resolved path the tool would open, so a
+    link that points at a secret file is refused too."""
+    try:
+        parts = path.relative_to(AGENT_WORKSPACE).parts
+    except ValueError:
+        parts = (path.name,)
+    return any(_SECRET_NAME.fullmatch(part.lower())
+               and part.lower() not in _SECRET_EXEMPT for part in parts)
+
+
+def _secret_refusal(shown: str) -> str:
+    """The fixed sentence for a secret path. It names the path the caller
+    gave and never anything read from it - nothing is."""
+    return (f"Permission denied: '{shown}' is a secret file (an environment, "
+            f"key or credentials file); the agent never reads, lists or "
+            f"writes one.")
 
 
 # -- What read_file returns (2026-10-29) --------------------------------------
@@ -356,6 +393,11 @@ def execute_tool(name: str, args: dict, user_level: int | None = None) -> str:
     try:
         if name == "read_file":
             p = _safe_path(args["path"])
+            # Secret first, for every level, before the file is touched -
+            # and before the existence check, so the answer is the same
+            # whether or not the file is there.
+            if _is_secret(p):
+                return _secret_refusal(args["path"])
             if not _may_read(p, user_level):
                 return f"Permission denied: '{args['path']}' is above your access level."
             if not p.exists():
@@ -364,12 +406,17 @@ def execute_tool(name: str, args: dict, user_level: int | None = None) -> str:
 
         elif name == "list_directory":
             p = _safe_path(args.get("path", "."))
+            if _is_secret(p):
+                return _secret_refusal(args.get("path", "."))
             if not p.exists():
                 return f"Error: path not found: {args.get('path', '.')}"
             # Hide entries the caller can't read, so a lower tier can't even
-            # learn the Owner-only file's NAME by listing its directory.
+            # learn the Owner-only file's NAME by listing its directory. A
+            # secret file's name is left out for every level (2026-10-29):
+            # the agent never reads one, so it is not offered one.
             entries = sorted(
-                (e for e in p.iterdir() if _may_read(e, user_level)),
+                (e for e in p.iterdir()
+                 if not _is_secret(e) and _may_read(e, user_level)),
                 key=lambda x: (x.is_file(), x.name),
             )
             return "\n".join(
@@ -389,12 +436,15 @@ def execute_tool(name: str, args: dict, user_level: int | None = None) -> str:
             rel = []
             for m in matches:
                 resolved = Path(m).resolve()
-                if _inside_workspace(resolved) and _may_read(resolved, user_level):
+                if (_inside_workspace(resolved) and not _is_secret(resolved)
+                        and _may_read(resolved, user_level)):
                     rel.append(str(resolved.relative_to(AGENT_WORKSPACE)))
             return "\n".join(rel) if rel else "No files found matching pattern"
 
         elif name == "write_file":
             p = _safe_path(args["path"])
+            if _is_secret(p):
+                return _secret_refusal(args["path"])
             if not _may_read(p, user_level):
                 return f"Permission denied: '{args['path']}' is above your access level."
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -406,6 +456,8 @@ def execute_tool(name: str, args: dict, user_level: int | None = None) -> str:
             # Same clearance rule as write_file: creating a directory in a
             # department above the caller's level is a write into space the
             # caller cannot even read.
+            if _is_secret(p):
+                return _secret_refusal(args["path"])
             if not _may_read(p, user_level):
                 return f"Permission denied: '{args['path']}' is above your access level."
             p.mkdir(parents=True, exist_ok=True)

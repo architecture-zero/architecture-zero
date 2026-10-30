@@ -103,7 +103,12 @@ Two settings matter more than the rest, and both default to the safe option:
 `ENABLE_AGENT_TOOLS` is off by default and should stay off unless you have read
 what the tool surface does. The shell tool is a real shell. The `ENABLE_*` flags
 gate what runs, not only what the model is offered, and the shell tool runs
-for the Owner alone; a tool call that gets past either is in scope.
+for the Owner alone; a tool call that gets past either is in scope. The file
+tools never read, list or write a secret file (`.env` and `.env.*` except
+`.env.example`, `*.pem`, `*.key`, ssh private keys, `credentials*.json`) for
+any caller, the Owner included; a file tool call that reaches one is in scope.
+The shell tool can print any file it can reach and is not bounded by that
+rule, so keep it off on a workspace that holds secrets.
 
 **Keep the vector store embedded.** `database.py` builds a
 `chromadb.PersistentClient` in-process. Three CVEs against chromadb
