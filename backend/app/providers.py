@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+from urllib.parse import urlparse
 
 import requests as req
 
@@ -146,6 +147,24 @@ def _compat_base(provider: str) -> str:
     base = _get_runtime(f"{provider}_base_url", f"{provider.upper()}_BASE_URL",
                         entry["base"])
     return base.rstrip("/")
+
+
+# THE CAP'S FIELD FOLLOWS THE HOST (2026-10-29). OpenAI's reasoning models
+# (the o-series, gpt-5) refuse a request that carries max_tokens and require
+# max_completion_tokens, which OpenAI's current chat models also accept; every
+# other host that speaks the dialect (Groq, Mistral, xAI, DeepSeek, Gemini's
+# compatible endpoint, a self-hosted server) takes max_tokens. Every request on
+# this path that sends a cap names its field through _cap_field, decided by the
+# base URL the request goes to rather than the provider's name, so the openai
+# entry pointed at another compatible server sends that server's field.
+_OPENAI_API_HOST = "api.openai.com"
+
+
+def _cap_field(base_url: str) -> str:
+    """The reply cap's field for a request to `base_url`: max_completion_tokens
+    on OpenAI's own API, max_tokens on every other host."""
+    host = (urlparse(base_url or "").hostname or "").lower()
+    return "max_completion_tokens" if host == _OPENAI_API_HOST else "max_tokens"
 
 
 def _compat_headers(provider: str) -> dict:
@@ -680,13 +699,17 @@ def _openai_stream_events(messages: list, model: str, tools: list | None = None,
     delta.tool_calls, keyed by index - accumulate per index, parse once the
     stream ends.
     """
-    payload: dict = {"model": model, "messages": messages, "stream": True, "max_tokens": max_tokens}
+    base = _compat_base(provider)
+    # The cap's field by the host (_cap_field, 2026-10-29): OpenAI's own API
+    # takes max_completion_tokens, every other compatible host max_tokens.
+    payload: dict = {"model": model, "messages": messages, "stream": True,
+                     _cap_field(base): max_tokens}
     if tools:
         payload["tools"] = tools
 
     tool_accum: dict[int, dict] = {}  # index -> {"id", "name", "args_buf"}
     finish_reason = None
-    with req.post(f"{_compat_base(provider)}/chat/completions",
+    with req.post(f"{base}/chat/completions",
                   headers=_compat_headers(provider), json=payload, stream=True, timeout=300) as resp:
         resp.raise_for_status()
         for raw in resp.iter_lines():

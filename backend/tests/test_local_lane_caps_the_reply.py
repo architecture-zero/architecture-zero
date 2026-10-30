@@ -93,6 +93,9 @@ def test_a_cap_of_zero_or_less_sends_no_num_predict():
 def test_a_cloud_lane_payload_is_unchanged():
     with patch("app.providers.req.post", return_value=_openai_resp()) as post:
         events = list(stream_chat_events(_MSGS, "gpt-4o", max_tokens=321))
+    # OpenAI's own API names the cap max_completion_tokens (2026-10-29,
+    # tests/test_openai_cap_field.py); still no options and no num_predict.
     assert post.call_args.kwargs["json"] == {
-        "model": "gpt-4o", "messages": _MSGS, "stream": True, "max_tokens": 321}
+        "model": "gpt-4o", "messages": _MSGS, "stream": True,
+        "max_completion_tokens": 321}
     assert events == [{"type": "text", "text": "hi"}]
