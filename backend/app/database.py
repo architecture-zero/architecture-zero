@@ -1283,7 +1283,10 @@ def get_source_rows(source: str, department: str | None = None) -> dict[str, tup
 
 def delete_documents(ids: list[str], department: str | None = None):
     """Delete specific chunks by id. The delete half of delta ingestion -
-    delete_source stays for whole-source removal (watcher deletes, purges)."""
+    delete_source stays for whole-source removal (the source-delete route,
+    the orphan prunes, the ingest's general-residue purge); the watcher's
+    delete of a removed file takes only the file sync's rows, through
+    delete_file_chunks (2026-10-29)."""
     if not ids:
         return
     col = _existing_collection(department)

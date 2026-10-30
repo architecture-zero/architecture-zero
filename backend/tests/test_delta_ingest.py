@@ -162,6 +162,9 @@ def test_watcher_replace_event_does_not_mass_delete(monkeypatch, tmp_path):
     deleted_sources = []
     monkeypatch.setattr(main_mod, "delete_source",
                         lambda source, dept=None: deleted_sources.append(source))
+    # The watcher's own delete since 2026-10-29: a replace reaches neither.
+    monkeypatch.setattr(main_mod, "delete_file_chunks",
+                        lambda source, dept=None: deleted_sources.append(source))
     ingested = []
     monkeypatch.setattr(main_mod, "_ingest_file",
                         lambda name, t: ingested.append(name) or 1)
@@ -174,7 +177,10 @@ def test_watcher_true_delete_still_deletes(monkeypatch, tmp_path):
     f = tmp_path / "gone.md"  # never created on disk
     monkeypatch.setattr(main_mod, "KNOWLEDGE_DIR", str(tmp_path))
     deleted_sources = []
-    monkeypatch.setattr(main_mod, "delete_source",
+    # The watcher removes the file sync's rows through delete_file_chunks
+    # (2026-10-29; delete_source until then): which rows go is
+    # test_watcher_delete_takes_only_file_rows.py's question.
+    monkeypatch.setattr(main_mod, "delete_file_chunks",
                         lambda source, dept=None: deleted_sources.append(source))
     monkeypatch.setattr(main_mod, "_load_ingest_state", lambda: {})
     monkeypatch.setattr(main_mod, "_save_ingest_state", lambda s: None)

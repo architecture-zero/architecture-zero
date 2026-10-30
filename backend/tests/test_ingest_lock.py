@@ -193,6 +193,7 @@ def test_a_watcher_delete_of_an_unknown_name_leaves_no_entry(monkeypatch, tmp_pa
     monkeypatch.setattr(ingest_sync, "_DOCS_DIR", tmp_path / "docs")
     monkeypatch.setattr(ingest_sync, "_DOCS_ROOT_FILES", [])
     monkeypatch.setattr(ingest_sync, "delete_source", lambda source, dept=None: None)
+    monkeypatch.setattr(ingest_sync, "delete_file_chunks", lambda source, dept=None: 0)
     monkeypatch.setattr(ingest_sync, "_load_ingest_state", lambda: {})
     monkeypatch.setattr(ingest_sync, "_save_ingest_state", lambda state: None)
     ingest_sync._handle_watched_change(True, tmp_path / "never-there.md")
@@ -261,8 +262,10 @@ def test_the_watcher_delete_waits_for_an_in_flight_ingest(monkeypatch, tmp_path)
         events.append("write-end")
         return len(entries)
 
-    _stub_index(monkeypatch, batch,
-                delete_source=lambda source, dept=None: events.append("delete"))
+    _stub_index(monkeypatch, batch)
+    # The watcher's delete since 2026-10-29 (delete_source until then).
+    monkeypatch.setattr(ingest_sync, "delete_file_chunks",
+                        lambda source, dept=None: events.append("delete"))
     monkeypatch.setattr(ingest_sync, "KNOWLEDGE_DIR", str(tmp_path))
     monkeypatch.setattr(ingest_sync, "_DOCS_DIR", tmp_path / "docs")
     monkeypatch.setattr(ingest_sync, "_DOCS_ROOT_FILES", [])

@@ -748,11 +748,22 @@ def _handle_watched_change(deleted: bool, p: pathlib.Path) -> None:
     if deleted and not p.exists():
         # Same lock as the add path: a delete racing a sync's re-ingest of
         # this source is the interleave the lock exists for.
+        #
+        # Only the rows the file sync wrote go (2026-10-29), by the from_file
+        # stamp the orphan prune, the legacy-key purge and
+        # _drop_textless_source decide ownership by: delete_file_chunks, the
+        # last two's helper, takes the stamped rows and nothing else.
+        # delete_source took the whole name, so an upload of the same
+        # name - keyed by its file name, as a top-level file is - went with
+        # the file. The legacy general cleanup follows it too: general is the
+        # upload's default department, so an upload can sit there under this
+        # name, and the pre-routing chunks it exists for were written by the
+        # file sync, stamped.
         with _source_lock(source):
             dept = _dept_for_source(source)
-            delete_source(source, dept)
+            delete_file_chunks(source, dept)
             if dept != "general":
-                delete_source(source, "general")  # legacy pre-routing chunks
+                delete_file_chunks(source, "general")  # legacy pre-routing chunks
             state = _load_ingest_state()
             if state.pop(source, None) is not None:
                 _save_ingest_state(state)
