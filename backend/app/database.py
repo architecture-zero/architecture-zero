@@ -721,19 +721,46 @@ def add_documents_batch(entries: list[tuple[str, str, dict]],
     return len(ids)
 
 
-def _scan_tags_differ(stored: dict, metadata: dict | None, text: str) -> bool:
-    """Whether a kept row's injection or PII tag, read as == "true" on both
-    sides, is not what this write decides for it (2026-10-29) - the third
-    comparison restamp_reused_chunks makes, beside the stamp and the tier.
+# The gate's injection verdict on a chunk. A kept row's other keys are compared
+# with the writer's exactly (_kept_metadata_differs); these two follow
+# _scan_tags_differ, which reads the verdict as its readers do and scans only
+# where the answer can differ.
+_INJECTION_KEYS = ("injection_flagged", "injection_types")
 
-    PII is decided per document, by the writer alone: its metadata's
-    pii_flagged is the verdict. A writer that carries none (the PII scan off,
-    or a writer that does not scan) claims nothing, and the stored tag stands.
+
+def _kept_metadata_differs(stored: dict, metadata: dict | None, text: str) -> bool:
+    """Whether a kept row's stored metadata is not exactly what this writer
+    writes for it (2026-10-29). Every key but the injection verdict is
+    compared as stored: an extra key, a missing one or another value - the
+    chunk index, the from_file stamp, auto_generated, the PII tag, the tier
+    (_gate_chunk stamps derive_trust of the writer's metadata, so that is the
+    value compared). Until this, the restamp compared the stamp, the tier and
+    the scan tags alone, so a key a caller pre-wrote under a future chunk's
+    exact text and the writer does not write - an entry_date that demotes
+    the chunk in retrieval, a pii_flagged with the PII scan off - read as the
+    writer's. The injection verdict is _scan_tags_differ's."""
+    want = dict(metadata or {})
+    want["trust"] = derive_trust(want)
+    if ({k: v for k, v in stored.items() if k not in _INJECTION_KEYS}
+            != {k: v for k, v in want.items() if k not in _INJECTION_KEYS}):
+        return True
+    return _scan_tags_differ(stored, metadata, text)
+
+
+def _scan_tags_differ(stored: dict, metadata: dict | None, text: str) -> bool:
+    """Whether a kept row's injection tag, read as == "true" on both sides,
+    is not what this write decides for it (2026-10-29) - the part of
+    _kept_metadata_differs that a plain comparison cannot make without a
+    scan. The PII tag is the writer's per document and is compared there
+    exactly, with every other key (2026-10-29: here, a writer that carried
+    none - the PII scan off - left a stored "true" standing).
 
     The injection verdict is _gate_chunk's: the writer's document-level
     "true", else the chunk's own scan; with the scan off the gate stamps
-    nothing of its own and a writer's value passes through. Cheapest first,
-    scanning only where the answer can differ:
+    nothing of its own and a writer's value passes through, so a stored
+    "true" the writer does not write differs (2026-10-29: until then it stood
+    unless the writer named the key). Cheapest first, scanning only where the
+    answer can differ:
       - the writer says "true": decided "true", no scan;
       - the row reads not "true" and the writer does not either: no scan. The
         row was gated over this same text, so its tag is that text's verdict;
@@ -747,24 +774,33 @@ def _scan_tags_differ(stored: dict, metadata: dict | None, text: str) -> bool:
     sections pays one regex scan per flagged kept chunk, and writes nothing
     while those chunks are still hot."""
     m = metadata or {}
-    if "pii_flagged" in m and ((stored.get("pii_flagged") == "true")
-                               != (m.get("pii_flagged") == "true")):
-        return True
     held = stored.get("injection_flagged") == "true"
     if m.get("injection_flagged") == "true":
         return not held
     from app import corpus_scan
     if corpus_scan.INJECTION_SCAN_MODE == "off":
-        return "injection_flagged" in m and held
+        return held
     if not held:
         return False
     return not corpus_scan.scan(text)
 
 
+def _rows_by_id(got: dict) -> dict[str, tuple[str | None, dict, object]]:
+    """A get's rows as id -> (text, metadata, vector). The vector is None when
+    the get did not include it; chroma answers a 2-D numpy array, so it is
+    tested against None and never for truth."""
+    vectors = got.get("embeddings")
+    if vectors is None:
+        vectors = [None] * len(got["ids"])
+    return {i: (d, m or {}, v) for i, d, m, v in
+            zip(got["ids"], got["documents"], got["metadatas"], vectors)}
+
+
 def restamp_reused_chunks(entries: list[tuple[str, str, dict]],
                           department: str | None = None,
                           quarantine_exempt: bool = False,
-                          rewritten: list[str] | None = None) -> int:
+                          rewritten: list[str] | None = None,
+                          stored_rows: dict | None = None) -> int:
     """A writer owns every chunk it writes, the ids it REUSED included.
 
     Chunk ids are content-addressed with one formula for every writer, and the
@@ -778,21 +814,38 @@ def restamp_reused_chunks(entries: list[tuple[str, str, dict]],
     uploader's tier - so the file sync passes the ids it kept here too.
 
     entries are the (id, text, metadata) the writer would write for the ids it
-    kept. The stamp is the writer's: "true" when its metadata carries it (the
-    file sync, the one writer of it), else "false". A kept row whose stamp or
-    trust tier (derive_trust, both sides) is not the writer's - or whose
-    injection or PII tag is not what this write decides (_scan_tags_differ,
-    2026-10-29) - gets the writer's metadata through the same gate as
-    add_document, every such row gated before anything is written; nothing is
-    re-embedded (same text, same vector). A row already the writer's is left
-    as it is - its other keys follow from the same text - so a re-sync of a
-    long file pays one metadata read per slice and no write (2026-10-29: an
-    unconditional write rewrote every unchanged chunk on every sync). Reads
-    and writes go in EMBED_BATCH_SIZE slices: the pinned chroma refuses one
-    call over its max batch size. chroma's update MERGES metadata and its API
-    refuses None, so a stored key cannot be removed: the stamp is
-    overwritten, and every reader of it compares == "true". Returns the count
-    rewritten.
+    kept. A kept row ends this call holding exactly the metadata the writer
+    writes (2026-10-29), as a fresh write of it would: _kept_metadata_differs
+    compares every stored key with the writer's - an extra key, a missing
+    one, another value - and the injection tag by _scan_tags_differ. A row
+    already the writer's is left as it is, so a re-sync of an unchanged file
+    pays one read per slice and no write. A row that differs gets the
+    writer's metadata through the same gate as add_document, every such row
+    gated before anything is written, and nothing is re-embedded (same text,
+    same vector):
+      - when the row holds no key the writer does not write, by update - the
+        store MERGES the given metadata, so the row then holds exactly it
+        (an edit above a section moves the kept rows' chunk index this way,
+        one metadata update per moved row, the vectors untouched);
+      - when it holds such a key, WHOLE: deleted, then added with the
+        writer's metadata and its STORED vector, since a merge cannot remove
+        a key and the store's API refuses None. Until 2026-10-29 every row
+        went by update with from_file overwritten "false", so a key a caller
+        pre-wrote under a future chunk's exact text and the writer does not
+        write - an entry_date that demotes the chunk in retrieval, a
+        pii_flagged with the PII scan off - stayed under the writer's stamp.
+    The writer's metadata is written as it is, so a row of a writer with no
+    from_file holds none (it read "false" before; every reader compares
+    == "true"). Reads and writes go in EMBED_BATCH_SIZE slices: the pinned
+    chroma refuses one call over its max batch size. Returns the count
+    written.
+
+    The read takes each kept row's text, metadata and vector in the SAME get
+    per slice: the vector, for a row written whole, is the added cost
+    (2026-10-29) - one vector per kept row read, no extra call and no embed.
+    stored_rows, when given, is that read already made by the caller over
+    its source (id -> (text, metadata, vector), get_source_rows - the system
+    records writer), and no get is made here.
 
     quarantine_exempt is add_document's: the quarantine release passes it
     (2026-10-29), so the Owner's waiver covers the ids the release reuses as
@@ -805,61 +858,67 @@ def restamp_reused_chunks(entries: list[tuple[str, str, dict]],
     same source (the route's refusal of an id a system writer holds cannot see
     a row that does not exist yet). This restamp then stamped the caller's
     text as the writer's - for the file sync, from_file "true" and the curated
-    tier. So the read below takes the stored text too, and a row whose text is
-    not the writer's is written WHOLE: deleted, then written with the writer's
-    text, a fresh embedding and the writer's metadata through the same gate,
-    so no key of the caller's row survives the merge an upsert would make.
-    Every row is gated and every such text embedded before anything is
-    written or deleted. The added cost is the stored text in the SAME get per
-    slice - no extra call; an unchanged row still pays no write and no embed.
-    rewritten, when given, gets the ids written whole, before their delete,
-    for a caller that must undo them (the release's rollback)."""
+    tier. So a row whose text is not the writer's is written WHOLE with the
+    writer's text and a fresh embedding, embedded before anything is written
+    or deleted. rewritten, when given, gets the ids of those rows - the
+    caller's text, not the writer's - before their delete, for a caller that
+    must undo them (the release's rollback); a row of the writer's own text
+    written whole for a key is not among them, and its rollback is the
+    metadata snapshot's."""
     if not entries:
         return 0
     col = _existing_collection(department)
     if col is None:
         return 0   # nothing indexed here, so nothing was reused
-    current: dict[str, tuple[str | None, dict]] = {}
-    for start in range(0, len(entries), EMBED_BATCH_SIZE):
-        stored = col.get(ids=[doc_id for doc_id, _, _ in entries[start:start + EMBED_BATCH_SIZE]],
-                         include=["metadatas", "documents"])
-        current.update({i: (d, m or {}) for i, d, m in
-                        zip(stored["ids"], stored["documents"], stored["metadatas"])})
+    current: dict[str, tuple[str | None, dict, object]] = {}
+    if stored_rows is not None:
+        current = {doc_id: stored_rows[doc_id] for doc_id, _, _ in entries
+                   if doc_id in stored_rows}
+    else:
+        for start in range(0, len(entries), EMBED_BATCH_SIZE):
+            current.update(_rows_by_id(col.get(
+                ids=[doc_id for doc_id, _, _ in entries[start:start + EMBED_BATCH_SIZE]],
+                include=["metadatas", "documents", "embeddings"])))
     ids: list[str] = []
     metas: list[dict] = []
-    whole: list[tuple[str, str, dict]] = []
+    fresh: list[tuple[str, str, dict]] = []           # embedded here
+    reuse: list[tuple[str, str, dict, list]] = []     # its stored vector
+    foreign: list[str] = []
     for doc_id, text, metadata in entries:
         if doc_id not in current:
             continue
-        stamp = "true" if (metadata or {}).get("from_file") == "true" else "false"
-        held_text, old = current[doc_id]
+        held_text, old, vector = current[doc_id]
         if held_text != text:
-            meta = _gate_chunk(doc_id, text, metadata, department, quarantine_exempt)
-            meta["from_file"] = stamp
-            whole.append((doc_id, text, meta))
+            fresh.append((doc_id, text,
+                          _gate_chunk(doc_id, text, metadata, department, quarantine_exempt)))
+            foreign.append(doc_id)
             continue
-        if ((old.get("from_file") == "true") == (stamp == "true")
-                and derive_trust(old) == derive_trust(metadata)
-                and not _scan_tags_differ(old, metadata, text)):
+        if not _kept_metadata_differs(old, metadata, text):
             continue
         meta = _gate_chunk(doc_id, text, metadata, department, quarantine_exempt)
-        meta["from_file"] = stamp
-        ids.append(doc_id)
-        metas.append(meta)
-    if whole:
+        if not set(old) - set(meta):
+            ids.append(doc_id)
+            metas.append(meta)
+        elif vector is None:
+            fresh.append((doc_id, text, meta))   # no stored vector to reuse
+        else:
+            reuse.append((doc_id, text, meta,
+                          vector.tolist() if hasattr(vector, "tolist") else list(vector)))
+    if foreign:
         log.warning("restamp: %d kept id(s) in %s held text that is not the "
-                    "writer's; written whole", len(whole), col.name)
-        embeddings: list[list[float]] = []
-        for start in range(0, len(whole), EMBED_BATCH_SIZE):
-            embeddings += _embed_batch([t for _, t, _ in whole[start:start + EMBED_BATCH_SIZE]])
-        if rewritten is not None:
-            rewritten.extend(doc_id for doc_id, _, _ in whole)
-        for start in range(0, len(whole), EMBED_BATCH_SIZE):
-            sl = whole[start:start + EMBED_BATCH_SIZE]
-            col.delete(ids=[doc_id for doc_id, _, _ in sl])
-            col.upsert(ids=[doc_id for doc_id, _, _ in sl],
-                       embeddings=embeddings[start:start + EMBED_BATCH_SIZE],
-                       documents=[t for _, t, _ in sl], metadatas=[m for _, _, m in sl])
+                    "writer's; written whole", len(foreign), col.name)
+    embeddings: list[list[float]] = []
+    for start in range(0, len(fresh), EMBED_BATCH_SIZE):
+        embeddings += _embed_batch([t for _, t, _ in fresh[start:start + EMBED_BATCH_SIZE]])
+    if rewritten is not None:
+        rewritten.extend(foreign)
+    whole = [(i, t, m, e) for (i, t, m), e in zip(fresh, embeddings)] + reuse
+    for start in range(0, len(whole), EMBED_BATCH_SIZE):
+        sl = whole[start:start + EMBED_BATCH_SIZE]
+        col.delete(ids=[w[0] for w in sl])
+        col.upsert(ids=[w[0] for w in sl], embeddings=[w[3] for w in sl],
+                   documents=[w[1] for w in sl], metadatas=[w[2] for w in sl])
+    if whole:
         _invalidate_lexical_index(col.name)
     for start in range(0, len(ids), EMBED_BATCH_SIZE):
         sl = slice(start, start + EMBED_BATCH_SIZE)
@@ -1203,17 +1262,20 @@ def get_source_ids(source: str, department: str | None = None) -> list[str]:
     return list(col.get(where={"source": source}).get("ids") or [])
 
 
-def get_source_documents(source: str, department: str | None = None) -> dict[str, str]:
-    """get_source_ids with each id's stored text: the system-records writer's
-    read (2026-10-29), which keeps an id only if the stored text is the
-    record's own (restamp_reused_chunks says why). The same one get by source
-    - chroma's get returns the documents by default, so get_source_ids already
-    reads them; this names them alone and keeps them."""
+def get_source_rows(source: str, department: str | None = None) -> dict[str, tuple[str | None, dict, object]]:
+    """get_source_ids with each id's stored text, metadata and vector, as
+    id -> (text, metadata, vector): the system-records writer's read. It
+    keeps an id only if the stored text is the record's own, and hands the
+    kept rows to restamp_reused_chunks (stored_rows) so they end holding
+    exactly the record's metadata, a row written whole reusing its vector
+    (restamp_reused_chunks says why, 2026-10-29). The same one get by source;
+    the metadata and the vectors are its added cost (2026-10-29 - it read
+    the text alone, as get_source_documents)."""
     col = _existing_collection(department)
     if col is None:
         return {}
-    got = col.get(where={"source": source}, include=["documents"])
-    return dict(zip(got.get("ids") or [], got.get("documents") or []))
+    return _rows_by_id(col.get(where={"source": source},
+                               include=["documents", "metadatas", "embeddings"]))
 
 
 def delete_documents(ids: list[str], department: str | None = None):

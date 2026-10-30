@@ -255,7 +255,10 @@ def test_control_a_kept_id_whose_text_matches_is_restamped_not_rewritten(
         store, monkeypatch):
     """A kept row holding the writer's own text and another writer's metadata
     (here the file sync's, under an untrusted upload of the same text) gets
-    the metadata alone: an update, no upsert, no delete, no embed."""
+    the metadata alone: no embed, the text kept. Its from_file stamp is a key
+    the upload does not write, so since 2026-10-29 the row is written whole
+    with its stored vector - a delete and an upsert - and holds no stamp; it
+    was an update that overwrote the stamp "false" before."""
     assert ingest_mod._ingest_file(NAME, FILE_TEXT) == 2
     gen = store.get_collection(database.GLOBAL_COLLECTION)
     parts = chunk_markdown_sections(FILE_TEXT)
@@ -263,11 +266,11 @@ def test_control_a_kept_id_whose_text_matches_is_restamped_not_rewritten(
     entries = [(_cid(p), p, {"source": NAME, "chunk": i, "trust": "untrusted"})
                for i, p in enumerate(parts)]
     assert database.restamp_reused_chunks(entries) == 2
-    assert {name for name, _ in spy.writes} == {"update"}, spy.writes
+    assert {name for name, _ in spy.writes} == {"delete", "upsert"}, spy.writes
     assert embeds == [], embeds
     rows = _rows(gen, where={"source": NAME})
     assert sorted(d for d, _ in rows.values()) == sorted(parts)
-    assert all(m["from_file"] == "false" and m["trust"] == "untrusted"
+    assert all("from_file" not in m and m["trust"] == "untrusted"
                for _, m in rows.values()), rows
 
 

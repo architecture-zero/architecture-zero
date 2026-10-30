@@ -64,6 +64,10 @@ class _FakeCol:
     def __init__(self, name):
         self.name = name
         self._rows: dict[str, tuple[str, dict]] = {}
+        # The vectors, kept beside the rows and returned when a get includes
+        # "embeddings", as chroma does (2026-10-29): a restamp that writes a
+        # kept row whole reuses its stored vector instead of re-embedding.
+        self._embs: dict[str, list | None] = {}
 
     @staticmethod
     def _match(meta, where):
@@ -79,7 +83,9 @@ class _FakeCol:
     def add(self, ids, documents, metadatas, embeddings=None):
         # chroma 0.5's add skips an id already stored (the row stays as it
         # was); test_the_stores_add_keeps_a_stored_id pins it on both legs.
-        for i, d, m in zip(ids, documents, metadatas):
+        for n, (i, d, m) in enumerate(zip(ids, documents, metadatas)):
+            if i not in self._rows:
+                self._embs[i] = list(embeddings[n]) if embeddings is not None else None
             self._rows.setdefault(i, (d, dict(m)))
 
     def upsert(self, ids, documents, metadatas, embeddings=None):
@@ -87,9 +93,11 @@ class _FakeCol:
         # key the new metadata omits is kept) - probed on the in-memory store
         # 2026-10-29. Replacing the row here hid that an /api/ingest over a
         # file-synced id kept the from_file stamp.
-        for i, d, m in zip(ids, documents, metadatas):
+        for n, (i, d, m) in enumerate(zip(ids, documents, metadatas)):
             held = self._rows[i][1] if i in self._rows else {}
             self._rows[i] = (d, {**held, **m})
+            if embeddings is not None:
+                self._embs[i] = list(embeddings[n])
 
     def update(self, ids, metadatas=None, documents=None, embeddings=None):
         # chroma 0.5's update as its API behaves, which the upload's re-stamp
@@ -107,12 +115,16 @@ class _FakeCol:
     def get(self, ids=None, where=None, include=None):
         hits = [(i, d, m) for i, (d, m) in self._rows.items()
                 if (ids is None or i in ids) and self._match(m, where)]
-        return {"ids": [h[0] for h in hits], "documents": [h[1] for h in hits],
-                "metadatas": [h[2] for h in hits]}
+        out = {"ids": [h[0] for h in hits], "documents": [h[1] for h in hits],
+               "metadatas": [h[2] for h in hits]}
+        if "embeddings" in (include or []):
+            out["embeddings"] = [self._embs.get(h[0]) for h in hits]
+        return out
 
     def delete(self, ids=None):
         for i in ids or []:
             self._rows.pop(i, None)
+            self._embs.pop(i, None)
 
     def count(self):
         return len(self._rows)
@@ -904,7 +916,7 @@ def test_a_knowledge_file_synced_over_an_uploads_identical_text_owns_its_chunks(
 
 
 class _CallSpy:
-    """A collection that records the size of each get and update it is sent,
+    """A collection that records the size of each get and write it is sent,
     and passes every call through."""
 
     def __init__(self, col):
@@ -913,7 +925,7 @@ class _CallSpy:
 
     def __getattr__(self, name):
         attr = getattr(self._col, name)
-        if name not in ("get", "update"):
+        if name not in ("get", "update", "delete", "upsert"):
             return attr
 
         def record(*a, **kw):
@@ -948,15 +960,18 @@ def test_the_restamp_rewrites_only_a_row_whose_provenance_is_not_the_writers(
     assert [c for c in spy.calls if c[0] == "update"] == [], spy.calls
     assert all(size <= 2 for _, size in spy.calls), spy.calls
 
-    # An untrusted upload of the same text: every row is rewritten, in slices.
+    # An untrusted upload of the same text: every row is rewritten, in slices
+    # - whole, with its stored vector, since 2026-10-29: the from_file stamp
+    # is a key the upload does not write, and an update cannot remove it.
     spy.calls.clear()
     upload_entries = [(i, t, {"source": "policy.md", "chunk": n, "trust": "untrusted"})
                       for n, (i, t) in enumerate(zip(ids, texts))]
     assert database.restamp_reused_chunks(upload_entries) == 5
-    updates = [size for name, size in spy.calls if name == "update"]
-    assert sum(updates) == 5 and max(updates) <= 2, spy.calls
+    upserts = [size for name, size in spy.calls if name == "upsert"]
+    assert sum(upserts) == 5 and max(upserts) <= 2, spy.calls
+    assert all(size <= 2 for _, size in spy.calls), spy.calls
     metas = gen.get(ids=ids, include=["metadatas"])["metadatas"]
-    assert all(m["from_file"] == "false" and m["trust"] == "untrusted" for m in metas), metas
+    assert all("from_file" not in m and m["trust"] == "untrusted" for m in metas), metas
 
 
 # -- CONTROLs: pass before the prune existed and after ---------------------------

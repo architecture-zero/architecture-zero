@@ -201,9 +201,12 @@ def test_control_a_chunk_whose_own_text_is_hot_is_flagged_whatever_the_document_
     assert meta["injection_flagged"] == "true"
     assert "instruction_override" in meta["injection_types"]
     gen = store.get_collection(database.GLOBAL_COLLECTION)
+    # The row as this writer writes it - no from_file key (2026-10-29: it held
+    # the "false" the restamp used to write, a key the writer does not write,
+    # and a kept row now ends holding exactly the writer's keys).
     gen.add(ids=["hot"], documents=[ATTACK],
             metadatas=[{"source": NAME, "chunk": 0, "trust": "curated",
-                        "from_file": "false", "injection_flagged": "true",
+                        "injection_flagged": "true",
                         "injection_types": "instruction_override"}],
             embeddings=[EMBEDDING])
     assert database.restamp_reused_chunks(

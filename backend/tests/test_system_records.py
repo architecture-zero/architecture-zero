@@ -24,11 +24,19 @@ class Harness:
     def __init__(self, monkeypatch, preexisting_ids=()):
         # id -> stored text: the writer reads the text with the ids
         # (2026-10-29) and keeps an id only if it holds the record's own.
+        # The read also carries each row's metadata and vector, for the
+        # restamp of the kept rows (2026-10-29); the delta is what this
+        # harness pins, so the restamp is a stand-in that records its entries.
         self.index = dict.fromkeys(preexisting_ids)
         self.added = []
         self.deleted = []
-        monkeypatch.setattr(sr, "get_source_documents",
-                            lambda source, dept=None: dict(self.index))
+        self.restamped = []
+        monkeypatch.setattr(sr, "get_source_rows",
+                            lambda source, dept=None: {i: (t, {}, None)
+                                                       for i, t in self.index.items()})
+        monkeypatch.setattr(sr, "restamp_reused_chunks",
+                            lambda entries, department=None, **kw:
+                                self.restamped.extend(entries) or 0)
         monkeypatch.setattr(sr, "delete_documents",
                             lambda ids, dept=None: (self.deleted.extend(ids),
                                                     [self.index.pop(i, None) for i in ids]))

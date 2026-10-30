@@ -50,7 +50,8 @@ import re
 from datetime import datetime, timezone
 
 from app.chunking import chunk_markdown_sections
-from app.database import (add_documents_batch, delete_documents, get_source_documents,
+from app.database import (add_documents_batch, delete_documents, get_source_rows,
+                          restamp_reused_chunks,
                           list_departments, count_documents, list_sources,
                           corpus_fingerprint, list_injection_flagged_sources)
 from app.logger import log, log_error
@@ -481,22 +482,34 @@ def _ingest(source: str, text: str) -> dict:
     # deleted and written whole below, so nothing of the caller's row
     # survives the merge an upsert would make. An unchanged record still adds
     # nothing and embeds nothing.
-    stored = get_source_documents(source, DEPARTMENT)
+    #
+    # And a kept id ends the run holding exactly the record's metadata
+    # (2026-10-29). A caller who predicted a section's EXACT text could write
+    # it first: the text matched, the id was kept and nothing was written to
+    # it, so the record's own section sat under the caller's auto_generated
+    # "false" and tier - no live-record label, no status lift - with any key
+    # the caller added, until its text changed. The same read now takes each
+    # row's metadata and vector, and restamp_reused_chunks rewrites a kept
+    # row that is not the record's as it would be written fresh, reusing its
+    # stored vector; an unchanged record still writes nothing.
+    stored = get_source_rows(source, DEPARTMENT)
     existing = set(stored)
     stale = existing - desired.keys()
     foreign = sorted(doc_id for doc_id, (_, chunk) in desired.items()
-                     if doc_id in stored and stored[doc_id] != chunk)
+                     if doc_id in stored and stored[doc_id][0] != chunk)
 
     new_entries = []
+    kept_entries = []
     for doc_id, (i, chunk) in desired.items():
-        if doc_id in existing and doc_id not in foreign:
-            continue
         # BOTH keys, because they drive different machinery: the tier derives
         # from `trust`, while the status lift and the [LIVE SYSTEM RECORD] label
         # key on `auto_generated`. Setting one and not the other yields a record
         # that is either unranked or unlabelled.
         meta = {"source": source, "chunk": i,
                 "auto_generated": "true", "trust": "system"}
+        if doc_id in existing and doc_id not in foreign:
+            kept_entries.append((doc_id, chunk, meta))
+            continue
         new_entries.append((doc_id, chunk, meta))
 
     # ADD FIRST, PRUNE LAST - the order the file sync settled on. For a changed
@@ -509,11 +522,14 @@ def _ingest(source: str, text: str) -> dict:
     if foreign:
         delete_documents(foreign, DEPARTMENT)
     added = add_documents_batch(new_entries, department=DEPARTMENT) if new_entries else 0
+    restamped = (restamp_reused_chunks(kept_entries, DEPARTMENT, stored_rows=stored)
+                 if kept_entries else 0)
     if stale:
         delete_documents(sorted(stale), DEPARTMENT)
 
     log("system_record_sync", source=source, chunks=len(chunks), added=added,
-        removed=len(stale), unchanged=len(desired) - added, rewritten=len(foreign))
+        removed=len(stale), unchanged=len(desired) - added, rewritten=len(foreign),
+        restamped=restamped)
     return {"status": "ok", "chunks": len(chunks), "added": added,
             "removed": len(stale)}
 

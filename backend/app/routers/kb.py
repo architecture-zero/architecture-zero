@@ -227,8 +227,10 @@ def admin_release_quarantine(item_id: int,
             # And put back what the restamp changed (2026-10-29): a failure
             # after it - the stale delete - left the reused rows reading as
             # this release's (untrusted, tagged, not file-owned) while the
-            # item reads held. A row written whole was deleted above, so it is
-            # not handed its old metadata back.
+            # item reads held. A row written whole with a caller's text was
+            # deleted above, so it is not handed its old metadata back; a row
+            # of the held text written whole for a key the release does not
+            # write (2026-10-29) is handed it back like the others.
             reused_before = {i: m for i, m in reused_before.items() if i not in rewritten}
             if reused_before:
                 try:
@@ -352,7 +354,10 @@ def ingest(request: IngestRequest, current_user: dict = Depends(require_permissi
     # over that source (database.restamp_reused_chunks for the file sync, the
     # upload and the release; system_records._ingest); an id written here
     # under ANOTHER source reads as new to the writer, and its add replaces
-    # the row (database._drop_held_rows). The refusal still matters for an
+    # the row (database._drop_held_rows); and one written here with the
+    # writer's EXACT text ends that run holding exactly the writer's
+    # metadata, none of this route's keys (2026-10-29,
+    # database._kept_metadata_differs). The refusal still matters for an
     # id that exists: the file sync re-runs a file only when it changes.
     held = chunk_metadata([request.doc_id], request.department).get(request.doc_id) or {}
     if held.get("from_file") == "true" or held.get("auto_generated") == "true":

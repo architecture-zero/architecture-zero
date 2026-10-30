@@ -290,9 +290,10 @@ def _ingest_file_locked(name: str, text: str) -> int:
     # so a file whose text repeats an upload of its name lands on the upload's
     # rows, which kept the upload's metadata - no stamp, the uploader's tier -
     # and this file's source read as not file-owned. They become the file's:
-    # the stamp and the curated tier, no re-embed. A row this sync already
-    # stamped is read, not rewritten. Before the prune below, the add-first
-    # order.
+    # exactly the metadata this sync writes - the stamp, the curated tier and
+    # no key of another writer's (2026-10-29) - no re-embed. A row already
+    # the file's is read, not rewritten. Before the prune below, the
+    # add-first order.
     if kept_entries:
         restamp_reused_chunks(kept_entries, department=dept)
     if stale:
