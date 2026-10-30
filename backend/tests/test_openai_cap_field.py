@@ -14,6 +14,14 @@ max_completion_tokens and no max_tokens - the provider-level stream and a chat
 turn through the real route. CONTROL: a request to any other compatible host,
 and to the openai entry pointed at another host, carries max_tokens as before,
 and a host that merely starts with OpenAI's name is another host.
+
+Azure OpenAI too (2026-10-29): its o-series refuse max_tokens as OpenAI's do.
+The openai entry's base override (OPENAI_BASE_URL, or the openai_base_url
+config row) can point at a resource's v1 API, <name>.openai.azure.com/openai/v1
+- the only Azure API this code can reach, since it sends no api-version query
+and the older, versioned routes require one. A request there carries
+max_completion_tokens, on the stream and on the non-streaming door. CONTROL: a
+host that only borrows Azure's name is another host and keeps max_tokens.
 """
 import json
 from unittest.mock import MagicMock, patch
@@ -126,3 +134,58 @@ def test_a_host_that_only_starts_with_openais_name_is_another_host():
     assert providers._cap_field("https://api.openai.com.example.test/v1") == "max_tokens"
     assert providers._cap_field("http://localhost:11434/v1") == "max_tokens"
     assert providers._cap_field("") == "max_tokens"
+
+
+# -- Azure OpenAI -------------------------------------------------------------
+
+_AZURE_BASE = "https://my-resource.openai.azure.com/openai/v1"
+
+
+def _openai_base(monkeypatch, base):
+    """The openai entry's base override, as an operator sets it."""
+    prev = providers._get_runtime
+    monkeypatch.setattr(providers, "_get_runtime",
+                        lambda db_key, env_key, default="": (
+                            base if db_key == "openai_base_url"
+                            else prev(db_key, env_key, default)))
+
+
+def _compat_json_resp():
+    resp = MagicMock()
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = {"choices": [{
+        "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}]}
+    return resp
+
+
+def test_an_azure_openai_resource_is_sent_max_completion_tokens(monkeypatch):
+    """A reasoning-model deployment on a resource's v1 API: the stream's cap
+    rides as max_completion_tokens, and the URL carries no api-version."""
+    _openai_base(monkeypatch, _AZURE_BASE + "/")
+    url, payload = _sent("o3-mini", max_tokens=4096)
+    assert url == _AZURE_BASE + "/chat/completions"
+    assert payload["max_completion_tokens"] == 4096
+    assert "max_tokens" not in payload, payload
+
+
+def test_the_non_streaming_door_to_azure_is_sent_max_completion_tokens(monkeypatch):
+    _openai_base(monkeypatch, _AZURE_BASE)
+    with patch("app.providers.req.post", return_value=_compat_json_resp()) as post:
+        out = providers.non_stream_tool_call(_MSGS, "o3-mini", [], max_tokens=512)
+    assert out["message"]["content"] == "hi"
+    assert post.call_args.args[0] == _AZURE_BASE + "/chat/completions"
+    payload = post.call_args.kwargs["json"]
+    assert payload["max_completion_tokens"] == 512
+    assert "max_tokens" not in payload, payload
+
+
+def test_the_helper_reads_an_azure_resource_host():
+    assert providers._cap_field(_AZURE_BASE) == "max_completion_tokens"
+    assert providers._cap_field(
+        "https://My-Resource.OpenAI.Azure.com:443/openai/v1/") == "max_completion_tokens"
+
+
+def test_a_host_that_only_borrows_azures_name_is_another_host():
+    assert providers._cap_field(
+        "https://my-resource.openai.azure.com.example.test/openai/v1") == "max_tokens"
+    assert providers._cap_field("https://myopenai.azure.com/openai/v1") == "max_tokens"

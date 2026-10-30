@@ -158,13 +158,25 @@ def _compat_base(provider: str) -> str:
 # base URL the request goes to rather than the provider's name, so the openai
 # entry pointed at another compatible server sends that server's field.
 _OPENAI_API_HOST = "api.openai.com"
+# AZURE OPENAI TOO (2026-10-29): its o-series refuse max_tokens as OpenAI's do,
+# and the openai entry's base override can point at a resource's v1 API
+# (https://<name>.openai.azure.com/openai/v1), which takes the field on every
+# model. No API version needs reading: this code posts {base}/chat/completions
+# with no query string, so the version-less v1 API is the only Azure API it
+# can reach - the older, versioned routes require an api-version query and
+# refuse the request before its cap is read. Should an api-version setting
+# ever be added, an older version wants max_tokens and this rule must read it.
+_AZURE_OPENAI_HOST_SUFFIX = ".openai.azure.com"
 
 
 def _cap_field(base_url: str) -> str:
     """The reply cap's field for a request to `base_url`: max_completion_tokens
-    on OpenAI's own API, max_tokens on every other host."""
+    on OpenAI's own API and on an Azure OpenAI resource, max_tokens on every
+    other host."""
     host = (urlparse(base_url or "").hostname or "").lower()
-    return "max_completion_tokens" if host == _OPENAI_API_HOST else "max_tokens"
+    if host == _OPENAI_API_HOST or host.endswith(_AZURE_OPENAI_HOST_SUFFIX):
+        return "max_completion_tokens"
+    return "max_tokens"
 
 
 def _compat_headers(provider: str) -> dict:
@@ -721,7 +733,8 @@ def _openai_stream_events(messages: list, model: str, tools: list | None = None,
     """
     base = _compat_base(provider)
     # The cap's field by the host (_cap_field, 2026-10-29): OpenAI's own API
-    # takes max_completion_tokens, every other compatible host max_tokens.
+    # and an Azure OpenAI resource take max_completion_tokens, every other
+    # compatible host max_tokens.
     payload: dict = {"model": model, "messages": messages, "stream": True,
                      _cap_field(base): max_tokens}
     if tools:
