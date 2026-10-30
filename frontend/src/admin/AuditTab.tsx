@@ -1,8 +1,15 @@
 import { useState, useEffect } from 'react'
-import { guardedJson } from '../errorSurface'
+import { emitAuthExpired, emitError, guardedJson } from '../errorSurface'
 import { PRIMARY_COLOR } from '../theme'
 
 // ── Tab: Audit Log ─────────────────────────────────────────────────────────
+
+// A failed export is said, never saved (2026-10-30). Export CSV wrote whatever
+// came back to audit_log.csv without reading the status, so an expired session
+// downloaded the error JSON as the file, and a request that never reached the
+// server was swallowed - with no word either way. A fixed sentence, never the
+// server's words.
+const EXPORT_FAILED = 'Exporting the audit log failed. No file was saved.'
 
 interface AuditEntry {
   id: number
@@ -60,6 +67,12 @@ export function AuditTab({ api, headers }: { api: string; headers: () => Record<
       if (filterFrom) params.set('date_from', filterFrom)
       if (filterTo)   params.set('date_to', filterTo)
       const res = await fetch(`${api}/api/admin/audit/export?${params}`, { headers: headers() })
+      if (!res.ok) {
+        // A 401 also raises the session-expired banner, as every action's does.
+        if (res.status === 401) emitAuthExpired()
+        emitError(EXPORT_FAILED)
+        return
+      }
       const text = await res.text()
       const blob = new Blob([text], { type: 'text/csv' })
       const url = URL.createObjectURL(blob)
@@ -68,7 +81,9 @@ export function AuditTab({ api, headers }: { api: string; headers: () => Record<
       a.download = 'audit_log.csv'
       a.click()
       URL.revokeObjectURL(url)
-    } catch { /* ignore */ } finally {
+    } catch {
+      emitError(EXPORT_FAILED)
+    } finally {
       setExporting(false)
     }
   }
