@@ -30,8 +30,8 @@ TEXT_EXTS = ("txt", "md", "py", "js", "ts", "json", "yaml", "yml")
 SUPPORTED_EXTS = ("pdf", "docx") + TEXT_EXTS
 
 # What a caller says when the server could not parse a type (2026-10-29): the
-# upload's 500 and the syncs' skipped entry. It names the type only; the
-# library's own words go to the log, bounded.
+# upload's 500, the syncs' skipped entry and the agent's read_file error. It
+# names the type only; the library's own words go to the log, bounded.
 PARSER_MISSING_DETAIL = ("This server cannot read .{ext} files: a library it needs to "
                          "extract their text is missing. This is a fault on the server, "
                          "not in the file.")

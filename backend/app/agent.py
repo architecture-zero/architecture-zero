@@ -97,7 +97,8 @@ def _secret_refusal(shown: str) -> str:
 # reads exactly as before, through the same decode.
 from app.logger import log_error
 from app.runtime_config import MAX_CONTEXT_TOKENS
-from app.text_extract import SUPPORTED_EXTS, TEXT_EXTS, extract_text
+from app.text_extract import (PARSER_MISSING_DETAIL, SUPPORTED_EXTS, TEXT_EXTS,
+                              extract_text, parser_missing)
 
 _DOCUMENT_EXTS = tuple(e for e in SUPPORTED_EXTS if e not in TEXT_EXTS)
 _BINARY_SNIFF_BYTES = 8000
@@ -125,6 +126,16 @@ def _read_file_text(p: Path, shown: str) -> str:
         try:
             text = extract_text(p.name, p.read_bytes())
         except Exception as e:
+            # A MISSING PARSER IS THE SERVER'S LIMIT, NOT THE FILE'S FAULT
+            # (2026-10-29): a build without the library (an ImportError, or
+            # pypdf's DependencyError - text_extract.parser_missing) was told
+            # to the model as a broken document. The upload's own fixed
+            # sentence naming the type; the library's words to the log,
+            # bounded as the upload bounds them.
+            if parser_missing(e):
+                log_error("agent_read_file_parser_missing", ext=ext,
+                          error=f"{type(e).__name__}: {e}"[:300])
+                return "Error: " + PARSER_MISSING_DETAIL.format(ext=ext)
             # A broken or textless document: a fixed sentence to the model
             # and the stream, the library's words to the log only, bounded.
             log_error("agent_read_file_extract_failed", ext=ext,
