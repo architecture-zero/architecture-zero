@@ -31,7 +31,8 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from app import model_catalog
-from app.agent import get_active_tools, execute_tool, TurnToolBudget
+from app.agent import (get_active_tools, execute_tool, TurnToolBudget,
+                       TOOL_RESULTS_TURN_MAX_CHARS)
 from app.audit import log_audit_entry
 from app.closing_stream import ClosingStreamingResponse
 from app.config import get_config, get_system_prompt
@@ -46,7 +47,8 @@ from app.metrics import increment, record_request
 from app.peers import get_peers, query_peer_kb
 from app.permissions import MEMBER_LEVEL
 from app.providers import (stream_chat_events, non_stream_tool_call, supports_tools,
-                           _provider_for_model, offered_providers)
+                           _provider_for_model, offered_providers,
+                           bounded_window_tokens)
 from app.security import (check_rate_limit, check_injection, client_ip_from_request,
                           check_daily_guest_budget)
 from app import turn_guard
@@ -337,6 +339,60 @@ def delete_history_tail(session_id: str, req: Request, count: int = Query(1, ge=
 
 def _estimate_tokens(messages: list[dict]) -> int:
     return sum(len(m.get("content", "")) for m in messages) // 4
+
+
+# THE TURN FITS A BOUNDED WINDOW (2026-10-29). context_strategy defaults to
+# "warn", which trims nothing, and the input bound admits about 50000 tokens of
+# prompt and history (CHAT_MAX_INPUT_CHARS, 200000 characters at four a token),
+# so on the local Ollama lane a long conversation overflowed num_ctx - and an
+# over-long prompt is cut from the FRONT, the system prompt and its safety
+# rules first. On a lane with a window this code sets
+# (providers.bounded_window_tokens) the history now gives way, oldest message
+# first, whatever the strategy says; the system prompt and the current message
+# are never touched. The arithmetic, in tokens at the chat's own four
+# characters a token, every figure but the first measured on the turn itself:
+#     32768  the window (OLLAMA_NUM_CTX)
+#   -  4096  the reply (a signed-in turn's max_tokens; a guest's is 1024)
+#   - 12000  the turn's tool budget (agent.TOOL_RESULTS_TURN_MAX_CHARS, 48000
+#            characters) - only when tools ride the turn
+#   -   473  the tool definitions as sent (1895 characters with every tool on)
+#   -   500  the rounds' own messages, outside the budget: five assistant
+#            turns carrying their calls and the spent sentence after the
+#            budget is used, about 65 tokens a round
+#   -  the system prompt and the current message (the question with its
+#      CONTEXT and SUPPLEMENTARY CONTEXT blocks), measured
+#   =  what the history may take.
+# A cloud lane is untouched: no figure, nothing trimmed.
+_TOOL_ROUNDS_ROOM_TOKENS = 500
+
+
+def _fit_history_to_window(history: list[dict], system: str, prompt: str,
+                           tools: list, reply_tokens: int, model: str,
+                           session_id: str) -> list[dict]:
+    """The history this turn may send: all of it, unless the model's lane has
+    a bounded window the turn would overflow - then the oldest messages go
+    until system + history + current message, with the reply's room and (when
+    tools ride) the tool budget, fit. One log line when it trims: the counts,
+    never the text."""
+    window = bounded_window_tokens(model)
+    if window is None:
+        return history
+    reserved = reply_tokens
+    if tools:
+        reserved += ((TOOL_RESULTS_TURN_MAX_CHARS + len(json.dumps(tools))) // 4
+                     + _TOOL_ROUNDS_ROOM_TOKENS)
+    chars = len(system) + len(prompt) + sum(len(m.get("content", "")) for m in history)
+    dropped = 0
+    while dropped < len(history) and chars // 4 + reserved > window:
+        chars -= len(history[dropped].get("content", ""))
+        dropped += 1
+    if not dropped:
+        return history
+    kept = history[dropped:]
+    log("chat_history_trimmed", session_id=session_id, model=model, window=window,
+        reserved=reserved, dropped=dropped, kept=len(kept),
+        history_tokens=_estimate_tokens(history), kept_tokens=_estimate_tokens(kept))
+    return kept
 
 
 def _summarize_history(old_messages: list, model: str) -> str:
@@ -984,6 +1040,13 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
             system_content += _NON_OWNER_RULES
         if not use_rag:
             system_content += _RAG_OFF_NOTICE
+        response_tokens = GUEST_MAX_TOKENS if current_user is None else 4096
+        # On a bounded local window the oldest history gives way so the turn
+        # fits and the system prompt is never cut (2026-10-29; the arithmetic
+        # is at _fit_history_to_window). A cloud lane is unchanged.
+        history_raw = _fit_history_to_window(history_raw, system_content, prompt,
+                                             tools, response_tokens, request.model,
+                                             request.session_id)
         msgs = [{"role": "system", "content": system_content}]
         msgs += history_raw
         msgs.append({"role": "user", "content": prompt})
@@ -1007,7 +1070,6 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
         # anything, which is honest: there was no first token to time.
         ttft_ms: int | None = None
         try:
-            response_tokens = GUEST_MAX_TOKENS if current_user is None else 4096
             tool_rounds = 0
             # One budget for every tool result this turn appends (2026-10-29;
             # agent.TOOL_RESULTS_TURN_MAX_CHARS has the arithmetic): five reads

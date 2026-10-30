@@ -207,6 +207,21 @@ def _ollama_options(options: dict | None = None) -> dict | None:
     return merged or None
 
 
+def bounded_window_tokens(model: str) -> int | None:
+    """The context window, in tokens, that a turn sent to `model` must fit
+    where this code sets it - else None (2026-10-29). The Ollama lane runs
+    with num_ctx (OLLAMA_NUM_CTX, merged by _ollama_options) and cuts an
+    over-long prompt from the front, where the system prompt is; the chat
+    trims its history to this figure. A cloud lane is None: its window is
+    several times the chat's input bound, and an over-long request there is
+    refused with an error, not cut. OLLAMA_NUM_CTX=0 hands the window to
+    Ollama's own default, a figure this code does not know, so it is None
+    too."""
+    if _provider_for_model(model) == "ollama" and OLLAMA_NUM_CTX > 0:
+        return OLLAMA_NUM_CTX
+    return None
+
+
 def _ollama_chat_nonstream(messages: list, model: str, tools: list | None = None,
                            options: dict | None = None) -> dict:
     """Single buffered /api/chat call. FALLBACK ONLY: a non-streaming request
