@@ -346,7 +346,13 @@ def _ollama_tool_call(messages: list, model: str, tools: list,
 def _openai_tool_call(messages: list, model: str, tools: list,
                       provider: str = "openai", max_tokens: int | None = None) -> dict:
     base = _compat_base(provider)
-    payload: dict = {"model": model, "messages": messages, "tools": tools}
+    payload: dict = {"model": model, "messages": messages}
+    # AN EMPTY LIST IS NO TOOLS FIELD (2026-10-29): OpenAI's API refuses
+    # "tools": [] with a 400, and the history summarizer calls this door with
+    # tools=[] - so every summary on OpenAI raised and took the placeholder.
+    # Every other door already leaves an empty list out.
+    if tools:
+        payload["tools"] = tools
     # THE CALLER'S CAP, WHEN IT GIVES ONE (2026-10-29): this door sent none,
     # so a history summary on this path ran to the model's own limit. The
     # field is the host's (_cap_field). A call with no cap - the eval

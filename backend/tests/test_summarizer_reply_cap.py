@@ -114,10 +114,12 @@ def test_the_summarizer_caps_its_reply_on_anthropic():
 # -- CONTROL ------------------------------------------------------------------
 
 def test_no_cap_sends_no_cap_field_on_the_openai_style_door():
+    tools = [{"type": "function",
+              "function": {"name": "search_files", "description": "", "parameters": {}}}]
     with patch("app.providers.req.post", return_value=_compat_resp()) as post:
-        providers.non_stream_tool_call(_MSGS, "gpt-4o", [])
+        providers.non_stream_tool_call(_MSGS, "gpt-4o", tools)
     assert post.call_args.kwargs["json"] == {"model": "gpt-4o", "messages": _MSGS,
-                                             "tools": []}
+                                             "tools": tools}
 
 
 def test_no_cap_keeps_the_ollama_doors_16384():
