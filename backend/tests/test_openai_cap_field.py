@@ -22,6 +22,8 @@ config row) can point at a resource's v1 API, <name>.openai.azure.com/openai/v1
 and the older, versioned routes require one. A request there carries
 max_completion_tokens, on the stream and on the non-streaming door. CONTROL: a
 host that only borrows Azure's name is another host and keeps max_tokens.
+Only that exact path (2026-10-30): a deployments base, or any other path on
+an Azure OpenAI host, keeps max_tokens.
 """
 import json
 from unittest.mock import MagicMock, patch
@@ -189,3 +191,49 @@ def test_a_host_that_only_borrows_azures_name_is_another_host():
     assert providers._cap_field(
         "https://my-resource.openai.azure.com.example.test/openai/v1") == "max_tokens"
     assert providers._cap_field("https://myopenai.azure.com/openai/v1") == "max_tokens"
+
+
+# -- One Azure rule: the v1 route's exact path (2026-10-30) --------------------
+# The host alone said max_completion_tokens for any path on an Azure OpenAI
+# resource. Only the v1 route's base (path /openai/v1, trailing slash stripped,
+# any case) is the route this code reaches; every other path keeps max_tokens.
+
+_AZURE_DEPLOYMENTS_BASE = "https://r.openai.azure.com/openai/deployments/d"
+
+
+def test_an_azure_deployments_base_keeps_max_tokens():
+    """FIX: a dated deployments base is not the v1 route, so the helper names
+    max_tokens there, and on any other path of the same host."""
+    assert providers._cap_field(_AZURE_DEPLOYMENTS_BASE) == "max_tokens"
+    assert providers._cap_field(_AZURE_DEPLOYMENTS_BASE + "/") == "max_tokens"
+    assert providers._cap_field("https://r.openai.azure.com/openai/v1/extra") == "max_tokens"
+    assert providers._cap_field("https://r.openai.azure.com/openai") == "max_tokens"
+    assert providers._cap_field("https://r.openai.azure.com") == "max_tokens"
+
+
+def test_a_stream_to_an_azure_deployments_base_carries_max_tokens(monkeypatch):
+    """FIX at the door: the stream's cap to a deployments base rides as
+    max_tokens."""
+    _openai_base(monkeypatch, _AZURE_DEPLOYMENTS_BASE)
+    url, payload = _sent("o3-mini", max_tokens=4096)
+    assert url == _AZURE_DEPLOYMENTS_BASE + "/chat/completions"
+    assert payload["max_tokens"] == 4096
+    assert "max_completion_tokens" not in payload, payload
+
+
+def test_the_non_streaming_door_to_an_azure_deployments_base_carries_max_tokens(monkeypatch):
+    _openai_base(monkeypatch, _AZURE_DEPLOYMENTS_BASE)
+    with patch("app.providers.req.post", return_value=_compat_json_resp()) as post:
+        providers.non_stream_tool_call(_MSGS, "o3-mini", [], max_tokens=512)
+    payload = post.call_args.kwargs["json"]
+    assert payload["max_tokens"] == 512
+    assert "max_completion_tokens" not in payload, payload
+
+
+def test_the_v1_route_in_any_case_with_a_port_gets_the_new_field():
+    """CONTROL: the v1 base still gets max_completion_tokens, its path read
+    case-blind and with or without the trailing slash."""
+    assert providers._cap_field("https://r.openai.azure.com/openai/v1") == "max_completion_tokens"
+    assert providers._cap_field("https://r.openai.azure.com/openai/v1/") == "max_completion_tokens"
+    assert providers._cap_field(
+        "https://R.OpenAI.Azure.com:443/OpenAI/V1/") == "max_completion_tokens"

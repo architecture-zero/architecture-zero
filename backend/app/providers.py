@@ -166,15 +166,26 @@ _OPENAI_API_HOST = "api.openai.com"
 # can reach - the older, versioned routes require an api-version query and
 # refuse the request before its cap is read. Should an api-version setting
 # ever be added, an older version wants max_tokens and this rule must read it.
+# ONE RULE, THE EXACT PATH (2026-10-30): the host alone named the new field for
+# any path on the resource, a dated /openai/deployments/<name> base included.
+# Only the v1 route's base gets it - path /openai/v1, trailing slash stripped,
+# any case - and every other path keeps max_tokens. Microsoft documents that
+# base (no api-version) at
+# https://learn.microsoft.com/en-us/azure/foundry/openai/api-version-lifecycle
 _AZURE_OPENAI_HOST_SUFFIX = ".openai.azure.com"
+_AZURE_OPENAI_V1_PATH = "/openai/v1"
 
 
 def _cap_field(base_url: str) -> str:
     """The reply cap's field for a request to `base_url`: max_completion_tokens
-    on OpenAI's own API and on an Azure OpenAI resource, max_tokens on every
-    other host."""
-    host = (urlparse(base_url or "").hostname or "").lower()
-    if host == _OPENAI_API_HOST or host.endswith(_AZURE_OPENAI_HOST_SUFFIX):
+    on OpenAI's own API and on an Azure OpenAI resource's v1 route, max_tokens
+    on every other host and path."""
+    parsed = urlparse(base_url or "")
+    host = (parsed.hostname or "").lower()
+    if host == _OPENAI_API_HOST:
+        return "max_completion_tokens"
+    if (host.endswith(_AZURE_OPENAI_HOST_SUFFIX)
+            and parsed.path.rstrip("/").lower() == _AZURE_OPENAI_V1_PATH):
         return "max_completion_tokens"
     return "max_tokens"
 
@@ -732,9 +743,9 @@ def _openai_stream_events(messages: list, model: str, tools: list | None = None,
     stream ends.
     """
     base = _compat_base(provider)
-    # The cap's field by the host (_cap_field, 2026-10-29): OpenAI's own API
-    # and an Azure OpenAI resource take max_completion_tokens, every other
-    # compatible host max_tokens.
+    # The cap's field by the base URL (_cap_field, 2026-10-29): OpenAI's own
+    # API and an Azure OpenAI resource's v1 route take max_completion_tokens,
+    # every other compatible host and path max_tokens.
     payload: dict = {"model": model, "messages": messages, "stream": True,
                      _cap_field(base): max_tokens}
     if tools:
