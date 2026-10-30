@@ -77,6 +77,16 @@ class JobQueueFull(Exception):
     """Dispatch refused: ASYNC_JOB_MAX_QUEUED documents are already waiting."""
 
 
+# What a failed job's row says (2026-10-30). The row held str(e) - the store's
+# or a library's own words, index file paths and object reprs among them - and
+# GET /api/admin/jobs serves the row as stored, so the Ingestion Queue tab
+# showed them. The row gets a fixed sentence naming the kind of failure; the
+# words go to the log, bounded at 300. A quarantine hold and a restart keep
+# their own sentences below.
+INGEST_JOB_FAILED = "The document could not be indexed. See the server log."
+INGEST_WORKER_CRASHED = "The ingest worker crashed. See the server log."
+
+
 def async_enabled() -> bool:
     """Whether an upload should be queued.
 
@@ -321,8 +331,8 @@ def _run_ingest_locked(job_id: str, filename: str, text: str, department: str,
                    error=f"quarantined for review (id {res['quarantine_id']})")
     except Exception as e:
         log_error("ingest_async_error", job_id=job_id, source=filename,
-                  error=str(e))
-        update_job(job_id, status="failed", error=str(e))
+                  error=f"{type(e).__name__}: {e}"[:300])
+        update_job(job_id, status="failed", error=INGEST_JOB_FAILED)
 
 
 def dispatch_ingest(job_id: str, filename: str, text: str, department: str,
@@ -358,14 +368,16 @@ def dispatch_ingest(job_id: str, filename: str, text: str, department: str,
             # until the next boot fails it for the wrong reason. This is the
             # last handler on the thread, so it logs and fails the row itself
             # (found by the 2026-09-25 fleet review of the port).
+            # The row gets the fixed sentence and the log the words, bounded
+            # at 300 (2026-10-30).
             from app.logger import log_error
             log_error("ingest_worker_crashed", job_id=job_id, source=filename,
-                      error=str(e))
+                      error=f"{type(e).__name__}: {e}"[:300])
             try:
-                update_job(job_id, status="failed", error=f"worker crashed: {e}")
+                update_job(job_id, status="failed", error=INGEST_WORKER_CRASHED)
             except Exception as e2:
                 log_error("ingest_worker_row_not_failed", job_id=job_id,
-                          error=str(e2))
+                          error=f"{type(e2).__name__}: {e2}"[:300])
         finally:
             _release()
 

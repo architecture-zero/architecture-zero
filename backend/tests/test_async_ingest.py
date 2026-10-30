@@ -93,7 +93,9 @@ def test_failed_add_leaves_previous_generation_intact(monkeypatch):
     assert not pruned["called"], "stale prune ran despite a failed add"
     row = next(j for j in jobs.list_jobs() if j["job_id"] == job_id)
     assert row["status"] == "failed"
-    assert "embed down" in (row["error"] or "")
+    # The row says the job failed in a fixed sentence; the exception's words
+    # go to the log only (2026-10-30, test_ingest_job_fixed_error.py).
+    assert row["error"] == jobs.INGEST_JOB_FAILED
 
 
 def test_the_extra_meta_reaches_every_chunk(monkeypatch):
@@ -280,8 +282,9 @@ def test_a_crash_that_escapes_the_worker_still_fails_the_row(monkeypatch):
     failing in the quarantine backstop) escapes it - Python does not route an
     exception from one handler to a sibling - and on a pool thread it lands
     in a Future nobody reads. The thread's own wrapper is the last handler:
-    the row is failed with the reason and the slot comes back. Found by the
-    2026-09-25 fleet review of this module's port to the four forks."""
+    the row is failed (a fixed sentence; the reason goes to the log) and
+    the slot comes back. Found by the 2026-09-25 fleet review of this
+    module's port to the four forks."""
     job_id = jobs.create_job(source="crash.md", department="general")
     monkeypatch.setattr(jobs, "_run_ingest",
                         lambda *a, **k: (_ for _ in ()).throw(
@@ -290,7 +293,8 @@ def test_a_crash_that_escapes_the_worker_still_fails_the_row(monkeypatch):
     jobs._pool().submit(lambda: None).result(timeout=10)   # serial pool: drains
     row = next(j for j in jobs.list_jobs(limit=200) if j["job_id"] == job_id)
     assert row["status"] == "failed"
-    assert "delete failed inside the backstop" in (row["error"] or "")
+    # Its fixed sentence, not the exception's words (2026-10-30).
+    assert row["error"] == jobs.INGEST_WORKER_CRASHED
     assert row["completed_at"]
     assert jobs.pending_count() == 0
 
