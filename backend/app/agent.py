@@ -74,6 +74,15 @@ def _read_file_text(p: Path, shown: str) -> str:
     is the path as the caller gave it, the only name a reply carries."""
     ext = p.name.rsplit(".", 1)[-1].lower() if "." in p.name else ""
     if ext in _DOCUMENT_EXTS:
+        # The size first (2026-10-29): a document was read whole and parsed
+        # before anything bounded it - the cap below cuts only the text that
+        # comes back. The upload's own limit, the one constant
+        # (routers/kb.py MAX_UPLOAD_MB, read at call time), by the upload's
+        # own comparison; a document over it is refused on a stat alone.
+        from app.routers.kb import MAX_UPLOAD_MB
+        if p.stat().st_size > MAX_UPLOAD_MB * 1024 * 1024:
+            return (f"Error: '{shown}' is over the {MAX_UPLOAD_MB} MB document "
+                    f"limit; read_file does not read it.")
         try:
             text = extract_text(p.name, p.read_bytes())
         except Exception as e:
