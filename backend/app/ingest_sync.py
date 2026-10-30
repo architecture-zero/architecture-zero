@@ -460,8 +460,17 @@ def _sync_knowledge_dir(force: bool = True) -> dict:
     # prune does for docs/, and its failure is reported for the same reason.
     try:
         pr = _prune_orphan_knowledge()
+        # One entry per source, its chunks summed over the departments the
+        # prune took rows from (2026-10-29): one entry per deleted row kept
+        # only the last department's count, so a file pruned from its own
+        # department and from general (a row it left there before routing)
+        # reported fewer chunks than went. Same shape; _report_sync still
+        # counts one pruned source per key.
+        pruned: dict[str, int] = {}
         for d in pr["deleted"]:
-            results[d["source"]] = {"status": "pruned", "chunks": d.get("count")}
+            pruned[d["source"]] = pruned.get(d["source"], 0) + (d.get("count") or 0)
+        for source, n in pruned.items():
+            results[source] = {"status": "pruned", "chunks": n}
         if pr.get("skipped"):
             results["knowledge/_prune"] = {"status": "skipped", "reason": pr["skipped"]}
     except Exception as e:
@@ -715,8 +724,13 @@ def _sync_docs(force: bool = True) -> dict:
             results[source] = {"status": "error", "error": str(e)}
     # Prune orphaned docs/ sources (deleted files whose chunks linger).
     try:
+        # Summed per source, as the knowledge sync's prune entries are
+        # (2026-10-29): one entry per deleted row kept one department's count.
+        pruned: dict[str, int] = {}
         for d in _prune_orphan_docs()["deleted"]:
-            results[d["source"]] = {"status": "pruned", "chunks": d.get("count")}
+            pruned[d["source"]] = pruned.get(d["source"], 0) + (d.get("count") or 0)
+        for source, n in pruned.items():
+            results[source] = {"status": "pruned", "chunks": n}
     except Exception as e:
         # `except: pass` here meant the one job this block exists to do could
         # fail and still report a clean sync. The whole point of the prune is
