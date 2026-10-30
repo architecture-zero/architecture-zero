@@ -12,6 +12,13 @@ interface KBSource {
   department: string
 }
 
+// The types the upload accepts, once (2026-10-29): the hint and the input's
+// accept list both read this. They were two hand copies and the hint had
+// dropped .yaml and .yml. Equal to the backend extractor's SUPPORTED_EXTS
+// (app/text_extract.py); backend/tests/test_upload_types_pin.py fails when
+// the two differ.
+const UPLOAD_TYPES = ['.txt', '.md', '.pdf', '.docx', '.py', '.js', '.ts', '.json', '.yaml', '.yml'] as const
+
 export function KBManage({ api, headers }: { api: string; headers: () => Record<string, string> }) {
   const [sources, setSources] = useState<KBSource[]>([])
   const [departments, setDepartments] = useState<string[]>(['general'])
@@ -97,11 +104,11 @@ export function KBManage({ api, headers }: { api: string; headers: () => Record<
       <div className="flex gap-2 items-center">
         <label className="flex-1 border-2 border-dashed border-gray-700 hover:border-gray-500 rounded-xl px-4 py-6 text-center cursor-pointer transition-colors">
           <p className="text-sm text-gray-400">{uploading ? 'Uploading…' : 'Click to upload a document'}</p>
-          <p className="text-xs text-gray-600 mt-1">.txt .md .pdf .docx .py .js .ts .json</p>
+          <p className="text-xs text-gray-600 mt-1">{UPLOAD_TYPES.join(' ')}</p>
           <input
             type="file"
             className="hidden"
-            accept=".txt,.md,.pdf,.docx,.py,.js,.ts,.json,.yaml,.yml"
+            accept={UPLOAD_TYPES.join(',')}
             onChange={e => { const f = e.target.files?.[0]; if (f) upload(f) }}
           />
         </label>

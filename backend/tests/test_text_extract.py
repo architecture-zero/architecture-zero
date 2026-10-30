@@ -3,7 +3,7 @@ endpoint so every ingest surface behaves identically; the contract must not
 drift from what upload historically accepted."""
 import pytest
 
-from app.text_extract import ExtractError, extract_text, TEXT_EXTS
+from app.text_extract import ExtractError, extract_text, SUPPORTED_EXTS, TEXT_EXTS
 
 
 def test_text_file_decodes():
@@ -26,6 +26,18 @@ def test_empty_content_rejected_not_unsupported():
     with pytest.raises(ExtractError) as ei:
         extract_text("empty.txt", b"   \n  ")
     assert ei.value.unsupported is False
+
+
+def test_supported_exts_names_only_types_extract_text_handles():
+    # SUPPORTED_EXTS is what the upload picker is pinned to (2026-10-29), so
+    # every type it names must reach a handler, never the unsupported refusal.
+    for ext in SUPPORTED_EXTS:
+        try:
+            extract_text(f"f.{ext}", b"x")
+        except ExtractError as e:
+            assert not e.unsupported, ext
+        except Exception:
+            pass  # a handled type's parser refusing b"x" is not "unsupported"
 
 
 def test_no_extension_unsupported():

@@ -21,6 +21,12 @@ class ExtractError(ValueError):
 # must not silently widen what the API accepts.
 TEXT_EXTS = ("txt", "md", "py", "js", "ts", "json", "yaml", "yml")
 
+# Every type extract_text handles, declared once (2026-10-29): the admin
+# upload picker's UPLOAD_TYPES (frontend/src/admin/KBManage.tsx) is pinned to
+# this by tests/test_upload_types_pin.py, so a type added here and not to the
+# picker, or the reverse, fails the suite instead of drifting by hand.
+SUPPORTED_EXTS = ("pdf", "docx") + TEXT_EXTS
+
 
 def extract_text(name: str, data: bytes) -> str:
     """Text for ingestion from a filename + raw bytes. PDF via pypdf, docx

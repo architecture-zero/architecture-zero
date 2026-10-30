@@ -89,3 +89,19 @@ describe('KB page: removing a source', () => {
     expect(screen.queryByText(/failed/)).toBeNull()
   })
 })
+
+// The hint under the picker named eight types while the input accepted ten
+// (.yaml and .yml missing). Both now come from UPLOAD_TYPES (2026-10-29); the
+// backend suite pins that list to the extractor's.
+describe('KB page: the upload picker', () => {
+  it('the hint names every type the file input accepts', async () => {
+    const calls = installFetch('a.md', () => json({}), [])
+    mount()
+    await waitFor(() => expect(calls.sourceLoads).toBe(1))
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    const accepted = (input.getAttribute('accept') || '').split(',')
+    expect(accepted).toContain('.yaml')
+    expect(accepted).toContain('.yml')
+    expect(screen.getByText(accepted.join(' '))).toBeInTheDocument()
+  })
+})
