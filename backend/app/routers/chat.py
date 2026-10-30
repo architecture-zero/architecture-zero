@@ -395,6 +395,33 @@ def _fit_history_to_window(history: list[dict], system: str, prompt: str,
     return kept
 
 
+# What a turn too long for its model's window is told (2026-10-29): one fixed
+# sentence, no figure from the turn, as the 413's detail - the client puts the
+# draft back in the box and shows it under the transcript.
+_OVER_WINDOW_DETAIL = ("Message too long for this model: with its instructions and "
+                       "room for the reply, it does not fit the model's context "
+                       "window. Shorten the message, or choose a model with a "
+                       "larger window.")
+
+
+def _refuse_over_window(system: str, prompt: str, reply_tokens: int, model: str,
+                        guest: bool) -> None:
+    """Refuse, with the size refusal's 413, a turn whose system prompt,
+    current message and reply room pass the window of a lane that has one
+    (providers.bounded_window_tokens) - the case _fit_history_to_window
+    cannot help, since it drops history only. The same estimate as the trim,
+    four characters a token. The tool room is the trim's alone: counted here,
+    the 12000-token tool budget would refuse most long messages on the local
+    lane, and every message on a small window."""
+    window = bounded_window_tokens(model)
+    if window is None:
+        return
+    needed = (len(system) + len(prompt)) // 4 + reply_tokens
+    if needed > window:
+        _refuse_oversize("window", _OVER_WINDOW_DETAIL, tokens=needed,
+                         window=window, reply=reply_tokens, model=model, guest=guest)
+
+
 def _summarize_history(old_messages: list, model: str) -> str:
     text = "\n".join(f"{m.role.upper()}: {m.content[:300]}" for m in old_messages)
     try:
@@ -867,6 +894,48 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
         # never for an outage, which is not a gap in the corpus.
         rag_refused = True
 
+    # No tools on the help lane: a help answer comes from the pages alone,
+    # never from a workspace file the agent tools could read.
+    tools = [] if help_mode else (get_active_tools() if supports_tools(request.model) else [])
+    # IDENTITY CARD BY CLEARANCE (2026-09-11): the owner's profile used to
+    # ship on EVERY turn regardless of tier, while content of that kind
+    # is Owner-only for retrieval - disclosure was mediated by a prompt
+    # instruction, which is not a gate. The card rides only for callers
+    # cleared for the restricted department, the SAME authority the
+    # retrieval gate uses. Two stable cache prefixes result (with/without
+    # card), one per caller class - each still caches. Proven at runtime
+    # by tests/test_identity_card_runtime.py, which drives THIS handler
+    # with real sessions at every rung and reads the prompt at the
+    # provider seam.
+    from app.rag_config import department_min_level as _dept_min
+    _card = (_identity_card()
+             if caller_level >= _dept_min("restricted") else "")
+    # system_core = the STABLE prefix; the Anthropic path puts the
+    # prompt-cache breakpoint after it, so the conditional suffixes below
+    # can toggle without busting the cached core. Ollama/OpenAI ignore
+    # the system_prompt param - they read the full system message in
+    # msgs.
+    system_core = (get_system_prompt() + _card
+                   + _GROUNDING_RULES + _SAFETY_RULES + _CONTEXT_DATA_RULES
+                   + _NO_WEB_NOTICE)
+    system_content = system_core
+    # Answer-layer gate: a non-owner caller must not be told internal
+    # operational history even if it bled into their retrieved (general)
+    # context.
+    if caller_level < OWNER_LEVEL:
+        system_content += _NON_OWNER_RULES
+    if not use_rag:
+        system_content += _RAG_OFF_NOTICE
+    response_tokens = GUEST_MAX_TOKENS if current_user is None else 4096
+    # A MESSAGE THAT CANNOT FIT A BOUNDED WINDOW is refused here (2026-10-29),
+    # before the row is stored and before any provider call: the history
+    # trim never cuts the current message, so one long paste still
+    # overflowed the local window with the whole history gone. Only on the
+    # lanes that call a model.
+    if not retrieval_outage and not rag_refused:
+        _refuse_over_window(system_content, prompt, response_tokens,
+                            request.model, guest=current_user is None)
+
     uid = current_user["id"] if current_user else None
     save_message(request.session_id, "user", request.prompt, request.model, user_id=uid)
 
@@ -1000,22 +1069,10 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
             else:
                 yield f"data: {json.dumps({'context_warning': True})}\n\n"
 
-        # No tools on the help lane: a help answer comes from the pages alone,
-        # never from a workspace file the agent tools could read.
-        tools = [] if help_mode else (get_active_tools() if supports_tools(request.model) else [])
-        # IDENTITY CARD BY CLEARANCE (2026-09-11): the owner's profile used to
-        # ship on EVERY turn regardless of tier, while content of that kind
-        # is Owner-only for retrieval - disclosure was mediated by a prompt
-        # instruction, which is not a gate. The card rides only for callers
-        # cleared for the restricted department, the SAME authority the
-        # retrieval gate uses. Two stable cache prefixes result (with/without
-        # card), one per caller class - each still caches. Proven at runtime
-        # by tests/test_identity_card_runtime.py, which drives THIS handler
-        # with real sessions at every rung and reads the prompt at the
-        # provider seam.
-        from app.rag_config import department_min_level as _dept_min
-        _card = (_identity_card()
-                 if caller_level >= _dept_min("restricted") else "")
+        # The tools, the identity card and the system prompt are settled
+        # before the stream starts (moved 2026-10-29, above the window check
+        # in _chat_answer); the turn log's receipt stays here, on the lane
+        # that attaches them.
         # Attach receipt for the turn log: attached-and-unused must be
         # distinguishable from never-attached after the fact. identity_card +
         # caller_level: whether the card rode this turn and the clearance
@@ -1024,23 +1081,6 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
         log("chat_tools_attached", session_id=request.session_id,
             tools=len(tools), identity_card=bool(_card),
             caller_level=caller_level)
-        # system_core = the STABLE prefix; the Anthropic path puts the
-        # prompt-cache breakpoint after it, so the conditional suffixes below
-        # can toggle without busting the cached core. Ollama/OpenAI ignore
-        # the system_prompt param - they read the full system message in
-        # msgs.
-        system_core = (get_system_prompt() + _card
-                       + _GROUNDING_RULES + _SAFETY_RULES + _CONTEXT_DATA_RULES
-                       + _NO_WEB_NOTICE)
-        system_content = system_core
-        # Answer-layer gate: a non-owner caller must not be told internal
-        # operational history even if it bled into their retrieved (general)
-        # context.
-        if caller_level < OWNER_LEVEL:
-            system_content += _NON_OWNER_RULES
-        if not use_rag:
-            system_content += _RAG_OFF_NOTICE
-        response_tokens = GUEST_MAX_TOKENS if current_user is None else 4096
         # On a bounded local window the oldest history gives way so the turn
         # fits and the system prompt is never cut (2026-10-29; the arithmetic
         # is at _fit_history_to_window). A cloud lane is unchanged.

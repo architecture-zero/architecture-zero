@@ -99,8 +99,13 @@ def test_the_history_length_is_bounded_in_messages(client, admin_headers):
 
 def test_zero_disables_a_bound(client, admin_headers):
     captured = {}
+    # The window is a bound of its own (2026-10-29): 300000 characters do not
+    # fit the local lane's num_ctx and are refused before the call
+    # (test_chat_message_over_window_refused.py). Off here, so this pins the
+    # input bounds alone.
     with patch("app.routers.chat.CHAT_MAX_INPUT_CHARS", 0), \
          patch("app.routers.chat.CHAT_MAX_HISTORY_MESSAGES", 0), \
+         patch("app.routers.chat.bounded_window_tokens", return_value=None), \
          patch("app.routers.chat.stream_chat_events", side_effect=_capturing_stream(captured)):
         r = client.post("/api/chat", json={"prompt": "x" * 300000, "model": "test-model"},
                         headers=admin_headers)
