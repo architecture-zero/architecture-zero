@@ -23,7 +23,7 @@ from pydantic import BaseModel
 
 from app import model_catalog
 from app.config import set_config, encrypt_secret
-from app.logger import log
+from app.logger import log, log_error
 from app.jwt_auth import get_current_user, require_owner, require_step_up
 from app.security import validate_outbound_url
 from app.providers import (ENABLE_OLLAMA, ENABLE_ANTHROPIC, ENABLE_OPENAI,
@@ -137,6 +137,12 @@ def update_settings(body: ProviderSettingsRequest, current_user: dict = Depends(
     return _settings_dict()
 
 
+# What the Settings tab shows when the test fails (2026-10-30). It showed
+# str(e): the HTTP library's words - the host and port it tried, its retry
+# state, an object repr - unbounded. Those go to the log, bounded at 300.
+OLLAMA_TEST_FAILED = "The Ollama connection test failed. See the server log."
+
+
 @router.get("/api/settings/test-ollama")
 def test_ollama_connection(current_user: dict = Depends(require_owner)):
     # base resolved here, not inside _ollama_get - both return paths report
@@ -147,7 +153,9 @@ def test_ollama_connection(current_user: dict = Depends(require_owner)):
         models = resp.json().get("models", [])
         return {"ok": True, "model_count": len(models), "base_url": base}
     except Exception as e:
-        return {"ok": False, "error": str(e), "base_url": base}
+        log_error("ollama_connection_test_failed",
+                  error=f"{type(e).__name__}: {e}"[:300])
+        return {"ok": False, "error": OLLAMA_TEST_FAILED, "base_url": base}
 
 def _anthropic_badge(model_id: str) -> str:
     mid = model_id.lower()
