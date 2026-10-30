@@ -155,7 +155,10 @@ index (`kb_orphan_pruned` names each one), because the watcher removes a
 deleted file only while it runs. More than 10 at once is refused
 (`knowledge_orphan_prune_refused`) and nothing is removed;
 `POST /api/admin/kb/prune-orphans?dry_run=true` (Owner only) lists them and
-`?force=true` removes them.
+`?force=true` removes them. A file that is still there but no longer
+yields text - emptied, or a PDF that no longer parses - is removed at the
+next sync in the same way (`kb_file_no_text_removed`); an upload of the
+same name keeps its documents.
 
 ### What changes for anything that calls the API
 

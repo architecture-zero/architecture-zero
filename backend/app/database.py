@@ -1234,22 +1234,25 @@ def delete_source(source: str, department: str | None = None):
         _invalidate_lexical_index(col.name)
 
 
-def delete_file_chunks(source: str, department: str | None = None):
+def delete_file_chunks(source: str, department: str | None = None) -> int:
     """Delete only the chunks of a source that a file sync wrote - the ones
     stamped from_file="true" - and leave any other chunk under that name.
 
     delete_source removes every chunk keyed by a name, which is right for
     removing a whole source and wrong for cleaning up one writer's leftovers:
     an upload is keyed by its file name too, so a purge of a stale file-sync
-    key through delete_source also deleted any upload that shared the name."""
+    key through delete_source also deleted any upload that shared the name.
+    Returns the count deleted (2026-10-29: a file that now yields no text is
+    removed through here, and logged only when something went)."""
     col = _existing_collection(department)
     if col is None:
-        return  # nothing to delete from, and asking must not create one
+        return 0  # nothing to delete from, and asking must not create one
     results = col.get(where={"$and": [{"source": source}, {"from_file": "true"}]},
                       include=["metadatas"])
     if results["ids"]:
         col.delete(ids=results["ids"])
         _invalidate_lexical_index(col.name)
+    return len(results["ids"])
 
 
 def get_source_ids(source: str, department: str | None = None) -> list[str]:

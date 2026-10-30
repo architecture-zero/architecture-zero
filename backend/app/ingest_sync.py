@@ -138,6 +138,43 @@ def _read_watched(p: pathlib.Path, quiet: bool = False) -> str:
         return ""
 
 
+def _drop_textless_source(source: str, p: pathlib.Path) -> int:
+    """A watched file that is there and yields no text is gone for the index
+    (2026-10-29): the chunks the file sync wrote for it are removed, as the
+    orphan prune removes a deleted file's. Every caller skipped such a file -
+    blank text is never indexed - so what an earlier sync wrote for it (an
+    emptied file's old text; a PDF that no longer parses, which the old code
+    had indexed as its bytes decoded) stayed indexed and served, and the
+    prune never looked: the file is still on disk.
+
+    Only the rows stamped from_file="true" go (delete_file_chunks), the stamp
+    the orphan prune trusts: an upload is keyed by its file name too, carries
+    no stamp, and is not this file's to remove. Under the source's lock the
+    file is read again first, quietly: text written since the sync's read is
+    the watcher's to ingest, and a file gone since is the prune's. The ingest
+    fingerprint goes with the chunks, so a later version - the old text
+    again included - is indexed, not skipped as unchanged. Logged once, when
+    something was removed: a later sync finds nothing. Returns the count
+    removed.
+
+    The two syncs call this; the watcher does not (2026-10-29). An event can
+    be read mid-write - a file truncated before it is written again, a PDF
+    still being copied - and removing the chunks there would re-embed the
+    whole file at the next event. A file that stays without text goes at the
+    next sync."""
+    dept = _dept_for_source(source)
+    with _source_lock(source):
+        if not p.is_file() or _read_watched(p, quiet=True).strip():
+            return 0
+        removed = delete_file_chunks(source, dept)
+        state = _load_ingest_state()
+        if state.pop(source, None) is not None:
+            _save_ingest_state(state)
+    if removed:
+        log("kb_file_no_text_removed", file=source, department=dept, chunks=removed)
+    return removed
+
+
 
 
 # -- Per-source ingest lock ----------------------------------------------------
@@ -355,6 +392,10 @@ def _sync_knowledge_dir(force: bool = True) -> dict:
         try:
             text = _read_watched(p)
             if not text.strip():
+                # There and without text: gone for the index (2026-10-29).
+                removed = _drop_textless_source(rel, p)
+                if removed:
+                    results[rel] = {"status": "pruned", "chunks": removed}
                 continue
             # Self-healing migration (first boot does the work, later boots
             # no-op): purge the chunks + state entry this subdir file left
@@ -590,6 +631,7 @@ def _sync_docs(force: bool = True) -> dict:
         candidates += list(_DOCS_DIR.rglob("*"))
     archive_dir = _DOCS_DIR / "archive"
     synced: set[str] = set()
+    textless: dict[str, pathlib.Path] = {}
     state = _load_ingest_state()
     indexed = ({s["source"]: s["count"] for s in list_sources()}
                if not force else {})
@@ -605,6 +647,7 @@ def _sync_docs(force: bool = True) -> dict:
         try:
             text = _read_watched(p)
             if not text.strip():
+                textless.setdefault(f"docs/{p.name}", p)
                 continue
             source = f"docs/{p.name}"
             synced.add(source)
@@ -616,6 +659,18 @@ def _sync_docs(force: bool = True) -> dict:
             results[source] = {"status": "ok", "chunks": n}
         except Exception as e:
             results[f"docs/{p.name}"] = {"status": "error", "error": str(e)}
+    # A file there without text is gone for the index (2026-10-29) - after
+    # the walk: docs/ sources are keyed by file name, and a source another
+    # file of that name synced above is not gone.
+    for source, p in textless.items():
+        if source in synced:
+            continue
+        try:
+            removed = _drop_textless_source(source, p)
+            if removed:
+                results[source] = {"status": "pruned", "chunks": removed}
+        except Exception as e:
+            results[source] = {"status": "error", "error": str(e)}
     # Prune orphaned docs/ sources (deleted files whose chunks linger).
     try:
         for d in _prune_orphan_docs()["deleted"]:
@@ -716,6 +771,8 @@ def _handle_watched_change(deleted: bool, p: pathlib.Path) -> None:
             n = _ingest_file(source, text)
             log("kb_file_replaced", file=source, chunks=n)
         return
+    # A file read here without text is left to the next sync, which removes
+    # its chunks (_drop_textless_source says why the watcher does not).
     text = _read_watched(p)
     if text.strip():
         n = _ingest_file(source, text)
