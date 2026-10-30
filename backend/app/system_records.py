@@ -69,8 +69,10 @@ DEPARTMENT = "restricted"
 # to DEPARTMENT through dept_for_source, so the retrieval gate and the agent's
 # file-tool gate resolve the same string the same way. Extensionless on purpose:
 # these are not files, and a name ending in a watched extension could collide
-# with one. Never prefixed `docs/` - the orphan pruner deletes any `docs/`
-# source with no backing file on disk, and these have none by design.
+# with one. Never prefixed `docs/` - that namespace is the docs sync's, whose
+# orphan prune removes a `docs/` source with no backing file on disk, and these
+# have none by design (since 2026-10-29 it takes only the rows the file sync
+# stamped, which these are not; the prefix stays off them all the same).
 NAMESPACE = "internal/system/"
 
 POSTURE_SOURCE = NAMESPACE + "posture"

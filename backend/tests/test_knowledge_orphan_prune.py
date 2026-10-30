@@ -317,10 +317,13 @@ def test_the_admin_endpoint_dry_runs_both_namespaces_and_is_owner_only(
     docs.mkdir()
     monkeypatch.setattr(ingest_mod, "_DOCS_DIR", docs)
     monkeypatch.setattr(ingest_mod, "_DOCS_ROOT_FILES", [])
+    # One listing for both prunes since 2026-10-29: the docs prune reads
+    # list_file_sources and removes through delete_file_chunks (the file
+    # sync's rows only), recorded beside the knowledge prune's deletions.
     monkeypatch.setattr(ingest_mod, "list_file_sources", lambda: _rows(
-        ("retired-guide.md", "general", 23, 23)))
-    monkeypatch.setattr(ingest_mod, "list_sources", lambda department=None: [
-        {"source": "docs/GONE.md", "department": "restricted", "count": 2}])
+        ("retired-guide.md", "general", 23, 23), ("docs/GONE.md", "restricted", 2, 2)))
+    monkeypatch.setattr(ingest_mod, "delete_file_chunks",
+                        lambda source, dept=None: deletions.append((source, dept)) or 2)
     assert client.post("/api/admin/kb/prune-orphans?dry_run=true").status_code in (401, 403)
     r = client.post("/api/admin/kb/prune-orphans?dry_run=true", headers=admin_headers)
     assert r.status_code == 200, r.text
@@ -1006,19 +1009,21 @@ def test_control_an_upload_named_like_a_deleted_knowledge_file_survives(
 def test_control_the_docs_prune_is_unchanged(tmp_path, monkeypatch):
     """Called as _sync_docs calls it - no arguments - the docs prune deletes
     exactly the docs/ sources with no file, leaves every other key alone, and
-    answers in the same shape."""
+    answers in the same shape. Its seams moved 2026-10-29 - list_file_sources
+    and delete_file_chunks, so it takes only the file sync's rows
+    (test_docs_prune_takes_only_file_rows.py) - and what this pins did not."""
     docs = tmp_path / "docs"
     docs.mkdir()
     (docs / "keep.md").write_text("# Keep\n", encoding="utf-8")
     monkeypatch.setattr(ingest_mod, "_DOCS_DIR", docs)
     monkeypatch.setattr(ingest_mod, "_DOCS_ROOT_FILES", [])
-    monkeypatch.setattr(ingest_mod, "list_sources", lambda department=None: [
-        {"source": "docs/keep.md", "department": "general", "count": 1},
-        {"source": "docs/gone.md", "department": "restricted", "count": 2},
-        {"source": "gone-knowledge.md", "department": "general", "count": 3}])
+    monkeypatch.setattr(ingest_mod, "list_file_sources", lambda: _rows(
+        ("docs/keep.md", "general", 1, 1),
+        ("docs/gone.md", "restricted", 2, 2),
+        ("gone-knowledge.md", "general", 3, 3)))
     deleted = []
-    monkeypatch.setattr(ingest_mod, "delete_source",
-                        lambda source, dept=None: deleted.append((source, dept)))
+    monkeypatch.setattr(ingest_mod, "delete_file_chunks",
+                        lambda source, dept=None: deleted.append((source, dept)) or 2)
     out = ingest_mod._prune_orphan_docs()
     assert deleted == [("docs/gone.md", "restricted")]
     assert set(out) == {"deleted", "docs_sources_in_index"}

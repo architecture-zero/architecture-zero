@@ -292,15 +292,19 @@ def test_the_docs_orphan_prune_rechecks_under_the_lock(monkeypatch, tmp_path):
     monkeypatch.setattr(ingest_sync, "_DOCS_DIR", docs)
     monkeypatch.setattr(ingest_sync, "_DOCS_ROOT_FILES", [])
 
-    def listing(department=None):
+    def listing():
         (docs / "back.md").write_text(TEXT, encoding="utf-8")   # back after the disk read
-        return [{"source": "docs/back.md", "department": "general", "count": 2},
-                {"source": "docs/gone.md", "department": "general", "count": 2}]
+        return [{"source": "docs/back.md", "department": "general", "count": 2, "file_chunks": 2},
+                {"source": "docs/gone.md", "department": "general", "count": 2, "file_chunks": 2}]
 
     deleted = []
-    monkeypatch.setattr(ingest_sync, "list_sources", listing)
-    monkeypatch.setattr(ingest_sync, "delete_source",
-                        lambda source, dept=None: deleted.append((source, _held(source))))
+    # The prune lists through list_file_sources and removes through
+    # delete_file_chunks since 2026-10-29 (the file sync's rows only; which
+    # rows go is test_docs_prune_takes_only_file_rows.py's question, this one
+    # asks only about the lock).
+    monkeypatch.setattr(ingest_sync, "list_file_sources", listing)
+    monkeypatch.setattr(ingest_sync, "delete_file_chunks",
+                        lambda source, dept=None: deleted.append((source, _held(source))) or 2)
     out = ingest_sync._prune_orphan_docs()
     assert deleted == [("docs/gone.md", True)]
     assert [d["source"] for d in out["deleted"]] == ["docs/gone.md"]

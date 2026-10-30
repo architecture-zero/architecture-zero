@@ -709,20 +709,29 @@ def _valid_doc_sources() -> set[str]:
 
 
 def _prune_orphan_docs(dry_run: bool = False) -> dict:
-    """Delete 'docs/' sources whose backing file is gone - they otherwise
-    linger in the index and pollute retrieval. Safe: the 'docs/' source
-    namespace is exclusively file-derived (uploads and generated records never
-    prefixed 'docs/'). Deletes from each source's ACTUAL department, and
-    returns what it removed plus the remaining docs/ sources in the index -
-    so the purge is observable, not silent. dry_run lists what it would
-    remove and removes nothing."""
+    """Delete the file sync's rows of 'docs/' sources whose backing file is
+    gone - they otherwise linger in the index and pollute retrieval. Deletes
+    from each source's ACTUAL department, and returns what it removed plus the
+    remaining docs/ sources in the index - so the purge is observable, not
+    silent. dry_run lists what it would remove and removes nothing.
+
+    Only the rows the file sync wrote go (2026-10-29): delete_file_chunks, by
+    the from_file stamp, the rule the watcher's delete follows. The 'docs/'
+    namespace is NOT file-sync-only, as this docstring said until then: the
+    upload route keeps the client's filename as the source name, so an upload
+    named 'docs/x.md' with no file behind it was deleted here, and one sharing
+    a removed docs file's name went with the file. A source with no stamped
+    row is no candidate, and every count reported - would_delete's and
+    deleted's - is the stamped rows, the ones this removes (deleted's is what
+    delete_file_chunks removed under the lock)."""
     valid = _valid_doc_sources()
-    all_srcs = list_sources()
+    all_srcs = list_file_sources()
     deleted = []
     for s in all_srcs:
         name = str(s.get("source", ""))
-        if name.startswith("docs/") and name not in valid:
+        if name.startswith("docs/") and name not in valid and s.get("file_chunks"):
             dept = s.get("department") or "general"
+            removed = s["file_chunks"]
             if not dry_run:
                 with _source_lock(name):
                     # Re-checked under the lock: a file of this name written
@@ -730,8 +739,10 @@ def _prune_orphan_docs(dry_run: bool = False) -> dict:
                     # and deleting now would drop what it wrote.
                     if name in _valid_doc_sources():
                         continue
-                    delete_source(name, dept)
-            deleted.append({"source": name, "department": dept, "count": s.get("count")})
+                    removed = delete_file_chunks(name, dept)
+                if not removed:
+                    continue
+            deleted.append({"source": name, "department": dept, "count": removed})
     docs_in_index = sorted(
         ({"source": str(s.get("source")), "department": s.get("department"), "count": s.get("count")}
          for s in all_srcs if str(s.get("source", "")).startswith("docs/")),
