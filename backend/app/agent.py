@@ -101,37 +101,62 @@ def _read_file_text(p: Path, shown: str) -> str:
         # one character is ever read in.
         with p.open("r", encoding="utf-8", errors="replace") as f:
             text = f.read(READ_FILE_MAX_CHARS + 1)
-    if len(text) > READ_FILE_MAX_CHARS:
-        text = (text[:READ_FILE_MAX_CHARS]
-                + f"\n\n[read_file: cut at {READ_FILE_MAX_CHARS} characters - "
-                  f"the file is longer and the rest was not returned]")
-    return _framed_file_text(text, shown)
+    return _framed_file_text(_cut_at_cap(text, "read_file", "the file"), shown)
+
+
+def _cut_at_cap(text: str, tool: str, what: str) -> str:
+    """One tool result's own bound: READ_FILE_MAX_CHARS, with a marker saying
+    the rest was not returned. read_file's since 2026-10-29, and
+    run_command's the same day - a command can print any workspace file."""
+    if len(text) <= READ_FILE_MAX_CHARS:
+        return text
+    return (text[:READ_FILE_MAX_CHARS]
+            + f"\n\n[{tool}: cut at {READ_FILE_MAX_CHARS} characters - "
+              f"{what} is longer and the rest was not returned]")
+
+
+def _injection_flag(text: str, source: str) -> bool:
+    """The injection scan in TAG mode over a tool result (2026-10-29): a
+    finding labels the text, it never withholds it, whatever
+    INJECTION_SCAN_MODE says, because the workspace is the operator's own
+    repo (the curated tier's rule at the ingest gate). "off" switches the
+    scan off here as it does there. The scan reads peer_boundary's copy of
+    the text, every whitespace run cut to two: one of its rules is quadratic
+    on a run of line breaks (a file of 24000 newlines cost 5 s), and no rule
+    needs three in a row. The log carries `source` cut to 200 and the finding
+    types, never the text."""
+    from app import corpus_scan
+    from app.logger import log
+    from app.peer_boundary import _for_scan, scan_mode
+    if scan_mode() == "off":
+        return False
+    findings = corpus_scan.scan(_for_scan(text))
+    if not findings:
+        return False
+    log("injection_detected", source=source[:200], trust="workspace",
+        types=corpus_scan.finding_types(findings), quarantined=False,
+        mode="tag")
+    return True
 
 
 def _framed_file_text(text: str, shown: str) -> str:
     """The file's text as the model receives it (2026-10-29): framed as data
     by the retrieved blocks' own formatter (rerank.format_file_context) and
-    run through the injection scan in TAG mode - a finding labels the text,
-    it never withholds it, whatever INJECTION_SCAN_MODE says, because the
-    workspace is the operator's own repo (the curated tier's rule at the
-    ingest gate). "off" switches the scan off here as it does there. The
-    scan reads peer_boundary's copy of the text, every whitespace run cut to
-    two: one of its rules is quadratic on a run of line breaks (a file of
-    24000 newlines cost 5 s), and no rule needs three in a row. The refusals
-    above are fixed sentences and are never framed."""
-    from app import corpus_scan
-    from app.logger import log
-    from app.peer_boundary import _for_scan, scan_mode
+    tag-scanned (_injection_flag). The refusals above are fixed sentences and
+    are never framed."""
     from app.rerank import format_file_context
-    flagged = False
-    if scan_mode() != "off":
-        findings = corpus_scan.scan(_for_scan(text))
-        if findings:
-            flagged = True
-            log("injection_detected", source=shown[:200], trust="workspace",
-                types=corpus_scan.finding_types(findings), quarantined=False,
-                mode="tag")
-    return format_file_context(shown, text, flagged)
+    return format_file_context(shown, text, _injection_flag(text, shown))
+
+
+def _framed_command_output(text: str, command: str) -> str:
+    """What a command printed, as the model receives it (2026-10-29): cut at
+    the read cap, framed as data (rerank.format_command_output) and
+    tag-scanned, as read_file's text is. It reached the model bare, bounded
+    only by the turn's tool budget. The log names the command (cut to 200),
+    which the tool_call line already carries."""
+    from app.rerank import format_command_output
+    text = _cut_at_cap(text, "run_command", "the output")
+    return format_command_output(text, _injection_flag(text, f"run_command: {command}"))
 
 
 # -- One budget for a turn's tool results (2026-10-29) ------------------------
@@ -418,7 +443,10 @@ def execute_tool(name: str, args: dict, user_level: int | None = None) -> str:
                 parts.append(f"stderr: {err}")
             if result.returncode != 0:
                 parts.append(f"exit code: {result.returncode}")
-            return "\n".join(parts) if parts else "(no output)"
+            # Framed, tag-scanned and capped as read_file's text is
+            # (2026-10-29); "(no output)" is a fixed sentence, as a refusal is.
+            return (_framed_command_output("\n".join(parts), args["command"])
+                    if parts else "(no output)")
 
         else:
             return f"Error: unknown tool '{name}'"
