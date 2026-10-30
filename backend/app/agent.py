@@ -46,6 +46,59 @@ def _may_read(resolved: Path, user_level: int | None) -> bool:
     return department_min_level(dept_for_source(rel)) <= user_level
 
 
+# -- What read_file returns (2026-10-29) --------------------------------------
+# read_file returned p.read_text(errors="replace") for every path: a PDF or
+# docx came back as its bytes decoded ("%PDF-1.4 ... endobj", a docx's zip),
+# an image the same, and any file came back whole - nothing between the tool
+# and the model's context capped it (the chat loop and the eval runner append
+# the result as it is). Now a document type the extractor handles is returned
+# as its extracted text, any other file with a NUL byte in its first 8000
+# bytes (git's own binary test) is refused unread, and what is returned is
+# cut at READ_FILE_MAX_CHARS with a marker saying so. Every other text file
+# reads exactly as before, through the same decode.
+from app.logger import log_error
+from app.runtime_config import MAX_CONTEXT_TOKENS
+from app.text_extract import SUPPORTED_EXTS, TEXT_EXTS, extract_text
+
+_DOCUMENT_EXTS = tuple(e for e in SUPPORTED_EXTS if e not in TEXT_EXTS)
+_BINARY_SNIFF_BYTES = 8000
+# The bound is the chat's history budget, MAX_CONTEXT_TOKENS, at the chat's
+# own estimate of four characters a token (routers/chat.py _estimate_tokens):
+# one file read never carries more text than the whole conversation the chat
+# budgets for a turn - 24000 characters at the default 6000.
+READ_FILE_MAX_CHARS = MAX_CONTEXT_TOKENS * 4
+
+
+def _read_file_text(p: Path, shown: str) -> str:
+    """read_file's answer for an existing path the caller may read. `shown`
+    is the path as the caller gave it, the only name a reply carries."""
+    ext = p.name.rsplit(".", 1)[-1].lower() if "." in p.name else ""
+    if ext in _DOCUMENT_EXTS:
+        try:
+            text = extract_text(p.name, p.read_bytes())
+        except Exception as e:
+            # A broken or textless document: a fixed sentence to the model
+            # and the stream, the library's words to the log only, bounded.
+            log_error("agent_read_file_extract_failed", ext=ext,
+                      error=f"{type(e).__name__}: {str(e)[:200]}")
+            return f"Error: no text could be extracted from '{shown}'."
+    else:
+        with p.open("rb") as f:
+            if b"\x00" in f.read(_BINARY_SNIFF_BYTES):
+                return (f"Error: '{shown}' is a binary file; read_file returns "
+                        f"text files and documents "
+                        f"({', '.join('.' + e for e in sorted(_DOCUMENT_EXTS))}) only.")
+        # read_text's own open and decode, bounded: no more than the cap and
+        # one character is ever read in.
+        with p.open("r", encoding="utf-8", errors="replace") as f:
+            text = f.read(READ_FILE_MAX_CHARS + 1)
+    if len(text) > READ_FILE_MAX_CHARS:
+        return (text[:READ_FILE_MAX_CHARS]
+                + f"\n\n[read_file: cut at {READ_FILE_MAX_CHARS} characters - "
+                  f"the file is longer and the rest was not returned]")
+    return text
+
+
 # -- Tool definitions (OpenAI function format) --------------------------------
 
 READ_TOOLS = [
@@ -193,7 +246,7 @@ def execute_tool(name: str, args: dict, user_level: int | None = None) -> str:
                 return f"Permission denied: '{args['path']}' is above your access level."
             if not p.exists():
                 return f"Error: file not found: {args['path']}"
-            return p.read_text(encoding="utf-8", errors="replace")
+            return _read_file_text(p, args["path"])
 
         elif name == "list_directory":
             p = _safe_path(args.get("path", "."))
