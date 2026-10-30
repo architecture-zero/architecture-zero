@@ -486,6 +486,16 @@ def _refuse_over_window(system: str, prompt: str, reply_tokens: int, model: str,
                          window=window, reply=reply_tokens, model=model, guest=guest)
 
 
+# THE SUMMARY'S OWN CAP (2026-10-29). The summarizer's door sent no cap on the
+# OpenAI-style lane, so a summary there ran to the model's own limit; Ollama's
+# door sent 16384 and Anthropic's 8192. A 2-3 sentence summary needs a few
+# hundred tokens; the bound is a signed-in chat reply's cap, because a
+# reasoning model's thinking counts against it on OpenAI's API and on the
+# local lane, and a summary must not be cut where a reply on the same model
+# is not. The Anthropic door adds its thinking room on top (output_room).
+_SUMMARY_MAX_TOKENS = 4096
+
+
 def _summarize_history(old_messages: list, model: str) -> str:
     text = "\n".join(f"{m.role.upper()}: {m.content[:300]}" for m in old_messages)
     try:
@@ -493,6 +503,7 @@ def _summarize_history(old_messages: list, model: str) -> str:
             [{"role": "user", "content": f"Summarize this conversation in 2-3 sentences:\n\n{text}"}],
             model,
             tools=[],
+            max_tokens=_SUMMARY_MAX_TOKENS,
         )
         content = result.get("message", {}).get("content", "").strip()
         # The provider's empty-turn sentence (providers.EMPTY_TURN_TEXT) is

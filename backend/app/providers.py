@@ -319,14 +319,17 @@ def _ollama_stream_events(messages: list, model: str, tools: list | None = None,
     model_catalog.note_if_cut(done_reason, model, (opts or {}).get("num_predict"))
 
 
-def _ollama_tool_call(messages: list, model: str, tools: list) -> dict:
+def _ollama_tool_call(messages: list, model: str, tools: list,
+                      max_tokens: int | None = None) -> dict:
     """Buffered-INTERFACE call for non-chat callers (history summary, eval
     runner). Streams under the hood and assembles the full message - the
-    interface stayed, the timeout-prone transport didn't."""
+    interface stayed, the timeout-prone transport didn't. The caller's cap
+    rides as num_predict; none given keeps this door's 16384."""
     text_parts: list[str] = []
     tool_calls: list[dict] = []
+    cap = 16384 if max_tokens is None else max_tokens
     for event in _ollama_stream_events(messages, model, tools or None,
-                                       options={"num_predict": 16384}):
+                                       options={"num_predict": cap}):
         if event["type"] == "text":
             text_parts.append(event["text"])
         elif event["type"] == "tool_call":
@@ -341,14 +344,22 @@ def _ollama_tool_call(messages: list, model: str, tools: list) -> dict:
 # -- OpenAI-compatible (OpenAI, Gemini, Mistral, Groq, xAI, DeepSeek) --------
 
 def _openai_tool_call(messages: list, model: str, tools: list,
-                      provider: str = "openai") -> dict:
-    resp = req.post(f"{_compat_base(provider)}/chat/completions",
+                      provider: str = "openai", max_tokens: int | None = None) -> dict:
+    base = _compat_base(provider)
+    payload: dict = {"model": model, "messages": messages, "tools": tools}
+    # THE CALLER'S CAP, WHEN IT GIVES ONE (2026-10-29): this door sent none,
+    # so a history summary on this path ran to the model's own limit. The
+    # field is the host's (_cap_field). A call with no cap - the eval
+    # runner's tool rounds - sends exactly what it sent before.
+    if max_tokens is not None:
+        payload[_cap_field(base)] = max_tokens
+    resp = req.post(f"{base}/chat/completions",
                     headers=_compat_headers(provider),
-                    json={"model": model, "messages": messages, "tools": tools},
+                    json=payload,
                     timeout=120)
     resp.raise_for_status()
     choice = resp.json()["choices"][0]
-    model_catalog.note_if_cut(choice.get("finish_reason"), model, None)
+    model_catalog.note_if_cut(choice.get("finish_reason"), model, max_tokens)
     # Normalise to Ollama-style {message: {content, tool_calls}}
     return {"message": choice["message"]}
 
@@ -635,8 +646,10 @@ def _anthropic_stream_events(messages: list, model: str, system_prompt: str = ""
         logger.warning("%s ended the stream with a refusal stop", model)
 
 
-def _anthropic_tool_call(messages: list, model: str, tools: list) -> dict:
-    """Non-streaming Anthropic call for the agentic tool loop."""
+def _anthropic_tool_call(messages: list, model: str, tools: list,
+                         max_tokens: int | None = None) -> dict:
+    """Non-streaming Anthropic call for the agentic tool loop. The caller's
+    cap, with the thinking room output_room adds; none given keeps 8192."""
     anthropic_messages = _to_anthropic_messages(messages)
     if not anthropic_messages:
         return {"message": {"content": "", "tool_calls": []}}
@@ -646,7 +659,8 @@ def _anthropic_tool_call(messages: list, model: str, tools: list) -> dict:
     payload: dict = {
         "model": model,
         "messages": anthropic_messages,
-        "max_tokens": model_catalog.output_room(model, 8192),
+        "max_tokens": model_catalog.output_room(
+            model, 8192 if max_tokens is None else max_tokens),
     }
     if tools:
         payload["tools"] = _to_anthropic_tools(tools)
@@ -821,17 +835,24 @@ def stream_chat(messages: list, model: str, tools: list | None = None,
             yield event["text"]
 
 
-def non_stream_tool_call(messages: list, model: str, tools: list) -> dict:
+def non_stream_tool_call(messages: list, model: str, tools: list,
+                         max_tokens: int | None = None) -> dict:
     """Non-streaming call for the agentic loop. Returns Ollama-normalised
-    dict."""
+    dict.
+
+    `max_tokens` caps the reply on every lane (2026-10-29): the history
+    summarizer passes its own bound. None keeps each door's own figure as
+    before - no cap on the OpenAI-style door, 16384 on Ollama, 8192 with
+    thinking room on Anthropic - which is what the eval runner's calls send."""
     provider, bare = _resolve_model(model)
     if provider == "anthropic":
         # Its door answers an empty completion itself, naming the stop reason.
-        return _anthropic_tool_call(messages, bare, tools)
+        return _anthropic_tool_call(messages, bare, tools, max_tokens=max_tokens)
     elif provider == "ollama":
-        data = _ollama_tool_call(messages, bare, tools)
+        data = _ollama_tool_call(messages, bare, tools, max_tokens=max_tokens)
     else:
-        data = _openai_tool_call(messages, bare, tools, provider=provider)
+        data = _openai_tool_call(messages, bare, tools, provider=provider,
+                                 max_tokens=max_tokens)
     # The empty turn on the other two doors (2026-10-23): a completion with no
     # text and no tool call reached the caller as a blank answer, the same
     # silence the streaming exit and the Anthropic door already answer.
