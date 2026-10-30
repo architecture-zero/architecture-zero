@@ -807,7 +807,9 @@ def chunk_metadata(ids: list[str], department: str | None = None) -> dict[str, d
     """The stored metadata of each id that is indexed, keyed by id; an id that
     is not stored is absent. The quarantine release's snapshot before it
     re-stamps the ids it reuses (2026-10-29), for restore_chunk_metadata to
-    put back if the release then fails. Read in EMBED_BATCH_SIZE slices."""
+    put back if the release then fails; and /api/ingest's read of the one id
+    it was sent, to refuse an id a system writer holds (2026-10-29). Read in
+    EMBED_BATCH_SIZE slices."""
     col = _existing_collection(department) if ids else None
     if col is None:
         return {}

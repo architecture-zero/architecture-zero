@@ -314,6 +314,26 @@ from app.quarantine import resolve_moot_holds, write_quarantine_row as _write_qu
 def ingest(request: IngestRequest, current_user: dict = Depends(require_permission("manage_kb"))):
     from app.corpus_scan import QuarantinedContent
     _check_department_write(current_user, request.department or "general")
+    # An id a system writer holds is refused at the door (2026-10-29). The
+    # knowledge file sync and the system records write content-addressed ids
+    # (md5 of department, source and chunk text) and skip an id already
+    # stored, so they never rewrite one: a caller's text upserted under such
+    # an id stayed in place of the file's or the record's own text until that
+    # source changed. A kept id with different text can arise only through
+    # this route, so it closes here: one read by id (metadata only) in the
+    # department's collection as the write below resolves it, before any scan
+    # or write, and a 409 whose fixed sentence echoes nothing stored. Every
+    # other stored id keeps the upsert - re-sending your own id is this
+    # route's normal use. Uploads, connector rows and released rows are not
+    # covered: a manage_kb holder may already delete those whole, and their
+    # writers are this route's trust level. Re-open if a non-owner role gains
+    # manage_kb on a department holding uploads it should not be able to
+    # rewrite.
+    held = chunk_metadata([request.doc_id], request.department).get(request.doc_id) or {}
+    if held.get("from_file") == "true" or held.get("auto_generated") == "true":
+        raise HTTPException(status_code=409,
+                            detail="That doc_id belongs to a knowledge file or a "
+                                   "system record; choose another id.")
     text = request.text
     meta = dict(request.metadata)
     # `auto_generated` is not a caller's to claim. It is what marks content as a
