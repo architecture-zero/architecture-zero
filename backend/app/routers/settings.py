@@ -150,7 +150,17 @@ def test_ollama_connection(current_user: dict = Depends(require_owner)):
     base = _get_runtime("ollama_base_url", "OLLAMA_BASE", OLLAMA_BASE)
     try:
         resp = _ollama_get("/api/tags", timeout=5)
-        models = resp.json().get("models", [])
+        # Connected means a 2xx whose body is Ollama's model list (2026-10-30).
+        # Any JSON answer used to count, status unread and a missing list read
+        # as zero models, so a wrong URL that answers JSON (another service's
+        # 404, a health route) showed "Connected - 0 model(s)".
+        if not 200 <= resp.status_code < 300:
+            raise ValueError(f"HTTP {resp.status_code} from /api/tags")
+        body = resp.json()
+        models = body.get("models") if isinstance(body, dict) else None
+        if not isinstance(models, list):
+            raise ValueError(f"HTTP {resp.status_code} from /api/tags, "
+                             "but the body carries no model list")
         return {"ok": True, "model_count": len(models), "base_url": base}
     except Exception as e:
         log_error("ollama_connection_test_failed",

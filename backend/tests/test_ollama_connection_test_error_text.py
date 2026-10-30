@@ -23,6 +23,9 @@ LIBRARY_WORDS = ("HTTPConnectionPool(host='10.0.0.7', port=11434): Max retries "
 
 
 class _Tags:
+    # The route reads the status since 2026-10-30 (a non-2xx is a failure).
+    status_code = 200
+
     def json(self):
         return {"models": [{"name": "a"}, {"name": "b"}]}
 
