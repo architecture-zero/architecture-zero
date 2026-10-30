@@ -99,6 +99,60 @@ def _read_file_text(p: Path, shown: str) -> str:
     return text
 
 
+# -- One budget for a turn's tool results (2026-10-29) ------------------------
+# READ_FILE_MAX_CHARS bounds ONE result, but the chat runs up to five tool
+# rounds (the eval runner three), each with any number of calls, and appended
+# every result whole: five capped reads are about 30000 tokens. The smallest
+# window any lane runs with is the local Ollama lane's num_ctx
+# (providers.OLLAMA_NUM_CTX, 32768 tokens by default; the cloud lanes' windows
+# are several times that), and Ollama cuts an over-long prompt from the FRONT
+# - the system prompt and its safety rules go first. The arithmetic, in tokens
+# at the chat's own four characters a token:
+#     32768  the smallest window (OLLAMA_NUM_CTX)
+#   -  4096  the reply (a signed-in turn's max_tokens; it shares the window)
+#   -  6000  the history budget (MAX_CONTEXT_TOKENS)
+#   -  3000  the system prompt (the code-held rules and the default persona
+#            are about 6000 characters, 1500 tokens; the rest is room for an
+#            edited persona or the identity card)
+#   -  1700  the retrieved CONTEXT block (RERANK_TOP_K 5 chunks of about
+#            1200 characters, with their labels)
+#   -  5000  the peer block (5 pieces at the 4000-character piece bound)
+#   -   500  the tool definitions
+#   = 12472 left. The budget is 12000 tokens, 48000 characters: two full
+#   reads. One budget for every lane - the cloud lanes need a bound too
+#   (each round resends every result), and this one fits the smallest.
+TOOL_RESULTS_TURN_MAX_CHARS = 48000
+TOOL_BUDGET_SPENT = ("[tool results: this turn's tool budget is used - this "
+                     "result was not returned. Answer from the results above.]")
+
+
+class TurnToolBudget:
+    """What one turn's tool results may add to the prompt, together. Every
+    loop that appends a tool result to the messages it sends takes it through
+    fit(): the chat route's rounds and the eval runner's. A result that fits
+    is returned as it is; one that would take the turn past the budget is cut
+    to what is left, with a marker; once the budget is spent a further result
+    is the fixed TOOL_BUDGET_SPENT sentence. The cut result, marker included,
+    stays inside the budget."""
+
+    def __init__(self, total: int | None = None):
+        self.total = TOOL_RESULTS_TURN_MAX_CHARS if total is None else total
+        self.left = self.total
+
+    def fit(self, result: str) -> str:
+        if len(result) <= self.left:
+            self.left -= len(result)
+            return result
+        marker = (f"\n\n[tool results: cut at this turn's tool budget of "
+                  f"{self.total} characters - the rest of this result was not "
+                  f"returned]")
+        keep = self.left - len(marker)
+        self.left = 0
+        if keep <= 0:
+            return TOOL_BUDGET_SPENT
+        return result[:keep] + marker
+
+
 # -- Tool definitions (OpenAI function format) --------------------------------
 
 READ_TOOLS = [

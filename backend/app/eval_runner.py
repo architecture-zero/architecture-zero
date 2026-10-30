@@ -22,7 +22,7 @@ import threading
 import datetime as _dt
 
 from app import model_catalog
-from app.agent import get_active_tools, execute_tool
+from app.agent import get_active_tools, execute_tool, TurnToolBudget
 from app.config import get_system_prompt
 from app.db import get_session
 from app.logger import log, log_error
@@ -480,6 +480,9 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                         + [{"role": "user", "content": prompt}])
 
                 def _run_question(msgs, tools, tool_outputs):
+                    # The chat's per-turn tool budget (2026-10-29): three
+                    # capped reads would overflow a small local window.
+                    tool_budget = TurnToolBudget()
                     if tools:
                         for _ in range(3):
                             data = non_stream_tool_call(msgs, model, tools)
@@ -503,7 +506,8 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                                 # Same tier as retrieval: the file tools must
                                 # not hand this question's tier the
                                 # Owner-only log.
-                                out = execute_tool(name, args, user_level=q.get("as_level"))
+                                out = tool_budget.fit(execute_tool(
+                                    name, args, user_level=q.get("as_level")))
                                 # Captured for the faithfulness judge: a tool
                                 # result is legitimate grounding, so it must
                                 # be part of the material the answer is

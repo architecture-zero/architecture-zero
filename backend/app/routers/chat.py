@@ -31,7 +31,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from app import model_catalog
-from app.agent import get_active_tools, execute_tool
+from app.agent import get_active_tools, execute_tool, TurnToolBudget
 from app.audit import log_audit_entry
 from app.closing_stream import ClosingStreamingResponse
 from app.config import get_config, get_system_prompt
@@ -1009,6 +1009,10 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
         try:
             response_tokens = GUEST_MAX_TOKENS if current_user is None else 4096
             tool_rounds = 0
+            # One budget for every tool result this turn appends (2026-10-29;
+            # agent.TOOL_RESULTS_TURN_MAX_CHARS has the arithmetic): five reads
+            # would push the system prompt out of a small local window.
+            tool_budget = TurnToolBudget()
             for _ in range(6):  # up to 5 tool rounds + the final answer
                 assistant_text: list[str] = []
                 round_tool_calls: list[dict] = []
@@ -1060,7 +1064,8 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
                     # The file tools enforce the caller's clearance, so a
                     # read_file can't hand a lower tier the Owner-only
                     # session log.
-                    result = execute_tool(name, args, user_level=caller_level)
+                    result = tool_budget.fit(
+                        execute_tool(name, args, user_level=caller_level))
                     log("tool_call", session_id=request.session_id, tool=name, args=args)
                     yield f"data: {json.dumps({'tool_call': {'name': name, 'result': result}})}\n\n"
                     msgs.append({"role": "tool", "content": result})
