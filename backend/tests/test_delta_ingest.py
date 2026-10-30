@@ -43,7 +43,11 @@ class Harness:
         monkeypatch.setattr(main_mod, "delete_documents",
                             lambda ids, dept=None: (self.deleted.extend(ids),
                                                     self.index.difference_update(ids)))
-        monkeypatch.setattr(main_mod, "delete_source", lambda source, dept=None: None)
+        # The legacy general cleanup's seam: LOG_NAME routes to history, so
+        # every ingest here runs it. delete_file_chunks since 2026-10-29 (it
+        # takes only the file sync's rows, so an upload of the name stays;
+        # delete_source until then).
+        monkeypatch.setattr(main_mod, "delete_file_chunks", lambda source, dept=None: 0)
         # No add_document patch: ingest_sync deliberately does not import it,
         # which is what test_ingest_file_uses_the_batch_write_shape asserts
         # about the ingest body. Retargeting this would raise; removing it is

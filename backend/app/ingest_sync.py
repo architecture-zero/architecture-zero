@@ -277,8 +277,13 @@ def _ingest_file_locked(name: str, text: str) -> int:
     if dept != "general":
         # Self-healing migration: purge chunks this source left in general
         # before it was department-routed (first deploy, or any future map
-        # change).
-        delete_source(name, "general")
+        # change). Only the rows the file sync wrote (2026-10-29), as the
+        # watcher's delete takes them: delete_file_chunks, by the from_file
+        # stamp. delete_source took the whole name, and general is the
+        # upload's default department, so an upload sharing this file's name
+        # was deleted on every re-ingest of the file - any change, or a forced
+        # sync. The pre-routing chunks this purge exists for are stamped.
+        delete_file_chunks(name, "general")
     if dept == "history":
         # Structure-aware: chunk on dated '## ' entries and stamp entry_date
         # so retrieval can recency-weight within the history pool.
