@@ -352,7 +352,8 @@ def _estimate_tokens(messages: list[dict]) -> int:
 # are never touched. The arithmetic, in tokens at the chat's own four
 # characters a token, every figure but the first measured on the turn itself:
 #     32768  the window (OLLAMA_NUM_CTX)
-#   -  4096  the reply (a signed-in turn's max_tokens; a guest's is 1024)
+#   -  4096  the reply (a signed-in turn's max_tokens; a guest's is 1024; on
+#            a small window a quarter of it - _reply_room)
 #   - 12000  the turn's tool budget (agent.TOOL_RESULTS_TURN_MAX_CHARS, 48000
 #            characters; less on a small window - _turn_tool_chars) - only
 #            when tools ride the turn
@@ -368,6 +369,32 @@ def _estimate_tokens(messages: list[dict]) -> int:
 # models, Mistral's legacy open-* ids); a cloud lane with no declared window
 # is untouched: no figure, nothing trimmed.
 _TOOL_ROUNDS_ROOM_TOKENS = 500
+
+
+# THE REPLY ROOM FITS THE WINDOW (2026-10-29). A signed-in turn kept 4096
+# tokens for the reply on every window, which on an 8192-token window is half
+# the turn: with tools on, the history and the tool room shared what was
+# left, and a deployment's Owner turn on such a window kept no history at
+# all. On a bounded window (providers.bounded_window_tokens) the reply room is
+# now the smaller of the configured cap and a quarter of the window, never
+# under 512 tokens; an unknown window, or one of 16384 tokens or more, keeps
+# the configured cap (32768 // 4 = 8192, above 4096). The request's cap - the
+# local lane's num_predict, the compatible hosts' cap field - is this same
+# figure, and the window trim, the over-window refusal and the tool-room
+# sizing all read it, so the reserve and the cap cannot disagree. The eval
+# runner keeps its own reply cap (eval_runner._EVAL_REPLY_TOKENS).
+_REPLY_ROOM_FLOOR = 512
+_REPLY_SHARE_OF_WINDOW = 4
+
+
+def _reply_room(configured: int, model: str) -> int:
+    """The tokens this turn keeps for the reply, and caps it at: `configured`,
+    or on a bounded window the smaller of it and a quarter of the window
+    (never under _REPLY_ROOM_FLOOR)."""
+    window = bounded_window_tokens(model)
+    if window is None:
+        return configured
+    return min(configured, max(_REPLY_ROOM_FLOOR, window // _REPLY_SHARE_OF_WINDOW))
 
 
 # THE TOOL ROOM IS SIZED FROM THE WINDOW (2026-10-29). The trim reserved the
@@ -963,7 +990,10 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
         system_content += _NON_OWNER_RULES
     if not use_rag:
         system_content += _RAG_OFF_NOTICE
-    response_tokens = GUEST_MAX_TOKENS if current_user is None else 4096
+    # The reply's room and the request's cap, one figure (2026-10-29): a
+    # quarter of a small window at most (_reply_room).
+    response_tokens = _reply_room(GUEST_MAX_TOKENS if current_user is None else 4096,
+                                  request.model)
     # A MESSAGE THAT CANNOT FIT A BOUNDED WINDOW is refused here (2026-10-29),
     # before the row is stored and before any provider call: the history
     # trim never cuts the current message, so one long paste still

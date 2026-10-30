@@ -29,6 +29,9 @@ from app.routers import chat as chat_mod
 from tests.test_agent_tool_results_budget import _big_files, _tokens, _ws
 
 REPLY_TOKENS = 4096   # a signed-in turn's max_tokens; it shares the window
+# On an 8192-token window the reply room is a quarter of it (chat._reply_room,
+# 2026-10-29): the request's cap and the room the trim keeps.
+SMALL_REPLY_TOKENS = 2048
 PROMPT = "Read the logs."
 LOCAL = "test-model"   # no vendor prefix and no namespace: the Ollama lane
 BUDGET_OF = re.compile(r"cut at this turn's tool budget of (\d+) characters")
@@ -95,9 +98,9 @@ def _tool_budget(sent):
     raise AssertionError("no tool result was cut at the turn's budget")
 
 
-def _reserved(budget_chars, tools):
+def _reserved(budget_chars, tools, reply=REPLY_TOKENS):
     """What the history trim reserves for a tools-on turn with that budget."""
-    return (REPLY_TOKENS + (budget_chars + len(json.dumps(tools))) // 4
+    return (reply + (budget_chars + len(json.dumps(tools))) // 4
             + chat_mod._TOOL_ROUNDS_ROOM_TOKENS)
 
 
@@ -126,7 +129,8 @@ def test_a_small_window_with_tools_keeps_some_history(
     budget = _tool_budget(sent)
     assert budget < agent.TOOL_RESULTS_TURN_MAX_CHARS
     assert len(sink["trims"]) == 1
-    assert sink["trims"][0]["reserved"] == _reserved(budget, sink["tools"])
+    assert sink["trims"][0]["reserved"] == _reserved(budget, sink["tools"],
+                                                     SMALL_REPLY_TOKENS)
     tool_msgs = [m["content"] for m in sent if m.get("role") == "tool"]
     assert len(tool_msgs) == 2
     assert sum(len(c) for c in tool_msgs if c != agent.TOOL_BUDGET_SPENT) <= budget
@@ -137,7 +141,7 @@ def test_a_small_window_with_tools_keeps_some_history(
     assert _tokens(kept) >= budget // 4 // 2 - one, (_tokens(kept), budget)
     # The whole turn - history, both rounds, the reply - fits the window.
     definitions = len(json.dumps(sink["tools"])) // 4
-    assert _tokens(sent) + definitions + REPLY_TOKENS <= 8192, _tokens(sent)
+    assert _tokens(sent) + definitions + SMALL_REPLY_TOKENS <= 8192, _tokens(sent)
 
 
 # -- CONTROL ------------------------------------------------------------------

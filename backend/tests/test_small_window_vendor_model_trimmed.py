@@ -31,6 +31,9 @@ from app import model_catalog, providers
 from app.routers import settings as settings_mod
 
 REPLY_TOKENS = 4096
+# An 8192-token window's reply room: a quarter of it (chat._reply_room,
+# 2026-10-29), the cap the request carries and the room the trim keeps.
+SMALL_REPLY_TOKENS = 2048
 PROMPT = "What did we decide about the release?"
 WARNING = 'data: {"context_warning": true}'
 
@@ -104,7 +107,7 @@ def test_a_small_window_vendor_model_trims_a_long_history(client, admin_headers)
     assert sent[-1] == {"role": "user", "content": PROMPT}
     assert 0 < len(kept) < len(history), len(kept)
     assert kept == history[-len(kept):]
-    assert _tokens(sent) + REPLY_TOKENS <= 8192, _tokens(sent)
+    assert _tokens(sent) + SMALL_REPLY_TOKENS <= 8192, _tokens(sent)
     assert sink["lines"].count(WARNING) == 1
 
 
@@ -122,7 +125,7 @@ def test_a_legacy_mistral_window_trims_a_long_history(client, admin_headers):
 def test_a_message_too_long_for_the_small_window_is_refused(client, admin_headers):
     _read_list("groq", [{"id": "small-8k", "context_window": 8192}])
     sink = _send(client, admin_headers, "groq:small-8k", "groq", [],
-                 prompt="word " * 2800)       # 3500 tokens, past 8192 with the rest
+                 prompt="word " * 4800)       # 6000 tokens, past 8192 with the rest
     assert sink["response"].status_code == 413
     assert sink["calls"] == 0
 
