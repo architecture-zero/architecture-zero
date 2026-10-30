@@ -333,21 +333,27 @@ def ingest(request: IngestRequest, current_user: dict = Depends(require_permissi
     # this route, so it closes here: one read by id (metadata only) in the
     # department's collection as the write below resolves it, before any scan
     # or write, and a 409 whose fixed sentence echoes nothing stored. Every
-    # other stored id keeps the upsert - re-sending your own id is this
-    # route's normal use. Uploads, connector rows and released rows are not
-    # covered: a manage_kb holder may already delete those whole, and their
-    # writers are this route's trust level. Re-open if a non-owner role gains
-    # manage_kb on a department holding uploads it should not be able to
-    # rewrite.
+    # other stored id is written over - re-sending your own id is this
+    # route's normal use - and REPLACED whole since 2026-10-29, as the
+    # runbook says: add_document deletes a stored row before its upsert
+    # (database._drop_held_rows), so a key an earlier send set and this one
+    # does not is gone; nothing relied on the merge the upsert alone made.
+    # The "false" writes below were the per-key answer to that merge and
+    # stay (every reader compares == "true"). Uploads, connector rows and
+    # released rows are not covered by the refusal: a manage_kb holder may
+    # already delete those whole, and their writers are this route's trust
+    # level. Re-open if a non-owner role gains manage_kb on a department
+    # holding uploads it should not be able to rewrite.
     #
     # This read cannot see an id written here BEFORE the writer's row exists
     # (a future chunk's id, predicted from its text). That half is the
     # writers' own (2026-10-29): a kept id is kept only if its stored text is
     # the writer's, and is written whole otherwise when the writer next runs
     # over that source (database.restamp_reused_chunks for the file sync, the
-    # upload and the release; system_records._ingest). The refusal still
-    # matters for an id that exists: the file sync re-runs a file only when it
-    # changes.
+    # upload and the release; system_records._ingest); an id written here
+    # under ANOTHER source reads as new to the writer, and its add replaces
+    # the row (database._drop_held_rows). The refusal still matters for an
+    # id that exists: the file sync re-runs a file only when it changes.
     held = chunk_metadata([request.doc_id], request.department).get(request.doc_id) or {}
     if held.get("from_file") == "true" or held.get("auto_generated") == "true":
         raise HTTPException(status_code=409,
@@ -362,7 +368,7 @@ def ingest(request: IngestRequest, current_user: dict = Depends(require_permissi
     # the line below then assigns. Only app.system_records writes it.
     #
     # Written "false", not just dropped (2026-10-29), for the reason given for
-    # from_file below: the upsert MERGES metadata on a stored id, so a doc_id
+    # from_file below: the upsert MERGED metadata on a stored id, so a doc_id
     # equal to a system record's id kept that row's "true" under the caller's
     # text. Every reader compares == "true".
     meta["auto_generated"] = "false"
@@ -372,13 +378,13 @@ def ingest(request: IngestRequest, current_user: dict = Depends(require_permissi
     # up for deletion at the next boot. Only app.ingest_sync writes it.
     #
     # Written "false", not just dropped (2026-10-29): the caller chooses the
-    # doc_id and add_document upserts, which on a stored id MERGES metadata -
+    # doc_id and add_document upserted, which on a stored id MERGED metadata -
     # a doc_id equal to a file-synced chunk's kept that row's "true", and the
     # prune deleted this text. Every reader compares == "true".
     meta["from_file"] = "false"
     meta["trust"] = _ingest_trust(current_user, meta.get("trust"))
     # The PII verdict is written both ways (2026-10-29): the doc_id is the
-    # caller's and the upsert MERGES metadata, so clean text re-sent over an
+    # caller's and the upsert MERGED metadata, so clean text re-sent over an
     # id flagged before kept its "true". With the scan off nothing is written,
     # as on the upload. The injection verdict is the per-chunk gate's
     # (database._gate_chunk), which writes it both ways itself.

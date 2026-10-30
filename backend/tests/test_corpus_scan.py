@@ -219,6 +219,11 @@ class _CaptureCollection:
     def __init__(self, sink):
         self._sink = sink
 
+    def get(self, ids=None, include=None):
+        # add_document reads which ids a row holds before its upsert, to
+        # replace rather than merge (2026-10-29); this stand-in holds none.
+        return {"ids": []}
+
     def upsert(self, ids, embeddings, documents, metadatas):
         self._sink["ids"] = ids
         self._sink["documents"] = documents

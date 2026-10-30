@@ -612,6 +612,7 @@ def add_document(doc_id: str, text: str, metadata: dict, department: str | None 
     meta = _gate_chunk(doc_id, text, metadata, department, quarantine_exempt)
     col = _get_collection(department)
     embedding = _embed(text)
+    _drop_held_rows(col, [doc_id])
     col.upsert(
         ids=[doc_id],
         embeddings=[embedding],
@@ -619,6 +620,28 @@ def add_document(doc_id: str, text: str, metadata: dict, department: str | None 
         metadatas=[meta]
     )
     _invalidate_lexical_index(col.name)
+
+
+def _drop_held_rows(col, ids: list[str]) -> None:
+    """Delete the rows already stored under any of ids, so the upsert that
+    follows REPLACES them (2026-10-29). The store's upsert MERGES metadata on
+    a stored id: a key the earlier row held and this write does not set
+    survived under the new text. A diffing writer reads its own source by
+    `source`, so a row a manage_kb holder pre-wrote through /api/ingest under
+    a future chunk's id with ANOTHER source read as a new id to it, and the
+    add kept that caller's keys - an entry_date that demotes the chunk in
+    retrieval, a pii_flagged that lists the writer's source among the PII
+    sources. Every add goes through here, /api/ingest's re-send of its own id
+    included: the row is what this write says, nothing of an earlier one.
+
+    Called after the embed and right before the upsert, so a failed embed
+    deletes nothing. The cost is one ids-only read per call (per slice in the
+    batch): the writers pass only the ids their diff found new, so an
+    unchanged re-sync never reaches it, and the delete runs only for an id a
+    row holds (a delete of an absent id would log a warning per id)."""
+    held = col.get(ids=ids, include=[])["ids"]
+    if held:
+        col.delete(ids=list(held))
 
 
 # One embed call + one upsert per slice of this many chunks: a connector sync
@@ -691,6 +714,7 @@ def add_documents_batch(entries: list[tuple[str, str, dict]],
     for start in range(0, len(ids), EMBED_BATCH_SIZE):
         sl = slice(start, start + EMBED_BATCH_SIZE)
         embeddings = _embed_batch(texts[sl])
+        _drop_held_rows(col, ids[sl])   # a write replaces, never merges (2026-10-29)
         col.upsert(ids=ids[sl], embeddings=embeddings,
                    documents=texts[sl], metadatas=metas[sl])
     _invalidate_lexical_index(col.name)
