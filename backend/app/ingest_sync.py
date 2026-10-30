@@ -31,6 +31,7 @@ from app.database import (add_documents_batch, list_sources, delete_source,
                           list_file_sources, restamp_reused_chunks)
 from app.logger import log, log_error
 from app.rag_config import dept_for_source as _dept_for_source
+from app.text_extract import SUPPORTED_EXTS, TEXT_EXTS, extract_text
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,11 @@ _DOCS_DIR                    = pathlib.Path(os.getenv("DOCS_DIR", "/app/docs"))
 # paths) - a deploy that wants its PLAN/README in the corpus names them here.
 _DOCS_ROOT_FILES             = [pathlib.Path(p.strip()) for p in
                                 os.getenv("DOCS_ROOT_FILES", "").split(",") if p.strip()]
-_WATCHED_EXTS                = {".md", ".txt", ".pdf", ".py", ".js", ".ts", ".json", ".yaml", ".yml"}
+# Exactly the extractor's types (2026-10-29): this was its own literal, which
+# watched .pdf without reading one as a PDF and did not watch .docx, a type the
+# upload extracts. Set from SUPPORTED_EXTS so the two cannot drift; that adds
+# .docx. Every content read goes through _read_watched below.
+_WATCHED_EXTS                = {f".{ext}" for ext in SUPPORTED_EXTS}
 # The session log is HISTORY, not current fact: a long-running log absorbs
 # fact answers and crowds curated docs out of the default candidate pool.
 # Sources mapped to history (rag_config.HISTORY_SOURCES) ingest into the
@@ -105,6 +110,32 @@ def _clear_ingest_fingerprints(sources) -> None:
 def _ingest_fingerprint(name: str, text: str) -> str:
     key = f"{CHUNKER_VERSION}::{_dept_for_source(name)}::{text}"
     return hashlib.md5(key.encode(), usedforsecurity=False).hexdigest()
+
+
+def _read_watched(p: pathlib.Path, quiet: bool = False) -> str:
+    """The text of one watched file: every content read of one in this module
+    goes through here (2026-10-29). Each read was read_text(utf-8, errors
+    ignored), so a PDF dropped into the knowledge tree or docs/ was indexed as
+    its bytes decoded ("%PDF-1.4 ... endobj"), never its words.
+
+    The text types are read exactly as before - read_text, which translates
+    newlines - so an existing file's fingerprint and chunk ids do not move;
+    extract_text decodes the bytes without that translation, so it is not
+    used for them. pdf and docx go through text_extract.extract_text, as the
+    upload's do. One it cannot read, or one with no text, comes back "" with
+    one log line of bounded detail (none when quiet, for the corpus probe that
+    runs every self-check pass): every caller skips blank text, so it is never
+    indexed and never stops a sync, as the upload refuses one. An OSError
+    reading the file propagates, as read_text's did."""
+    if p.suffix.lower().lstrip(".") in TEXT_EXTS:
+        return p.read_text(encoding="utf-8", errors="ignore")
+    data = p.read_bytes()
+    try:
+        return extract_text(p.name, data)
+    except Exception as e:
+        if not quiet:
+            log_error("kb_file_no_text", file=str(p), error=str(e)[:200])
+        return ""
 
 
 
@@ -321,7 +352,7 @@ def _sync_knowledge_dir(force: bool = True) -> dict:
             continue
         rel = p.relative_to(KNOWLEDGE_DIR).as_posix()
         try:
-            text = p.read_text(encoding="utf-8", errors="ignore")
+            text = _read_watched(p)
             if not text.strip():
                 continue
             # Self-healing migration (first boot does the work, later boots
@@ -497,11 +528,17 @@ def _knowledge_dir_has_documents() -> bool:
     exception from the walk itself: "not required" is found by a complete,
     clean look, never assumed. os.walk reports a listing error (pathlib's rglob
     swallowed it, and read a document in an unreadable directory as none - the
-    2026-10-08 read); symlinked directories are not followed, as before."""
+    2026-10-08 read); symlinked directories are not followed, as before.
+
+    A pdf or docx is read as the sync reads it (2026-10-29), through
+    _read_watched: one with no text is not a document. Parsing one is the
+    expensive read, so they are set aside during the walk and parsed only if
+    no text file answered - a tree holding any text document parses none."""
     if not os.path.isdir(KNOWLEDGE_DIR):
         return False
     failed: list = []
     seen = 0
+    extracted: list[str] = []
     try:
         for root, dirs, files in os.walk(KNOWLEDGE_DIR, onerror=failed.append):
             if failed:
@@ -514,6 +551,9 @@ def _knowledge_dir_has_documents() -> bool:
                 path = os.path.join(root, name)
                 if os.path.splitext(name)[1].lower() not in _WATCHED_EXTS or not os.path.isfile(path):
                     continue
+                if os.path.splitext(name)[1].lower().lstrip(".") not in TEXT_EXTS:
+                    extracted.append(path)
+                    continue
                 try:
                     with open(path, encoding="utf-8", errors="ignore") as f:
                         piece = f.read(4096)
@@ -523,6 +563,12 @@ def _knowledge_dir_has_documents() -> bool:
                             piece = f.read(4096)
                 except OSError:
                     return True   # a watched file that cannot be read is still the operator's document
+        for path in extracted:
+            try:
+                if _read_watched(pathlib.Path(path), quiet=True).strip():
+                    return True
+            except OSError:
+                return True
     except Exception:
         return True
     return bool(failed)
@@ -556,7 +602,7 @@ def _sync_docs(force: bool = True) -> dict:
         if archive_dir in p.parents:
             continue
         try:
-            text = p.read_text(encoding="utf-8", errors="ignore")
+            text = _read_watched(p)
             if not text.strip():
                 continue
             source = f"docs/{p.name}"
@@ -664,12 +710,12 @@ def _handle_watched_change(deleted: bool, p: pathlib.Path) -> None:
         # metadata-wipe family. Re-stat and do a normal delta re-ingest
         # instead: the content diff touches only chunks that actually
         # changed.
-        text = p.read_text(encoding="utf-8", errors="ignore")
+        text = _read_watched(p)
         if text.strip():
             n = _ingest_file(source, text)
             log("kb_file_replaced", file=source, chunks=n)
         return
-    text = p.read_text(encoding="utf-8", errors="ignore")
+    text = _read_watched(p)
     if text.strip():
         n = _ingest_file(source, text)
         log("kb_file_synced", file=source, chunks=n)

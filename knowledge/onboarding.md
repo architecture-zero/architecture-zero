@@ -124,7 +124,8 @@ provider with no key stays dormant and out of the model list entirely.
 Three ways in, all passing the same ingestion gate:
 1. Upload - POST /api/ingest/upload accepts markdown, text, PDF, docx, and
    common code files; uploads are chunked in fixed windows.
-2. The knowledge directory - drop files into the mounted knowledge folder;
+2. The knowledge directory - drop files into the mounted knowledge folder
+   (the types the upload takes, a PDF or docx read by the same extractor);
    a file watcher ingests changes live, and a startup sync catches anything
    added while the server was down. These files are chunked on markdown
    section headings (the best-retrieving shape), and re-saving a file
