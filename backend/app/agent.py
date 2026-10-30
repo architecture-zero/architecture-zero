@@ -1,6 +1,8 @@
 import os
 import re
 import subprocess
+import threading
+import time
 import glob as glob_module
 from pathlib import Path
 
@@ -183,6 +185,109 @@ def _framed_file_text(text: str, shown: str) -> str:
     are never framed."""
     from app.rerank import format_file_context
     return format_file_context(shown, text, _injection_flag(text, shown))
+
+
+# -- What run_command reads (2026-10-29) --------------------------------------
+# run_command used subprocess.run(capture_output=True): a command's whole
+# output was held in memory - for up to the timeout - before _cut_at_cap kept
+# READ_FILE_MAX_CHARS of it, so a command printing a large file or looping on
+# a print grew the server's memory with it. Each pipe is now read by a thread
+# that keeps at most the cap and one character of it, after its leading
+# whitespace, and DRAINS the rest unkept rather than stopping: a pipe nobody
+# reads fills and blocks the command, and killing it early would cut short a
+# command the agent asked for (shell=True runs it under a shell, so a kill
+# reaches the shell, not always the command). The command ends as it would
+# have, the timeout bounds the time as before, and the answer is the same
+# text the whole read gave: .strip() of each stream, then the cap. At the
+# timeout the reading STOPS and the pipe is closed: a writer the killed shell
+# left behind then fails its next write and ends, where a drain that went on
+# would keep it printing for good.
+_COMMAND_READ_CHUNK = 8192
+
+
+def _read_stripped_capped(stream, limit: int, got: dict, key: str,
+                          stop: threading.Event) -> None:
+    """Read a text pipe to its end and put in got[key] what
+    stream.read().strip()[:limit] would be, holding no more than `limit`
+    characters (and one chunk) of it. A read error is kept in got[key + "_e"]
+    for the caller to raise, and the pipe is drained to its end anyway.
+    `stop` (the timeout) ends the read between chunks; the pipe is closed
+    whichever way the read ends."""
+    kept: list[str] = []
+    size = 0
+    lead = True
+    more = False   # text, not only whitespace, past what is kept
+    try:
+        while not stop.is_set():
+            chunk = stream.read(_COMMAND_READ_CHUNK)
+            if not chunk:
+                break
+            if size > limit:
+                more = more or bool(chunk.strip())
+                continue
+            if lead:
+                chunk = chunk.lstrip()
+                if not chunk:
+                    continue
+                lead = False
+            kept.append(chunk)
+            size += len(chunk)
+    except Exception as e:   # a decode error: the text-mode read's own
+        got[key + "_e"] = e
+        try:
+            while not stop.is_set() and stream.buffer.read(_COMMAND_READ_CHUNK):
+                pass
+        except Exception:
+            pass
+    finally:
+        try:
+            stream.close()
+        except Exception:
+            pass
+    text = "".join(kept)
+    got[key] = text[:limit] if more else text.rstrip()[:limit]
+
+
+def _run_capped(command: str, timeout: int) -> tuple[str, str, int]:
+    """subprocess.run(command, shell=True, cwd=AGENT_WORKSPACE,
+    capture_output=True, text=True, timeout=timeout)'s stripped stdout,
+    stripped stderr and return code, each stream held to the cap and one
+    character (_read_stripped_capped). The same TimeoutExpired on a timeout,
+    the process killed; the same decode error a text-mode read raises."""
+    limit = READ_FILE_MAX_CHARS + 1
+    proc = subprocess.Popen(
+        command,
+        shell=True,  # nosec B602 - see execute_tool's run_command comment; gated, off-by-default tool
+        cwd=str(AGENT_WORKSPACE),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    got: dict = {}
+    stop = threading.Event()
+    readers = [threading.Thread(target=_read_stripped_capped,
+                                args=(stream, limit, got, key, stop), daemon=True)
+               for stream, key in ((proc.stdout, "out"), (proc.stderr, "err"))]
+    for t in readers:
+        t.start()
+    deadline = time.monotonic() + timeout
+    try:
+        proc.wait(timeout=timeout)
+        # The command has ended; something it started may still hold the
+        # pipes open, which communicate() waits on until the timeout too.
+        for t in readers:
+            t.join(max(0.0, deadline - time.monotonic()))
+        if any(t.is_alive() for t in readers):
+            raise subprocess.TimeoutExpired(command, timeout)
+    except subprocess.TimeoutExpired:
+        stop.set()
+        proc.kill()
+        proc.wait()
+        raise
+    for key in ("out_e", "err_e"):
+        if key in got:
+            raise got[key]
+    return got["out"], got["err"], proc.returncode
 
 
 def _framed_command_output(text: str, command: str) -> str:
@@ -478,23 +583,16 @@ def execute_tool(name: str, args: dict, user_level: int | None = None) -> str:
             # dropping shell: the whole tool class is gated behind
             # ENABLE_AGENT_TOOLS (off by default) and belongs behind an
             # allowlist + per-item confirmation before any production use.
-            result = subprocess.run(
-                args["command"],
-                shell=True,  # nosec B602 - see comment above; gated, off-by-default tool
-                cwd=str(AGENT_WORKSPACE),
-                capture_output=True,
-                text=True,
-                timeout=timeout
-            )
-            out = result.stdout.strip()
-            err = result.stderr.strip()
+            # Read to the cap, not whole (2026-10-29; _run_capped): the same
+            # stripped streams, return code and timeout as subprocess.run.
+            out, err, returncode = _run_capped(args["command"], timeout)
             parts = []
             if out:
                 parts.append(out)
             if err:
                 parts.append(f"stderr: {err}")
-            if result.returncode != 0:
-                parts.append(f"exit code: {result.returncode}")
+            if returncode != 0:
+                parts.append(f"exit code: {returncode}")
             # Framed, tag-scanned and capped as read_file's text is
             # (2026-10-29); "(no output)" is a fixed sentence, as a refusal is.
             return (_framed_command_output("\n".join(parts), args["command"])
