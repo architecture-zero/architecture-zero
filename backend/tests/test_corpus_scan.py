@@ -191,7 +191,10 @@ def test_add_document_stamps_trust_on_clean_content(monkeypatch):
                           {"source": "notes.md", "from_file": "true"})
     meta = captured["metadatas"][0]
     assert meta["trust"] == TRUST_TIER_CURATED
-    assert "injection_flagged" not in meta
+    # Written both ways since 2026-10-29 (was: no key at all), so a later
+    # write of a kept chunk can clear a stale "true" - the store merges.
+    assert meta["injection_flagged"] == "false"
+    assert meta["injection_types"] == ""
 
 
 def test_quarantine_exempt_allows_owner_released_content(monkeypatch):

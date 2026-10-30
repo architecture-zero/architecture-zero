@@ -578,6 +578,18 @@ def _gate_chunk(doc_id: str, text: str, metadata: dict, department: str | None,
                 event_log("injection_detected", source=meta.get("source", doc_id),
                           trust=trust, types=meta["injection_types"],
                           quarantined=False, mode=corpus_scan.INJECTION_SCAN_MODE)
+        elif not already_tagged:
+            # Written both ways (2026-10-29). Chunk ids are content-addressed
+            # and chroma's upsert and update MERGE metadata, so while the gate
+            # only ever ADDED "true", a chunk a later write kept carried an
+            # earlier write's tag for good - the attack line gone from the
+            # document, the kept chunks still labeled flagged in the context
+            # and listed as flagged sources. A clean chunk with no writer
+            # "true" is stamped "false", its types emptied; a writer's
+            # document-level "true" still wins (already_tagged). Every reader
+            # compares == "true".
+            meta["injection_flagged"] = "false"
+            meta["injection_types"] = ""
     return meta
 
 
@@ -685,6 +697,46 @@ def add_documents_batch(entries: list[tuple[str, str, dict]],
     return len(ids)
 
 
+def _scan_tags_differ(stored: dict, metadata: dict | None, text: str) -> bool:
+    """Whether a kept row's injection or PII tag, read as == "true" on both
+    sides, is not what this write decides for it (2026-10-29) - the third
+    comparison restamp_reused_chunks makes, beside the stamp and the tier.
+
+    PII is decided per document, by the writer alone: its metadata's
+    pii_flagged is the verdict. A writer that carries none (the PII scan off,
+    or a writer that does not scan) claims nothing, and the stored tag stands.
+
+    The injection verdict is _gate_chunk's: the writer's document-level
+    "true", else the chunk's own scan; with the scan off the gate stamps
+    nothing of its own and a writer's value passes through. Cheapest first,
+    scanning only where the answer can differ:
+      - the writer says "true": decided "true", no scan;
+      - the row reads not "true" and the writer does not either: no scan. The
+        row was gated over this same text, so its tag is that text's verdict;
+        a verdict that moved since (new patterns, the scan switched on) is
+        out of scope here, as before this comparison existed, and reaches the
+        row when its text next changes;
+      - the row reads "true" and the writer does not: one scan of that row's
+        text - it stays "true" only if its own text is hot.
+    So an everyday re-sync of a file with no flagged chunk still pays one
+    metadata read per slice, no scan and no write; a file with flagged
+    sections pays one regex scan per flagged kept chunk, and writes nothing
+    while those chunks are still hot."""
+    m = metadata or {}
+    if "pii_flagged" in m and ((stored.get("pii_flagged") == "true")
+                               != (m.get("pii_flagged") == "true")):
+        return True
+    held = stored.get("injection_flagged") == "true"
+    if m.get("injection_flagged") == "true":
+        return not held
+    from app import corpus_scan
+    if corpus_scan.INJECTION_SCAN_MODE == "off":
+        return "injection_flagged" in m and held
+    if not held:
+        return False
+    return not corpus_scan.scan(text)
+
+
 def restamp_reused_chunks(entries: list[tuple[str, str, dict]],
                           department: str | None = None,
                           quarantine_exempt: bool = False) -> int:
@@ -703,17 +755,19 @@ def restamp_reused_chunks(entries: list[tuple[str, str, dict]],
     entries are the (id, text, metadata) the writer would write for the ids it
     kept. The stamp is the writer's: "true" when its metadata carries it (the
     file sync, the one writer of it), else "false". A kept row whose stamp or
-    trust tier (derive_trust, both sides) is not the writer's gets the
-    writer's metadata through the same gate as add_document, every such row
-    gated before anything is written; nothing is re-embedded (same text, same
-    vector). A row already the writer's is left as it is - its other keys
-    follow from the same text - so a re-sync of a long file pays one metadata
-    read per slice and no write (2026-10-29: an unconditional write rewrote
-    every unchanged chunk on every sync). Reads and writes go in
-    EMBED_BATCH_SIZE slices: the pinned chroma refuses one call over its max
-    batch size. chroma's update MERGES metadata and its API refuses None, so a
-    stored key cannot be removed: the stamp is overwritten, and every reader
-    of it compares == "true". Returns the count rewritten.
+    trust tier (derive_trust, both sides) is not the writer's - or whose
+    injection or PII tag is not what this write decides (_scan_tags_differ,
+    2026-10-29) - gets the writer's metadata through the same gate as
+    add_document, every such row gated before anything is written; nothing is
+    re-embedded (same text, same vector). A row already the writer's is left
+    as it is - its other keys follow from the same text - so a re-sync of a
+    long file pays one metadata read per slice and no write (2026-10-29: an
+    unconditional write rewrote every unchanged chunk on every sync). Reads
+    and writes go in EMBED_BATCH_SIZE slices: the pinned chroma refuses one
+    call over its max batch size. chroma's update MERGES metadata and its API
+    refuses None, so a stored key cannot be removed: the stamp is
+    overwritten, and every reader of it compares == "true". Returns the count
+    rewritten.
 
     quarantine_exempt is add_document's: the quarantine release passes it
     (2026-10-29), so the Owner's waiver covers the ids the release reuses as
@@ -736,7 +790,8 @@ def restamp_reused_chunks(entries: list[tuple[str, str, dict]],
         stamp = "true" if (metadata or {}).get("from_file") == "true" else "false"
         old = current[doc_id]
         if ((old.get("from_file") == "true") == (stamp == "true")
-                and derive_trust(old) == derive_trust(metadata)):
+                and derive_trust(old) == derive_trust(metadata)
+                and not _scan_tags_differ(old, metadata, text)):
             continue
         meta = _gate_chunk(doc_id, text, metadata, department, quarantine_exempt)
         meta["from_file"] = stamp

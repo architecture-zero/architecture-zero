@@ -338,6 +338,11 @@ def ingest(request: IngestRequest, current_user: dict = Depends(require_permissi
     # prune deleted this text. Every reader compares == "true".
     meta["from_file"] = "false"
     meta["trust"] = _ingest_trust(current_user, meta.get("trust"))
+    # The PII verdict is written both ways (2026-10-29): the doc_id is the
+    # caller's and the upsert MERGES metadata, so clean text re-sent over an
+    # id flagged before kept its "true". With the scan off nothing is written,
+    # as on the upload. The injection verdict is the per-chunk gate's
+    # (database._gate_chunk), which writes it both ways itself.
     if PII_SCAN_MODE != "off":
         findings = scan_pii(text)
         if findings:
@@ -346,6 +351,9 @@ def ingest(request: IngestRequest, current_user: dict = Depends(require_permissi
             meta["pii_flagged"] = "true"
             meta["pii_types"] = ",".join(f["type"] for f in findings)
             log("pii_detected", source=meta.get("source", "?"), findings=findings, mode=PII_SCAN_MODE)
+        else:
+            meta["pii_flagged"] = "false"
+            meta["pii_types"] = ""
     try:
         add_document(request.doc_id, text, meta, department=request.department)
     except QuarantinedContent as q:
@@ -542,9 +550,18 @@ def _ingest_upload(name: str, ext: str, data: bytes, department: str,
                 log("injection_detected", source=name, trust=trust,
                     types=inj_meta["injection_types"], quarantined=False,
                     mode=corpus_scan.INJECTION_SCAN_MODE)
+        else:
+            # Both verdicts are written both ways (2026-10-29): chunk ids are
+            # content-addressed and the store MERGES metadata, so a clean
+            # version that wrote no tag left an earlier version's "true" on
+            # every chunk it kept. "false" with empty types; every reader
+            # compares == "true".
+            inj_meta = {"injection_flagged": "false", "injection_types": ""}
 
     # PII scan on full document text (before chunking for best detection
-    # accuracy)
+    # accuracy). With the scan off nothing was scanned, so no PII tag is
+    # written at all - no claim either way; a tag left from a time the scan
+    # was on stays as it was, out of scope here (2026-10-29).
     pii_findings: list[dict] = []
     pii_meta: dict = {}
     if PII_SCAN_MODE != "off":
@@ -557,6 +574,8 @@ def _ingest_upload(name: str, ext: str, data: bytes, department: str,
                 "pii_types": ",".join(f["type"] for f in pii_findings),
             }
             log("pii_detected", source=name, findings=pii_findings, mode=PII_SCAN_MODE)
+        else:
+            pii_meta = {"pii_flagged": "false", "pii_types": ""}
 
     pii_summary = None
     if PII_SCAN_MODE != "off":
