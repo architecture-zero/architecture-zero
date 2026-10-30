@@ -1011,7 +1011,11 @@ def test_control_the_docs_prune_is_unchanged(tmp_path, monkeypatch):
     exactly the docs/ sources with no file, leaves every other key alone, and
     answers in the same shape. Its seams moved 2026-10-29 - list_file_sources
     and delete_file_chunks, so it takes only the file sync's rows
-    (test_docs_prune_takes_only_file_rows.py) - and what this pins did not."""
+    (test_docs_prune_takes_only_file_rows.py) - and what this pins did not.
+    One pin changed on purpose the same day: docs_sources_in_index is what is
+    left after the deletes, so docs/gone.md, which this run removed, is no
+    longer in it (the listing taken before the deletes reported it as
+    remaining; test_docs_prune_reports_what_remains.py)."""
     docs = tmp_path / "docs"
     docs.mkdir()
     (docs / "keep.md").write_text("# Keep\n", encoding="utf-8")
@@ -1028,7 +1032,7 @@ def test_control_the_docs_prune_is_unchanged(tmp_path, monkeypatch):
     assert deleted == [("docs/gone.md", "restricted")]
     assert set(out) == {"deleted", "docs_sources_in_index"}
     assert out["deleted"] == [{"source": "docs/gone.md", "department": "restricted", "count": 2}]
-    assert [d["source"] for d in out["docs_sources_in_index"]] == ["docs/gone.md", "docs/keep.md"]
+    assert [d["source"] for d in out["docs_sources_in_index"]] == ["docs/keep.md"]
 
 
 def test_control_the_legacy_basename_purge_still_uses_delete_file_chunks(

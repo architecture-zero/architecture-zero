@@ -743,10 +743,23 @@ def _prune_orphan_docs(dry_run: bool = False) -> dict:
                 if not removed:
                     continue
             deleted.append({"source": name, "department": dept, "count": removed})
-    docs_in_index = sorted(
-        ({"source": str(s.get("source")), "department": s.get("department"), "count": s.get("count")}
-         for s in all_srcs if str(s.get("source", "")).startswith("docs/")),
-        key=lambda x: x["source"] or "")
+    # What is still indexed AFTER the deletes (2026-10-29): the listing less
+    # what this run removed. It was the listing as taken before them, so
+    # every source just pruned was reported as remaining beside the report of
+    # its removal. A source emptied is left out; one that keeps another
+    # writer's rows is listed with the rows left. A dry run removes nothing,
+    # so it lists the index as it stands.
+    gone = {} if dry_run else {(d["source"], d["department"]): d["count"] for d in deleted}
+    docs_in_index = []
+    for s in all_srcs:
+        name = str(s.get("source", ""))
+        if not name.startswith("docs/"):
+            continue
+        left = s["count"] - gone.get((name, s.get("department") or "general"), 0)
+        if left > 0:
+            docs_in_index.append({"source": name, "department": s.get("department"),
+                                  "count": left})
+    docs_in_index.sort(key=lambda x: x["source"] or "")
     if dry_run:
         return {"deleted": [], "would_delete": deleted,
                 "docs_sources_in_index": docs_in_index}
