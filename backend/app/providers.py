@@ -754,7 +754,18 @@ def stream_chat_events(messages: list, model: str, tools: list | None = None,
     if provider == "anthropic":
         events = _anthropic_stream_events(messages, bare, system_prompt, max_tokens, tools or None)
     elif provider == "ollama":
-        events = _ollama_stream_events(messages, bare, tools or None)
+        # The caller's cap rides as num_predict (2026-10-29): the Anthropic
+        # lane above and the OpenAI-shaped one below already honour
+        # max_tokens, and this branch dropped it - the chat's response_tokens
+        # never reached Ollama, so a local reply ran to the model's own stop,
+        # past the reply room the history trim keeps for it in num_ctx. Same
+        # shape as _ollama_tool_call's options: num_ctx still merges in
+        # through _ollama_options, and note_if_cut records a local cut as it
+        # does a cloud one. A cap of 0 or less is no cap: num_predict is left
+        # out rather than sent as a figure Ollama gives its own meaning.
+        options = ({"num_predict": max_tokens}
+                   if isinstance(max_tokens, int) and max_tokens > 0 else None)
+        events = _ollama_stream_events(messages, bare, tools or None, options=options)
     else:
         events = _openai_stream_events(messages, bare, tools or None, max_tokens,
                                        provider=provider)
