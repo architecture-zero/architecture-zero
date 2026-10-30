@@ -288,6 +288,37 @@ def note_if_cut(stop_reason, model: str, max_tokens: int) -> None:
         _note("output_cut_at_token_cap", model=model, max_tokens=max_tokens)
 
 
+# -- Listed context windows (2026-10-29) --------------------------------------
+
+# A vendor model's context window, in tokens, as the vendor's own /models list
+# declares it: Groq's rows carry `context_window`, Mistral's
+# `max_context_length`. Noted where the picker reads those lists
+# (routers/settings.py _fetch_compat_models), keyed by the picker value, and
+# read by providers.bounded_window_tokens so a small window gets the history
+# trim the local lane gets. Nothing is written here by hand: a model whose list
+# row gives no window - OpenAI's, Gemini's, xAI's and DeepSeek's rows do not -
+# or whose list has not been read in this process is unknown, and an unknown
+# window is today's behavior (no trim; the vendor refuses an over-long
+# request with an error).
+_WINDOW_FIELDS = ("context_window", "max_context_length")
+_listed_windows: dict = {}    # picker value -> tokens
+
+
+def note_listed_window(model_id: str, row: dict) -> None:
+    """Keep the window a vendor's list row declares for `model_id`, when it
+    declares one as a positive whole number."""
+    for field in _WINDOW_FIELDS:
+        value = row.get(field)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            _listed_windows[model_id] = value
+            return
+
+
+def listed_window(model_id: str) -> int | None:
+    """The window a vendor's list declared for this picker value, or None."""
+    return _listed_windows.get(model_id)
+
+
 # -- Other providers: the newest of each family -------------------------------
 
 # Models a chat cannot use - embeddings, speech, images, moderation, search -

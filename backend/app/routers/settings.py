@@ -234,6 +234,9 @@ def _fetch_compat_models(provider: str, all_versions: bool = False) -> list:
             else:
                 value = f"{provider}:{mid}"
             models.append({"value": value, "label": mid, "badge": entry["label"]})
+            # The window the vendor declares for the model, where it does
+            # (2026-10-29): the chat trims a long history to it.
+            model_catalog.note_listed_window(value, row)
             if isinstance(row.get("created"), (int, float)):
                 created[value] = row["created"]
         everything = models or None

@@ -212,14 +212,17 @@ def bounded_window_tokens(model: str) -> int | None:
     where this code sets it - else None (2026-10-29). The Ollama lane runs
     with num_ctx (OLLAMA_NUM_CTX, merged by _ollama_options) and cuts an
     over-long prompt from the front, where the system prompt is; the chat
-    trims its history to this figure. A cloud lane is None: its window is
-    several times the chat's input bound, and an over-long request there is
-    refused with an error, not cut. OLLAMA_NUM_CTX=0 hands the window to
-    Ollama's own default, a figure this code does not know, so it is None
-    too."""
-    if _provider_for_model(model) == "ollama" and OLLAMA_NUM_CTX > 0:
-        return OLLAMA_NUM_CTX
-    return None
+    trims its history to this figure. OLLAMA_NUM_CTX=0 hands the window to
+    Ollama's own default, a figure this code does not know, so it is None.
+    A vendor model's window is the one its vendor's /models list declares
+    (model_catalog.listed_window, 2026-10-29): Groq lists 8192-token models
+    and Mistral its legacy open-* ids at 32768, under the chat's input bound,
+    and such a vendor refused a long conversation with an error. A vendor
+    model whose list gives no window is None, as every cloud lane was: an
+    over-long request there is refused with an error, not cut."""
+    if _provider_for_model(model) == "ollama":
+        return OLLAMA_NUM_CTX if OLLAMA_NUM_CTX > 0 else None
+    return model_catalog.listed_window(model)
 
 
 def _ollama_chat_nonstream(messages: list, model: str, tools: list | None = None,

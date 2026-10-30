@@ -362,7 +362,10 @@ def _estimate_tokens(messages: list[dict]) -> int:
 #   -  the system prompt and the current message (the question with its
 #      CONTEXT and SUPPLEMENTARY CONTEXT blocks), measured
 #   =  what the history may take.
-# A cloud lane is untouched: no figure, nothing trimmed.
+# A vendor model gets the same trim where its vendor's /models list declares
+# its window (2026-10-29; providers.bounded_window_tokens - Groq's 8192-token
+# models, Mistral's legacy open-* ids); a cloud lane with no declared window
+# is untouched: no figure, nothing trimmed.
 _TOOL_ROUNDS_ROOM_TOKENS = 500
 
 
@@ -1085,7 +1088,8 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
             caller_level=caller_level)
         # On a bounded local window the oldest history gives way so the turn
         # fits and the system prompt is never cut (2026-10-29; the arithmetic
-        # is at _fit_history_to_window). A cloud lane is unchanged.
+        # is at _fit_history_to_window); so does a vendor model whose list
+        # declares a window. Any other cloud lane is unchanged.
         fitted = _fit_history_to_window(history_raw, system_content, prompt,
                                         tools, response_tokens, request.model,
                                         request.session_id)
