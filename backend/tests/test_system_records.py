@@ -22,19 +22,21 @@ class Harness:
     """Simulates what the index holds, mirroring tests/test_delta_ingest.py."""
 
     def __init__(self, monkeypatch, preexisting_ids=()):
-        self.index = set(preexisting_ids)
+        # id -> stored text: the writer reads the text with the ids
+        # (2026-10-29) and keeps an id only if it holds the record's own.
+        self.index = dict.fromkeys(preexisting_ids)
         self.added = []
         self.deleted = []
-        monkeypatch.setattr(sr, "get_source_ids",
-                            lambda source, dept=None: list(self.index))
+        monkeypatch.setattr(sr, "get_source_documents",
+                            lambda source, dept=None: dict(self.index))
         monkeypatch.setattr(sr, "delete_documents",
                             lambda ids, dept=None: (self.deleted.extend(ids),
-                                                    self.index.difference_update(ids)))
+                                                    [self.index.pop(i, None) for i in ids]))
 
         def _batch(entries, department=None, quarantine_exempt=False):
             for doc_id, _text, _meta in entries:
                 self.added.append((doc_id, _text, _meta))
-                self.index.add(doc_id)
+                self.index[doc_id] = _text
             return len(entries)
 
         monkeypatch.setattr(sr, "add_documents_batch", _batch)
@@ -89,9 +91,12 @@ def test_ingest_uses_the_batch_write_shape():
 def test_ingest_adds_before_it_prunes():
     """For a changed record the stale set is the previous text of the chunks
     that moved. Pruning first leaves the record with neither generation indexed
-    if the embed fails in between."""
+    if the embed fails in between. The stale prune is named: since 2026-10-29
+    a row holding text that is not the record's is deleted BEFORE the add,
+    which writes its id whole - not a generation of the record, so not the
+    prune this pins."""
     src = inspect.getsource(sr._ingest)
-    assert src.index("add_documents_batch(") < src.index("delete_documents(")
+    assert src.index("add_documents_batch(") < src.index("delete_documents(sorted(stale)")
 
 
 def test_chunk_ids_are_content_addressed_not_position_keyed(client, monkeypatch):

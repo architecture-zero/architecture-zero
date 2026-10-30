@@ -50,7 +50,7 @@ import re
 from datetime import datetime, timezone
 
 from app.chunking import chunk_markdown_sections
-from app.database import (add_documents_batch, delete_documents, get_source_ids,
+from app.database import (add_documents_batch, delete_documents, get_source_documents,
                           list_departments, count_documents, list_sources,
                           corpus_fingerprint, list_injection_flagged_sources)
 from app.logger import log, log_error
@@ -471,12 +471,25 @@ def _ingest(source: str, text: str) -> dict:
     # The SAME department literal on both sides. Reading existing ids under one
     # spelling and writing under another returns an empty existing-set forever,
     # which silently turns the delta back into a full re-embed.
-    existing = set(get_source_ids(source, DEPARTMENT))
+    #
+    # The stored text comes with the ids (2026-10-29), in the same one read:
+    # an id is kept only if it holds this record's own text. The ids are
+    # content-addressed, so a caller who could predict a future section's text
+    # could write its id first through /api/ingest with other text, and this
+    # writer skipped the id it found - the caller's text stood in the record's
+    # place and the record's own section was never written. Such an id is
+    # deleted and written whole below, so nothing of the caller's row
+    # survives the merge an upsert would make. An unchanged record still adds
+    # nothing and embeds nothing.
+    stored = get_source_documents(source, DEPARTMENT)
+    existing = set(stored)
     stale = existing - desired.keys()
+    foreign = sorted(doc_id for doc_id, (_, chunk) in desired.items()
+                     if doc_id in stored and stored[doc_id] != chunk)
 
     new_entries = []
     for doc_id, (i, chunk) in desired.items():
-        if doc_id in existing:
+        if doc_id in existing and doc_id not in foreign:
             continue
         # BOTH keys, because they drive different machinery: the tier derives
         # from `trust`, while the status lift and the [LIVE SYSTEM RECORD] label
@@ -490,13 +503,17 @@ def _ingest(source: str, text: str) -> dict:
     # record the stale set is the previous text of the chunks that moved, so
     # pruning first would leave the record with neither generation indexed if
     # the embed fails in between. Content-addressed ids make this order safe:
-    # the worst case is both generations present for one batch.
+    # the worst case is both generations present for one batch. A foreign row
+    # is not a generation of this record, so it goes first: deleted here, its
+    # id written whole by the add below.
+    if foreign:
+        delete_documents(foreign, DEPARTMENT)
     added = add_documents_batch(new_entries, department=DEPARTMENT) if new_entries else 0
     if stale:
         delete_documents(sorted(stale), DEPARTMENT)
 
     log("system_record_sync", source=source, chunks=len(chunks), added=added,
-        removed=len(stale), unchanged=len(desired) - added)
+        removed=len(stale), unchanged=len(desired) - added, rewritten=len(foreign))
     return {"status": "ok", "chunks": len(chunks), "added": added,
             "removed": len(stale)}
 

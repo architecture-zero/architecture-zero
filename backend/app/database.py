@@ -739,7 +739,8 @@ def _scan_tags_differ(stored: dict, metadata: dict | None, text: str) -> bool:
 
 def restamp_reused_chunks(entries: list[tuple[str, str, dict]],
                           department: str | None = None,
-                          quarantine_exempt: bool = False) -> int:
+                          quarantine_exempt: bool = False,
+                          rewritten: list[str] | None = None) -> int:
     """A writer owns every chunk it writes, the ids it REUSED included.
 
     Chunk ids are content-addressed with one formula for every writer, and the
@@ -771,24 +772,48 @@ def restamp_reused_chunks(entries: list[tuple[str, str, dict]],
 
     quarantine_exempt is add_document's: the quarantine release passes it
     (2026-10-29), so the Owner's waiver covers the ids the release reuses as
-    it covers the ones it adds - the tag stays, the block is waived."""
+    it covers the ones it adds - the tag stays, the block is waived.
+
+    A kept id is kept only if the stored text IS the writer's (2026-10-29).
+    Every rule above assumes it and nothing checked it: the ids are
+    content-addressed, so a manage_kb holder who can predict a FUTURE chunk's
+    text can write that id first through /api/ingest, with other text and the
+    same source (the route's refusal of an id a system writer holds cannot see
+    a row that does not exist yet). This restamp then stamped the caller's
+    text as the writer's - for the file sync, from_file "true" and the curated
+    tier. So the read below takes the stored text too, and a row whose text is
+    not the writer's is written WHOLE: deleted, then written with the writer's
+    text, a fresh embedding and the writer's metadata through the same gate,
+    so no key of the caller's row survives the merge an upsert would make.
+    Every row is gated and every such text embedded before anything is
+    written or deleted. The added cost is the stored text in the SAME get per
+    slice - no extra call; an unchanged row still pays no write and no embed.
+    rewritten, when given, gets the ids written whole, before their delete,
+    for a caller that must undo them (the release's rollback)."""
     if not entries:
         return 0
     col = _existing_collection(department)
     if col is None:
         return 0   # nothing indexed here, so nothing was reused
-    current: dict[str, dict] = {}
+    current: dict[str, tuple[str | None, dict]] = {}
     for start in range(0, len(entries), EMBED_BATCH_SIZE):
         stored = col.get(ids=[doc_id for doc_id, _, _ in entries[start:start + EMBED_BATCH_SIZE]],
-                         include=["metadatas"])
-        current.update({i: (m or {}) for i, m in zip(stored["ids"], stored["metadatas"])})
+                         include=["metadatas", "documents"])
+        current.update({i: (d, m or {}) for i, d, m in
+                        zip(stored["ids"], stored["documents"], stored["metadatas"])})
     ids: list[str] = []
     metas: list[dict] = []
+    whole: list[tuple[str, str, dict]] = []
     for doc_id, text, metadata in entries:
         if doc_id not in current:
             continue
         stamp = "true" if (metadata or {}).get("from_file") == "true" else "false"
-        old = current[doc_id]
+        held_text, old = current[doc_id]
+        if held_text != text:
+            meta = _gate_chunk(doc_id, text, metadata, department, quarantine_exempt)
+            meta["from_file"] = stamp
+            whole.append((doc_id, text, meta))
+            continue
         if ((old.get("from_file") == "true") == (stamp == "true")
                 and derive_trust(old) == derive_trust(metadata)
                 and not _scan_tags_differ(old, metadata, text)):
@@ -797,10 +822,25 @@ def restamp_reused_chunks(entries: list[tuple[str, str, dict]],
         meta["from_file"] = stamp
         ids.append(doc_id)
         metas.append(meta)
+    if whole:
+        log.warning("restamp: %d kept id(s) in %s held text that is not the "
+                    "writer's; written whole", len(whole), col.name)
+        embeddings: list[list[float]] = []
+        for start in range(0, len(whole), EMBED_BATCH_SIZE):
+            embeddings += _embed_batch([t for _, t, _ in whole[start:start + EMBED_BATCH_SIZE]])
+        if rewritten is not None:
+            rewritten.extend(doc_id for doc_id, _, _ in whole)
+        for start in range(0, len(whole), EMBED_BATCH_SIZE):
+            sl = whole[start:start + EMBED_BATCH_SIZE]
+            col.delete(ids=[doc_id for doc_id, _, _ in sl])
+            col.upsert(ids=[doc_id for doc_id, _, _ in sl],
+                       embeddings=embeddings[start:start + EMBED_BATCH_SIZE],
+                       documents=[t for _, t, _ in sl], metadatas=[m for _, _, m in sl])
+        _invalidate_lexical_index(col.name)
     for start in range(0, len(ids), EMBED_BATCH_SIZE):
         sl = slice(start, start + EMBED_BATCH_SIZE)
         col.update(ids=ids[sl], metadatas=metas[sl])
-    return len(ids)
+    return len(ids) + len(whole)
 
 
 def chunk_metadata(ids: list[str], department: str | None = None) -> dict[str, dict]:
@@ -1137,6 +1177,19 @@ def get_source_ids(source: str, department: str | None = None) -> list[str]:
     if col is None:
         return []
     return list(col.get(where={"source": source}).get("ids") or [])
+
+
+def get_source_documents(source: str, department: str | None = None) -> dict[str, str]:
+    """get_source_ids with each id's stored text: the system-records writer's
+    read (2026-10-29), which keeps an id only if the stored text is the
+    record's own (restamp_reused_chunks says why). The same one get by source
+    - chroma's get returns the documents by default, so get_source_ids already
+    reads them; this names them alone and keeps them."""
+    col = _existing_collection(department)
+    if col is None:
+        return {}
+    got = col.get(where={"source": source}, include=["documents"])
+    return dict(zip(got.get("ids") or [], got.get("documents") or []))
 
 
 def delete_documents(ids: list[str], department: str | None = None):

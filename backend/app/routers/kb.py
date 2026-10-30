@@ -177,6 +177,7 @@ def admin_release_quarantine(item_id: int,
         existing = set(get_source_ids(source, department))
         added_ids: list[str] = []
         reused_before: dict[str, dict] = {}
+        rewritten: list[str] = []
         try:
             for doc_id, (i, chunk) in desired.items():
                 if doc_id in existing:
@@ -190,10 +191,16 @@ def admin_release_quarantine(item_id: int,
             # release's untrusted one (2026-10-29). They are this release's
             # now, under the same waiver: the tag kept, not re-quarantined.
             # Their metadata is read first, for the rollback below to put back.
+            # A reused id whose stored text was not this release's chunk is
+            # written whole with the held text (2026-10-29: a caller could
+            # write a future chunk's id first); the restamp names those ids in
+            # `rewritten`, and the rollback deletes them like the adds - the
+            # held text must not stay live under the caller's metadata.
             reused = [(doc_id, chunk, {"source": source, "chunk": i, **meta})
                       for doc_id, (i, chunk) in desired.items() if doc_id in existing]
             reused_before = chunk_metadata([doc_id for doc_id, _, _ in reused], department)
-            restamp_reused_chunks(reused, department, quarantine_exempt=True)
+            restamp_reused_chunks(reused, department, quarantine_exempt=True,
+                                  rewritten=rewritten)
             stale = sorted(existing - desired.keys())
             if stale:
                 delete_documents(stale, department)
@@ -209,17 +216,20 @@ def admin_release_quarantine(item_id: int,
             # the exact inversion the quarantine exists to prevent.
             # Add-then-prune is the right order for durability of content the
             # user WANTS indexed; withheld content wants the opposite guarantee.
-            if added_ids:
+            if added_ids or rewritten:
                 try:
-                    delete_documents(added_ids, department)
+                    delete_documents(added_ids + rewritten, department)
                 except Exception:
                     logger.exception(
                         "quarantine release rollback FAILED for %s - %d chunks may be "
-                        "indexed while the item reads held", source, len(added_ids))
+                        "indexed while the item reads held", source,
+                        len(added_ids) + len(rewritten))
             # And put back what the restamp changed (2026-10-29): a failure
             # after it - the stale delete - left the reused rows reading as
             # this release's (untrusted, tagged, not file-owned) while the
-            # item reads held.
+            # item reads held. A row written whole was deleted above, so it is
+            # not handed its old metadata back.
+            reused_before = {i: m for i, m in reused_before.items() if i not in rewritten}
             if reused_before:
                 try:
                     restore_chunk_metadata(reused_before, department)
@@ -316,8 +326,8 @@ def ingest(request: IngestRequest, current_user: dict = Depends(require_permissi
     _check_department_write(current_user, request.department or "general")
     # An id a system writer holds is refused at the door (2026-10-29). The
     # knowledge file sync and the system records write content-addressed ids
-    # (md5 of department, source and chunk text) and skip an id already
-    # stored, so they never rewrite one: a caller's text upserted under such
+    # (md5 of department, source and chunk text) and skipped an id already
+    # stored, so they did not rewrite one: a caller's text upserted under such
     # an id stayed in place of the file's or the record's own text until that
     # source changed. A kept id with different text can arise only through
     # this route, so it closes here: one read by id (metadata only) in the
@@ -329,6 +339,15 @@ def ingest(request: IngestRequest, current_user: dict = Depends(require_permissi
     # writers are this route's trust level. Re-open if a non-owner role gains
     # manage_kb on a department holding uploads it should not be able to
     # rewrite.
+    #
+    # This read cannot see an id written here BEFORE the writer's row exists
+    # (a future chunk's id, predicted from its text). That half is the
+    # writers' own (2026-10-29): a kept id is kept only if its stored text is
+    # the writer's, and is written whole otherwise when the writer next runs
+    # over that source (database.restamp_reused_chunks for the file sync, the
+    # upload and the release; system_records._ingest). The refusal still
+    # matters for an id that exists: the file sync re-runs a file only when it
+    # changes.
     held = chunk_metadata([request.doc_id], request.department).get(request.doc_id) or {}
     if held.get("from_file") == "true" or held.get("auto_generated") == "true":
         raise HTTPException(status_code=409,
