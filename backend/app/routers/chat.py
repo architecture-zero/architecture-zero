@@ -354,7 +354,8 @@ def _estimate_tokens(messages: list[dict]) -> int:
 #     32768  the window (OLLAMA_NUM_CTX)
 #   -  4096  the reply (a signed-in turn's max_tokens; a guest's is 1024)
 #   - 12000  the turn's tool budget (agent.TOOL_RESULTS_TURN_MAX_CHARS, 48000
-#            characters) - only when tools ride the turn
+#            characters; less on a small window - _turn_tool_chars) - only
+#            when tools ride the turn
 #   -   473  the tool definitions as sent (1895 characters with every tool on)
 #   -   500  the rounds' own messages, outside the budget: five assistant
 #            turns carrying their calls and the spent sentence after the
@@ -369,20 +370,53 @@ def _estimate_tokens(messages: list[dict]) -> int:
 _TOOL_ROUNDS_ROOM_TOKENS = 500
 
 
+# THE TOOL ROOM IS SIZED FROM THE WINDOW (2026-10-29). The trim reserved the
+# whole configured tool budget before the history - 12000 tokens, about 17000
+# with the reply, the definitions and the rounds' messages - which is more
+# than an 8192-token window holds: with tools on, every turn there sent NO
+# history, the trim's notice rode every turn, and the tool loop still let its
+# results grow to the whole budget. On a bounded window the turn's tool budget
+# is now the smaller of the configured one and two thirds of the room the
+# window leaves after the system prompt, the current message, the reply, the
+# tool definitions and the rounds' messages; the history gets the rest. Two
+# thirds is the configured budget's own split (agent.TOOL_RESULTS_TURN_MAX_CHARS:
+# 12000 tool tokens beside a 6000-token history on a 32768-token window), so a
+# 32768-token window keeps the whole budget until the system prompt and the
+# message pass about 9700 tokens - that arithmetic's heaviest turn - and a
+# small window keeps a third of its room for the conversation, half what the
+# tools get. The trim reserves this figure and the tool loop's TurnToolBudget
+# is built with it, so the two cannot disagree.
+_TOOL_SHARE_OF_ROOM = (2, 3)
+
+
+def _turn_tool_chars(system: str, prompt: str, tools: list, reply_tokens: int,
+                     model: str) -> int:
+    """What this turn's tool results may take, in characters: the configured
+    budget, or on a bounded window the tools' share of the room it leaves -
+    never below nothing."""
+    window = bounded_window_tokens(model)
+    if window is None or not tools:
+        return TOOL_RESULTS_TURN_MAX_CHARS
+    room = (window - reply_tokens - _TOOL_ROUNDS_ROOM_TOKENS
+            - (len(system) + len(prompt) + len(json.dumps(tools))) // 4)
+    part, whole = _TOOL_SHARE_OF_ROOM
+    return min(TOOL_RESULTS_TURN_MAX_CHARS, max(0, room) * part // whole * 4)
+
+
 def _fit_history_to_window(history: list[dict], system: str, prompt: str,
-                           tools: list, reply_tokens: int, model: str,
-                           session_id: str) -> list[dict]:
+                           tools: list, tool_chars: int, reply_tokens: int,
+                           model: str, session_id: str) -> list[dict]:
     """The history this turn may send: all of it, unless the model's lane has
     a bounded window the turn would overflow - then the oldest messages go
     until system + history + current message, with the reply's room and (when
-    tools ride) the tool budget, fit. One log line when it trims: the counts,
-    never the text."""
+    tools ride) the turn's tool budget, `tool_chars` (_turn_tool_chars), fit.
+    One log line when it trims: the counts, never the text."""
     window = bounded_window_tokens(model)
     if window is None:
         return history
     reserved = reply_tokens
     if tools:
-        reserved += ((TOOL_RESULTS_TURN_MAX_CHARS + len(json.dumps(tools))) // 4
+        reserved += ((tool_chars + len(json.dumps(tools))) // 4
                      + _TOOL_ROUNDS_ROOM_TOKENS)
     chars = len(system) + len(prompt) + sum(len(m.get("content", "")) for m in history)
     dropped = 0
@@ -1089,10 +1123,14 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
         # On a bounded local window the oldest history gives way so the turn
         # fits and the system prompt is never cut (2026-10-29; the arithmetic
         # is at _fit_history_to_window); so does a vendor model whose list
-        # declares a window. Any other cloud lane is unchanged.
+        # declares a window. Any other cloud lane is unchanged. The tool room
+        # is sized first, from the same window (2026-10-29; _turn_tool_chars),
+        # and the trim and the tool loop below both take that one figure.
+        tool_chars = _turn_tool_chars(system_content, prompt, tools,
+                                      response_tokens, request.model)
         fitted = _fit_history_to_window(history_raw, system_content, prompt,
-                                        tools, response_tokens, request.model,
-                                        request.session_id)
+                                        tools, tool_chars, response_tokens,
+                                        request.model, request.session_id)
         # EVERY TRIM TELLS THE CLIENT (2026-10-29): context_warning is how the
         # client learns older messages are out of the model's view, and it
         # rode only the MAX_CONTEXT_TOKENS check above - a trim of a shorter
@@ -1127,8 +1165,9 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
             tool_rounds = 0
             # One budget for every tool result this turn appends (2026-10-29;
             # agent.TOOL_RESULTS_TURN_MAX_CHARS has the arithmetic): five reads
-            # would push the system prompt out of a small local window.
-            tool_budget = TurnToolBudget()
+            # would push the system prompt out of a small local window. Sized
+            # from the window, the figure the trim reserved (_turn_tool_chars).
+            tool_budget = TurnToolBudget(tool_chars)
             for _ in range(6):  # up to 5 tool rounds + the final answer
                 assistant_text: list[str] = []
                 round_tool_calls: list[dict] = []

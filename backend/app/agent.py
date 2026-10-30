@@ -365,6 +365,9 @@ def _framed_command_output(text: str, command: str) -> str:
 #   = 12472 left. The budget is 12000 tokens, 48000 characters: two full
 #   reads. One budget for every lane - the cloud lanes need a bound too
 #   (each round resends every result), and this one fits the smallest.
+#   A window smaller still (an 8192-token model) gets a share of its own
+#   room instead, sized by the chat (routers/chat.py _turn_tool_chars,
+#   2026-10-29) and passed to TurnToolBudget.
 TOOL_RESULTS_TURN_MAX_CHARS = 48000
 TOOL_BUDGET_SPENT = ("[tool results: this turn's tool budget is used - this "
                      "result was not returned. Answer from the results above.]")
