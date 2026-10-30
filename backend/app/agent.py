@@ -93,10 +93,36 @@ def _read_file_text(p: Path, shown: str) -> str:
         with p.open("r", encoding="utf-8", errors="replace") as f:
             text = f.read(READ_FILE_MAX_CHARS + 1)
     if len(text) > READ_FILE_MAX_CHARS:
-        return (text[:READ_FILE_MAX_CHARS]
+        text = (text[:READ_FILE_MAX_CHARS]
                 + f"\n\n[read_file: cut at {READ_FILE_MAX_CHARS} characters - "
                   f"the file is longer and the rest was not returned]")
-    return text
+    return _framed_file_text(text, shown)
+
+
+def _framed_file_text(text: str, shown: str) -> str:
+    """The file's text as the model receives it (2026-10-29): framed as data
+    by the retrieved blocks' own formatter (rerank.format_file_context) and
+    run through the injection scan in TAG mode - a finding labels the text,
+    it never withholds it, whatever INJECTION_SCAN_MODE says, because the
+    workspace is the operator's own repo (the curated tier's rule at the
+    ingest gate). "off" switches the scan off here as it does there. The
+    scan reads peer_boundary's copy of the text, every whitespace run cut to
+    two: one of its rules is quadratic on a run of line breaks (a file of
+    24000 newlines cost 5 s), and no rule needs three in a row. The refusals
+    above are fixed sentences and are never framed."""
+    from app import corpus_scan
+    from app.logger import log
+    from app.peer_boundary import _for_scan, scan_mode
+    from app.rerank import format_file_context
+    flagged = False
+    if scan_mode() != "off":
+        findings = corpus_scan.scan(_for_scan(text))
+        if findings:
+            flagged = True
+            log("injection_detected", source=shown[:200], trust="workspace",
+                types=corpus_scan.finding_types(findings), quarantined=False,
+                mode="tag")
+    return format_file_context(shown, text, flagged)
 
 
 # -- One budget for a turn's tool results (2026-10-29) ------------------------

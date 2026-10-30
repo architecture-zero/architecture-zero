@@ -14,7 +14,8 @@ cut at READ_FILE_MAX_CHARS with a marker. The CONTROL cases pass on the code
 before the change too: a small .md - CRLF line ends and a stray non-UTF-8 byte -
 comes back exactly as read_text gave it, a path outside the workspace and a
 file above the caller's level are refused as before, the clearance check
-running before any extraction.
+running before any extraction. Since the data framing (2026-10-29), a file's
+text is read from inside that frame; the refusals are not framed.
 """
 from app import agent
 from app.permissions import MEMBER_LEVEL
@@ -38,6 +39,15 @@ def _read(path, **kw):
     return agent.execute_tool("read_file", {"path": path}, **kw)
 
 
+def _text(out, path):
+    """The file's text inside read_file's data framing (2026-10-29:
+    rerank.format_file_context; test_agent_read_file_framed pins the frame)."""
+    from app.rerank import format_file_context
+    head = format_file_context(path, "")
+    assert out.startswith(head), out[:300]
+    return out[len(head):]
+
+
 # -- FIX ----------------------------------------------------------------------
 
 def test_a_pdf_comes_back_as_its_text(monkeypatch, tmp_path):
@@ -51,7 +61,7 @@ def test_a_pdf_comes_back_as_its_text(monkeypatch, tmp_path):
 def test_a_docx_comes_back_as_its_text(monkeypatch, tmp_path):
     ws = _ws(monkeypatch, tmp_path)
     (ws / "policy.docx").write_bytes(_docx(WORDS))
-    out = _read("policy.docx")
+    out = _text(_read("policy.docx"), "policy.docx")
     assert out.strip() == WORDS, out[:200]
 
 
@@ -83,7 +93,7 @@ def test_a_file_over_the_bound_is_cut_with_a_marker(monkeypatch, tmp_path):
     body = "".join(f"line {i:06d}\n" for i in range(cap // 12 + 500))
     assert len(body) > cap
     (ws / "big.log").write_text(body, encoding="utf-8")
-    out = _read("big.log")
+    out = _text(_read("big.log"), "big.log")
     assert out.startswith(body[:cap]), out[:80]
     assert out[cap:] == (f"\n\n[read_file: cut at {cap} characters - the file "
                          f"is longer and the rest was not returned]"), out[cap:]
@@ -93,7 +103,7 @@ def test_an_extracted_document_is_cut_at_the_same_bound(monkeypatch, tmp_path):
     ws = _ws(monkeypatch, tmp_path)
     monkeypatch.setattr(agent, "READ_FILE_MAX_CHARS", 10)
     (ws / "policy.docx").write_bytes(_docx(WORDS))
-    out = _read("policy.docx")
+    out = _text(_read("policy.docx"), "policy.docx")
     assert out.startswith(WORDS[:10] + "\n\n[read_file: cut at 10 characters"), out
 
 
@@ -101,7 +111,7 @@ def test_a_file_at_the_bound_is_whole(monkeypatch, tmp_path):
     ws = _ws(monkeypatch, tmp_path)
     monkeypatch.setattr(agent, "READ_FILE_MAX_CHARS", 10, raising=False)
     (ws / "ten.txt").write_text("0123456789", encoding="utf-8")
-    assert _read("ten.txt") == "0123456789"
+    assert _text(_read("ten.txt"), "ten.txt") == "0123456789"
 
 
 # -- CONTROL ------------------------------------------------------------------
@@ -110,7 +120,8 @@ def test_a_small_md_comes_back_exactly_as_before(monkeypatch, tmp_path):
     ws = _ws(monkeypatch, tmp_path)
     p = ws / "notes.md"
     p.write_bytes(b"# Notes\r\nline one\r\nstray \xff byte\r\n")
-    assert _read("notes.md") == p.read_text(encoding="utf-8", errors="replace")
+    assert _text(_read("notes.md"), "notes.md") == p.read_text(encoding="utf-8",
+                                                              errors="replace")
 
 
 def test_a_path_outside_the_workspace_is_refused_as_before(monkeypatch, tmp_path):

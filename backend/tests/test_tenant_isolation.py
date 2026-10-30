@@ -343,12 +343,16 @@ def test_tool_path_gate_blocks_history_for_low_tier(tmp_path, monkeypatch):
     assert denied.startswith("Permission denied")
     assert "SECRET" not in denied
     # ...but a general (level-0) file is fine.
+    # (A file's text arrives inside read_file's data framing since 2026-10-29.)
+    from app.rerank import format_file_context
     assert agent.execute_tool("read_file", {"path": "README.md"},
-                              user_level=MEMBER_LEVEL) == "public readme"
+                              user_level=MEMBER_LEVEL) == format_file_context(
+                                  "README.md", "public readme")
 
     # Owner (L3) and the internal default (None == Owner) get the log.
-    assert agent.execute_tool("read_file", log, user_level=OWNER_LEVEL) == "OWNER-ONLY SECRET LOG"
-    assert agent.execute_tool("read_file", log) == "OWNER-ONLY SECRET LOG"
+    framed_log = format_file_context(log["path"], "OWNER-ONLY SECRET LOG")
+    assert agent.execute_tool("read_file", log, user_level=OWNER_LEVEL) == framed_log
+    assert agent.execute_tool("read_file", log) == framed_log
 
     # Guest (L0) is denied too.
     assert agent.execute_tool("read_file", log, user_level=GUEST_LEVEL).startswith("Permission denied")
