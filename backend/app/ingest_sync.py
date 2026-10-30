@@ -31,7 +31,8 @@ from app.database import (add_documents_batch, list_sources, delete_source,
                           list_file_sources, restamp_reused_chunks)
 from app.logger import log, log_error
 from app.rag_config import dept_for_source as _dept_for_source
-from app.text_extract import SUPPORTED_EXTS, TEXT_EXTS, extract_text
+from app.text_extract import (PARSER_MISSING_DETAIL, SUPPORTED_EXTS, TEXT_EXTS,
+                              extract_text, parser_missing)
 
 logger = logging.getLogger(__name__)
 
@@ -126,16 +127,38 @@ def _read_watched(p: pathlib.Path, quiet: bool = False) -> str:
     one log line of bounded detail (none when quiet, for the corpus probe that
     runs every self-check pass): every caller skips blank text, so it is never
     indexed and never stops a sync, as the upload refuses one. An OSError
-    reading the file propagates, as read_text's did."""
+    reading the file propagates, as read_text's did.
+
+    A parser this build lacks raises _ParserMissing instead (2026-10-29),
+    with one log line naming the type and the library (none when quiet). It
+    came back "" too, and the syncs remove a file that reads "" - so a build
+    without pypdf removed every watched PDF's rows and fingerprint at its
+    next sync, boot included. The file did not fail; the server did. Every
+    caller leaves such a file as it is, and a build with the library reads
+    it again."""
     if p.suffix.lower().lstrip(".") in TEXT_EXTS:
         return p.read_text(encoding="utf-8", errors="ignore")
     data = p.read_bytes()
     try:
         return extract_text(p.name, data)
     except Exception as e:
+        ext = p.suffix.lower().lstrip(".")
+        if parser_missing(e):
+            if not quiet:
+                log_error("kb_file_parser_missing", file=str(p), ext=ext,
+                          error=f"{type(e).__name__}: {e}"[:300])
+            raise _ParserMissing(PARSER_MISSING_DETAIL.format(ext=ext)) from e
         if not quiet:
             log_error("kb_file_no_text", file=str(p), error=str(e)[:200])
         return ""
+
+
+class _ParserMissing(Exception):
+    """_read_watched could not read a watched file: this build lacks a library
+    its type needs (text_extract.parser_missing; 2026-10-29). Not "no text" -
+    the file's rows and fingerprint stay exactly as they are. Its message is
+    text_extract.PARSER_MISSING_DETAIL, a fixed sentence naming the type, so
+    a sync result can carry it; the library's words are in the log line."""
 
 
 def _drop_textless_source(source: str, p: pathlib.Path) -> int:
@@ -424,6 +447,11 @@ def _sync_knowledge_dir(force: bool = True) -> dict:
                 continue
             n = _ingest_file(rel, text)
             results[rel] = {"status": "ok", "chunks": n}
+        except _ParserMissing as e:
+            # The server cannot parse this type (2026-10-29): skipped, the
+            # file's rows and fingerprint left as they are for a build with
+            # the library to read. _read_watched logged the library.
+            results[rel] = {"status": "skipped", "reason": str(e)}
         except Exception as e:
             results[rel] = {"status": "error", "error": str(e)}
     # Prune knowledge sources whose file is gone. The watcher removes a deleted
@@ -578,9 +606,12 @@ def _knowledge_dir_has_documents() -> bool:
     2026-10-08 read); symlinked directories are not followed, as before.
 
     A pdf or docx is read as the sync reads it (2026-10-29), through
-    _read_watched: one with no text is not a document. Parsing one is the
-    expensive read, so they are set aside during the walk and parsed only if
-    no text file answered - a tree holding any text document parses none."""
+    _read_watched: one with no text is not a document. One this build cannot
+    parse still is (_ParserMissing, 2026-10-29): it read as none, so a tree
+    of PDFs on a build without pypdf answered "not required", though the
+    sync keeps such a file's rows. Parsing one is the expensive read, so
+    they are set aside during the walk and parsed only if no text file
+    answered - a tree holding any text document parses none."""
     if not os.path.isdir(KNOWLEDGE_DIR):
         return False
     failed: list = []
@@ -614,7 +645,7 @@ def _knowledge_dir_has_documents() -> bool:
             try:
                 if _read_watched(pathlib.Path(path), quiet=True).strip():
                     return True
-            except OSError:
+            except (OSError, _ParserMissing):
                 return True
     except Exception:
         return True
@@ -662,6 +693,12 @@ def _sync_docs(force: bool = True) -> dict:
                 continue
             n = _ingest_file(source, text)
             results[source] = {"status": "ok", "chunks": n}
+        except _ParserMissing as e:
+            # As the knowledge sync skips one (2026-10-29), and the name is
+            # held: a textless file of this name below is no reason to
+            # remove the rows this one's last read wrote.
+            synced.add(f"docs/{p.name}")
+            results[f"docs/{p.name}"] = {"status": "skipped", "reason": str(e)}
         except Exception as e:
             results[f"docs/{p.name}"] = {"status": "error", "error": str(e)}
     # A file there without text is gone for the index (2026-10-29) - after
@@ -798,6 +835,13 @@ def _handle_watched_change(deleted: bool, p: pathlib.Path) -> None:
                 _save_ingest_state(state)
         log("kb_file_deleted", file=source)
         return
+    # Both paths below read the file. One this build cannot parse is left as
+    # it is (2026-10-29): the read logged the type and the library, and
+    # caught here it is not logged again by the loop as a sync error.
+    try:
+        text = _read_watched(p)
+    except _ParserMissing:
+        return
     if deleted:
         # A "deleted" event for a file that still EXISTS is a REPLACE (git
         # checkout swaps files via unlink+rename). Taking it at face value -
@@ -806,14 +850,12 @@ def _handle_watched_change(deleted: bool, p: pathlib.Path) -> None:
         # metadata-wipe family. Re-stat and do a normal delta re-ingest
         # instead: the content diff touches only chunks that actually
         # changed.
-        text = _read_watched(p)
         if text.strip():
             n = _ingest_file(source, text)
             log("kb_file_replaced", file=source, chunks=n)
         return
     # A file read here without text is left to the next sync, which removes
     # its chunks (_drop_textless_source says why the watcher does not).
-    text = _read_watched(p)
     if text.strip():
         n = _ingest_file(source, text)
         log("kb_file_synced", file=source, chunks=n)

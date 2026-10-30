@@ -571,13 +571,24 @@ def _ingest_upload(name: str, ext: str, data: bytes, department: str,
     ingested payload - reaches the caller unchanged through run_in_threadpool."""
     # Shared extractor - a file type behaves identically whether it arrives
     # by upload or any future batch path.
-    from app.text_extract import ExtractError, extract_text
+    from app.text_extract import (PARSER_MISSING_DETAIL, ExtractError,
+                                  extract_text, parser_missing)
     try:
         text = extract_text(name, data)
     except ExtractError as e:
         raise HTTPException(status_code=400 if e.unsupported else 422,
                             detail=str(e))
     except Exception as e:
+        # A MISSING PARSER IS THE SERVER'S FAULT, NOT THE FILE'S (2026-10-29).
+        # It answered the 422 below, so a build without pypdf refused every
+        # PDF as if its bytes were unreadable, with the library's words in
+        # the detail. A 500 with a fixed sentence naming the type; the
+        # library's words go to the log only, bounded.
+        if parser_missing(e):
+            log_error("ingest_parser_missing", source=name, ext=ext,
+                      error=f"{type(e).__name__}: {e}"[:300])
+            raise HTTPException(status_code=500,
+                                detail=PARSER_MISSING_DETAIL.format(ext=ext))
         raise HTTPException(status_code=422, detail=f"Failed to extract text: {e}")
 
     # Injection gate: scan the FULL document text BEFORE chunking (a payload
