@@ -128,3 +128,47 @@ def test_delete_source_refuses_an_empty_name(client, admin_headers, monkeypatch)
     r = client.delete("/api/ingest/source/real.md", headers=admin_headers)
     assert r.status_code == 200, r.text
     assert calls == [("real.md", None)] and rows == {}
+
+
+_DELETE_AXIS_ADMIN = {"username": "delete-axis-admin", "password": "AdminRole1"}
+
+
+def test_delete_source_needs_write_on_the_department(client, admin_headers, monkeypatch):
+    """A delete is a write (2026-10-30): the caller must be one who may WRITE
+    the department the source lives in - the upload's and the ingest's own
+    check (_check_department_write: the Owner anywhere, everyone else only
+    general or their own department). Until then the route checked only the
+    manage_kb scope, so an Admin could remove a source from a department it
+    could not upload to. A refusal answers the route's fixed 403 sentence
+    before the lock and before any index call, and the source stays."""
+    client.post("/api/users", headers=admin_headers,
+                json={"current_password": "AdminPass1", **_DELETE_AXIS_ADMIN,
+                      "role": "admin", "department": "support"})  # idempotent: dup -> 4xx
+    r = client.post("/api/auth/login", json=_DELETE_AXIS_ADMIN)
+    assert r.status_code == 200, r.text
+    lower = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    rows = {"plan.md": 1}
+    calls = _stand_in_index(monkeypatch, rows)
+
+    # The refused case: a lower tier deleting a higher department's source.
+    r = client.delete("/api/ingest/source/plan.md", params={"department": "restricted"},
+                      headers=lower)
+    assert r.status_code == 403, r.text
+    assert r.json() == {"detail": "Not permitted to delete from department: restricted"}
+    assert calls == [] and rows == {"plan.md": 1}
+
+    # The allowed cases: the caller's own department, and general (named, or
+    # no department at all - the global collection).
+    for params, dept in (({"department": "support"}, "support"),
+                         ({"department": "general"}, "general"), ({}, None)):
+        rows["plan.md"] = 1
+        r = client.delete("/api/ingest/source/plan.md", params=params, headers=lower)
+        assert r.status_code == 200, (params, r.text)
+        assert calls[-1] == ("plan.md", dept) and rows == {}
+
+    # The Owner writes anywhere, so deletes anywhere.
+    rows["plan.md"] = 1
+    r = client.delete("/api/ingest/source/plan.md", params={"department": "restricted"},
+                      headers=admin_headers)
+    assert r.status_code == 200, r.text
+    assert calls[-1] == ("plan.md", "restricted") and rows == {}

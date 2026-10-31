@@ -279,10 +279,12 @@ def admin_delete_quarantine(item_id: int,
         row.reviewed_at = _dt.datetime.utcnow().isoformat()
     log("quarantine_deleted", quarantine_id=item_id, admin_id=current_user["id"])
     return {"status": "deleted", "id": item_id}
-def _check_department_write(current_user: dict, department: str):
+def _check_department_write(current_user: dict, department: str,
+                            action: str = "ingest into"):
     """Write-authz: the Owner ingests anywhere; everyone else only 'general'
     or their own department (so an Admin can't write into an Owner-only
-    collection)."""
+    collection). The source delete is a write and takes this same rule
+    (2026-10-30); `action` only words its refusal."""
     # The product's own help collection (2026-09-21): reserved, refused at
     # every write door and for EVERY role, the Owner included - the pages come
     # from the image, the Help button cites them as the product's guidance,
@@ -295,7 +297,7 @@ def _check_department_write(current_user: dict, department: str):
     if is_owner(current_user):
         return
     if department not in ("general", current_user.get("department")):
-        raise HTTPException(status_code=403, detail=f"Not permitted to ingest into department: {department}")
+        raise HTTPException(status_code=403, detail=f"Not permitted to {action} department: {department}")
 
 
 def _ingest_trust(current_user: dict, requested: str | None = None) -> str:
@@ -511,10 +513,18 @@ def remove_source(source: str, department: str | None = None, current_user: dict
     # deployment of this route gives for a name that cannot be a source.
     if not source.strip():
         raise HTTPException(status_code=400, detail="Invalid source name")
-    # The help pages are not the operator's to delete (they would return at
-    # the next boot anyway) - the reserved name is refused here too.
-    from app.help_docs import refuse_reserved_department
-    refuse_reserved_department(department)
+    # A delete is a write (2026-10-30): the caller must be one who may WRITE
+    # the department the source lives in - the upload's own check, so the
+    # Owner anywhere and everyone else only general or their own department.
+    # The route checked the manage_kb scope alone until then, so an Admin
+    # could remove a source from a department it could not upload to. No
+    # department is the global collection (delete_source), so it is checked
+    # as general. The check refuses the reserved help name first, as it did
+    # here before (the pages would return at the next boot anyway). Before
+    # the lock and before any index call: a refusal leaves the source as it
+    # was.
+    _check_department_write(current_user, department or "general",
+                            action="delete from")
     # Under the source's lock (ingest_sync._source_lock): a delete landing
     # mid-upload of the same source took the chunks written so far and left
     # the rest of the file indexed behind it.
