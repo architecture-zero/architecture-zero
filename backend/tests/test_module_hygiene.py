@@ -251,6 +251,23 @@ def test_the_startup_ingest_flag_has_exactly_one_definition():
     )], f"expected exactly one definition, in runtime_config: {defs}"
 
 
+def test_the_ollama_base_has_exactly_one_definition():
+    """OLLAMA_BASE is the chat's Ollama default, defined in app.providers and
+    read through the URL saved in Settings (runtime_config._ollama_get).
+    app.database carried a second one, with a different default host, that
+    nothing read - removed 2026-10-30. A reader that reached for it would
+    have asked another host than the chat does; the embedding server is
+    database.EMBED_BASE, deliberately its own setting."""
+    defs = []
+    for path in _modules():
+        for node in _tree(path).body:
+            if isinstance(node, ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, ast.Name) and t.id == "OLLAMA_BASE":
+                        defs.append(path.name)
+    assert defs == ["providers.py"], f"expected exactly one definition, in providers: {defs}"
+
+
 # ── Defined and never called ─────────────────────────────────────────────────
 #
 # A module-level function that nothing outside the tests reaches is invisible

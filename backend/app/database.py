@@ -25,10 +25,12 @@ log = logging.getLogger("database")
 # during incident forensics. Nothing is sent either way; silence the logger.
 logging.getLogger("chromadb.telemetry").setLevel(logging.CRITICAL)
 
-OLLAMA_BASE = os.getenv("OLLAMA_BASE", "http://localhost:11434")
 # Embeddings always use a stable local endpoint - decoupled from chat
 # inference. EMBED_BASE defaults to the host's local Ollama so RAG works even
-# when OLLAMA_BASE points at a remote/tunneled GPU box that may be down.
+# when the chat's OLLAMA_BASE (app.providers, read through the URL saved in
+# Settings) points at a remote/tunneled GPU box that may be down. This module
+# defined an OLLAMA_BASE of its own, with another default host, that nothing
+# read - removed 2026-10-30.
 EMBED_BASE  = os.getenv("EMBED_BASE", "http://host.docker.internal:11434")
 
 _CHROMA_PATH = os.getenv("CHROMA_PATH", os.path.join(os.path.dirname(__file__), "..", "data"))
