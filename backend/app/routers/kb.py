@@ -65,10 +65,25 @@ def _clears_department(current_user: dict, department: str | None) -> bool:
     level must reach the department's floor (rag_config.DEPARTMENT_MIN_LEVEL;
     an unlisted department fails closed to Owner-only). manage_kb is the
     action scope; the level decides what the listing may show, the same rule
-    the file tools apply to directory listings. Since 2026-09-23."""
-    from app.permissions import effective_level
+    the file tools apply to directory listings. Since 2026-09-23.
+
+    And below the Owner, only the shared department and the caller's own
+    (2026-10-31) - what the chat reads for that account (rerank.retrieve: its
+    own department and general, each under the level gate). With the level
+    alone, a deployment that shared two departments at the Member floor
+    showed an Admin in one the other's source names and held text here,
+    while the chat never gives that account a word of it. Compared as the
+    collections the names key (database._collection_name), the write check's
+    comparison: "Sales" and the listing's label "sales" are one department."""
+    from app.permissions import effective_level, is_owner
     from app.rag_config import department_min_level
-    return effective_level(current_user) >= department_min_level(department)
+    if effective_level(current_user) < department_min_level(department):
+        return False
+    if is_owner(current_user):
+        return True
+    from app.database import _collection_name
+    return _collection_name(department) in {_collection_name("general"),
+                                            _collection_name(current_user.get("department"))}
 
 
 def _sources_the_caller_clears(current_user: dict, sources: list[dict]) -> list[dict]:
