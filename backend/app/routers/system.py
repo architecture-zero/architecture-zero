@@ -145,9 +145,17 @@ def status():
     ollama_ok = False
     loaded_models = []
     try:
-        tags = _ollama_get("/api/tags", timeout=5).json()
-        ollama_ok = True
-        loaded_models = [m["name"] for m in tags.get("models", [])]
+        # Connected means a 2xx whose body is Ollama's model list - the rule
+        # GET /api/settings/test-ollama holds (2026-10-30). The flag used to be
+        # set the moment ANY JSON came back, before the status or the list was
+        # read, so a wrong base URL that answers JSON (another service's 404, a
+        # health route) read "connected" with no models.
+        resp = _ollama_get("/api/tags", timeout=5)
+        body = resp.json() if 200 <= resp.status_code < 300 else None
+        models = body.get("models") if isinstance(body, dict) else None
+        if isinstance(models, list):
+            loaded_models = [m["name"] for m in models]
+            ollama_ok = True
     except Exception:
         pass
 
