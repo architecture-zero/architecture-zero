@@ -90,6 +90,60 @@ describe('KB page: removing a source', () => {
   })
 })
 
+// THE UPLOAD READS THE STATUS BEFORE THE BODY (2026-10-30). The body was
+// parsed first, so an error page that is not JSON - a proxy's 413 or 502
+// page - put the JSON parser's own message on the status line instead of the
+// tab's failure sentence. A refusal's own detail still shows, and a success
+// still reports its chunks.
+function installUpload(answer: () => Response) {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    if ((init?.method || 'GET').toUpperCase() === 'POST' && url.includes('/api/ingest/upload')) {
+      return answer()
+    }
+    if (url.includes('/api/ingest/departments')) return json({ departments: ['general'] })
+    if (url.includes('/api/ingest/sources')) return json({ sources: [] })
+    return json({})
+  }) as unknown as typeof fetch
+}
+
+async function uploadOne() {
+  mount()
+  await screen.findByText('No documents ingested.')
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement
+  fireEvent.change(input, { target: { files: [new File(['hello'], 'note.md', { type: 'text/markdown' })] } })
+}
+
+describe('KB page: uploading a file', () => {
+  it('an error page that is not JSON shows the tab\'s failure sentence, not the parser\'s words', async () => {
+    installUpload(() => new Response('<html><body>413 Request Entity Too Large</body></html>',
+      { status: 413, headers: { 'Content-Type': 'text/html' } }))
+    await uploadOne()
+    expect(await screen.findByText(/Upload failed \(HTTP 413\)/)).toBeInTheDocument()
+    expect(screen.queryByText(/JSON|Unexpected token|is not valid/)).toBeNull()
+  })
+
+  it('a 200 whose body is not JSON shows the tab\'s failure sentence', async () => {
+    installUpload(() => new Response('<!doctype html><html></html>',
+      { status: 200, headers: { 'Content-Type': 'text/html' } }))
+    await uploadOne()
+    expect(await screen.findByText(/Upload failed$/)).toBeInTheDocument()
+    expect(screen.queryByText(/JSON|Unexpected token|is not valid/)).toBeNull()
+  })
+
+  it('a refusal with a detail still shows the server\'s sentence', async () => {
+    installUpload(() => json({ detail: 'Not permitted to ingest into department: hr' }, 403))
+    await uploadOne()
+    expect(await screen.findByText(/Not permitted to ingest into department: hr/)).toBeInTheDocument()
+  })
+
+  it('a success still reports where it went and its chunks', async () => {
+    installUpload(() => json({ status: 'ingested', source: 'note.md', department: 'general', chunks: 2 }))
+    await uploadOne()
+    expect(await screen.findByText(/note\.md -> general - 2 chunks/)).toBeInTheDocument()
+  })
+})
+
 // The hint under the picker named eight types while the input accepted ten
 // (.yaml and .yml missing). Both now come from UPLOAD_TYPES (2026-10-29); the
 // backend suite pins that list to the extractor's.

@@ -56,8 +56,21 @@ export function KBManage({ api, headers }: { api: string; headers: () => Record<
     form.append('department', uploadDept)
     try {
       const res = await fetch(`${api}/api/ingest/upload`, { method: 'POST', headers: headers(), body: form })
-      const d = await res.json()
-      if (!res.ok) throw new Error(d.detail || 'Upload failed')
+      // The status first, then the body (2026-10-30). The body was parsed
+      // before the status was read, so an error page that is not JSON (a
+      // proxy's 413 or 502 page) put the JSON parser's own message here
+      // instead of the tab's sentence. A refusal's own detail still shows
+      // when the server sent one as text.
+      if (!res.ok) {
+        let detail = ''
+        try {
+          const b = await res.json()
+          if (typeof b?.detail === 'string') detail = b.detail
+        } catch { /* not JSON: the tab's sentence below */ }
+        throw new Error(detail || `Upload failed (HTTP ${res.status})`)
+      }
+      let d
+      try { d = await res.json() } catch { throw new Error('Upload failed') }
       // 200 does NOT mean indexed. The ingest gate answers 200 with
       // status:"quarantined" for content it WITHHELD, and a queued upload
       // answers 200 with status:"queued" and no chunk count yet. Reporting all
