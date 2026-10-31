@@ -525,8 +525,9 @@ def kb_files(current_user: dict = Depends(require_permission("manage_kb"))):
 
 # The department NAMES, for the KB tab's picker and the Users tab's
 # (2026-10-30): a manage_users holder already creates a user in any
-# department, moves one between them and reads every account's department,
-# so reading the names is no new privilege. Names only; what a department
+# department and reads every account's department, so reading the names is
+# no new privilege. (Moving an account between departments is the Owner's
+# alone since 2026-10-31 - routers/users.change_department.) Names only; what a department
 # holds stays behind the read axis.
 @router.get("/api/ingest/departments")
 def get_departments(current_user: dict = Depends(require_any_permission("manage_kb", "manage_users"))):

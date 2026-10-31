@@ -159,6 +159,19 @@ def change_role(user_id: int, body: dict, current_user: dict = Depends(require_p
 
 @router.patch("/api/users/{user_id}/department")
 def change_department(user_id: int, body: dict, current_user: dict = Depends(require_permission("manage_users"))):
+    # The Owner's alone (2026-10-31). An account's department is half of what
+    # the chat reads for it and half of where it may write (the KB's
+    # department write check); with manage_users alone, an Admin - its preset
+    # holds the scope - moved any account between departments, its own
+    # included, and so widened its own read and write axes to a department
+    # the Owner never opened to it. Refused before anything is read or
+    # written; your own department, like your own role, says so.
+    from app.permissions import is_owner
+    if not is_owner(current_user):
+        if user_id == current_user["id"]:
+            raise HTTPException(status_code=403, detail="Cannot change your own department")
+        raise HTTPException(status_code=403,
+                            detail="Only an Owner can change an account's department")
     dept = body.get("department", "general").strip() or "general"
     from app.help_docs import refuse_reserved_department
     refuse_reserved_department(dept)   # same reason as add_user: the other door
