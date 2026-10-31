@@ -145,7 +145,7 @@ export default function AdminPanel({ api, headers, currentUser, onClose, onLogou
         <fieldset className="border-0 p-0 m-0 min-w-0">
         {tab === 'trust'      && <TrustTab api={api} headers={headers} currentUser={currentUser} />}
         {tab === 'settings'   && <SettingsTab api={api} headers={headers} goToModels={() => setTab('models')} />}
-        {tab === 'users'      && <UsersTab api={api} headers={headers} />}
+        {tab === 'users'      && <UsersTab api={api} headers={headers} currentUser={currentUser} />}
         {tab === 'kb'         && <KBManage api={api} headers={headers} />}
         {tab === 'quarantine' && <QuarantineTab api={api} headers={headers} currentUser={currentUser} />}
         {tab === 'prompt'     && <SystemPromptTab api={api} headers={headers} />}

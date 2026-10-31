@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { actionError, emitError, guardedJson } from '../errorSurface'
 import { PRIMARY_COLOR } from '../theme'
 import { useStepUp } from './stepUp'
@@ -23,7 +23,49 @@ interface PermissionMeta {
   presets: Record<string, string[]>
 }
 
-export function UsersTab({ api, headers }: { api: string; headers: () => Record<string, string> }) {
+// An account's department, edited by the Owner (2026-10-31). The field held
+// the row's value and wrote on every keystroke - typing "hr" sent "h", then
+// "hr", and the first PATCH moved the account into a department "h". It keeps
+// a draft now and writes once, when the edit is committed: on blur or Enter,
+// and only when the value changed.
+function DepartmentField({ value, onCommit }: {
+  value: string
+  onCommit: (d: string) => Promise<boolean>
+}) {
+  const [draft, setDraft] = useState(value)
+  // What this field last sent, so Enter and the blur after it write once.
+  const sent = useRef<string | null>(null)
+  useEffect(() => { setDraft(value); sent.current = null }, [value])
+  const commit = () => {
+    const next = draft.trim() || 'general'
+    if (next === value || next === sent.current) return
+    sent.current = next
+    // A refused write leaves the row's value as it was, so the field shows
+    // it again rather than the draft the server did not take.
+    onCommit(next).then(ok => { if (!ok) { setDraft(value); sent.current = null } })
+  }
+  return (
+    <input
+      value={draft}
+      onChange={e => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => { if (e.key === 'Enter') commit() }}
+      list="dept-list"
+      className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-xs text-white outline-none w-24"
+      title="Department"
+    />
+  )
+}
+
+export function UsersTab({ api, headers, currentUser }: {
+  api: string
+  headers: () => Record<string, string>
+  currentUser: { role: string } | null
+}) {
+  // Moving an account between departments is the Owner's alone on the server
+  // (2026-10-31), so below the Owner the rows show the department as text and
+  // offer no field the server would refuse.
+  const isOwner = currentUser?.role === 'owner'
   const [users, setUsers] = useState<User[]>([])
   const [departments, setDepartments] = useState<string[]>(['general'])
   const [permMeta, setPermMeta] = useState<PermissionMeta>({ scopes: [], presets: {} })
@@ -292,14 +334,9 @@ export function UsersTab({ api, headers }: { api: string; headers: () => Record<
                 <p className="text-xs text-gray-500">{u.created_at.slice(0, 10)} · {u.department}</p>
               </div>
               <div className="flex items-center gap-2">
-                <input
-                  value={u.department}
-                  onChange={e => changeDept(u.id, e.target.value)}
-                  onBlur={e => changeDept(u.id, e.target.value)}
-                  list="dept-list"
-                  className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-xs text-white outline-none w-24"
-                  title="Department"
-                />
+                {isOwner && (
+                  <DepartmentField value={u.department} onCommit={d => changeDept(u.id, d)} />
+                )}
                 <select
                   value={u.role}
                   onChange={e => changeRole(u.id, e.target.value)}
