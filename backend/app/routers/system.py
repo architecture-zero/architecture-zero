@@ -23,7 +23,7 @@ from app.database import count_documents
 from app.config import get_config
 from app.jwt_auth import get_current_user, oauth2_scheme, require_owner, require_permission
 from app.agent import get_tool_config
-from app.providers import OPENAI_COMPAT, compat_key_configured, get_provider_config
+from app.providers import OPENAI_COMPAT, get_provider_config, offered_providers
 from app.redis_client import redis_status
 from app.security import get_security_config
 from app.metrics import get_last_request_at, get_snapshot, prometheus_text
@@ -336,17 +336,24 @@ def health_detailed(current_user: dict = Depends(require_owner)):
     # a key saved in Settings read as missing.
     providers = []
     _cfg = get_provider_config()
+    # One row per provider the picker offers (2026-10-31): offered_providers is
+    # the one predicate behind /api/models and the chat's dispatch gate - the
+    # toggle OR a configured key for OpenAI and Anthropic, a key alone for the
+    # registry. The OpenAI and Anthropic rows read the toggle alone, and the
+    # registry loop skipped OpenAI, so a key-only OpenAI or Anthropic was
+    # offered in the picker with no row here. A provider toggled on without a
+    # key is offered too, and its row reads not ok, as before.
+    _offered = offered_providers()
 
     if ollama_enabled():
         providers.append(probe_ollama(_ollama_get))
-    if "openai" in _cfg["enabled_providers"]:
+    if "openai" in _offered:
         providers.append({"name": "openai", "ok": _cfg["openai_configured"], "latency_ms": None})
-    if "anthropic" in _cfg["enabled_providers"]:
+    if "anthropic" in _offered:
         providers.append({"name": "anthropic", "ok": _cfg["anthropic_configured"], "latency_ms": None})
-    # Keyed registry providers ("ok" = key present, same semantic as openai
-    # above).
+    # Keyed registry providers ("ok" = key present: a key is what offers them).
     for _name in OPENAI_COMPAT:
-        if _name != "openai" and compat_key_configured(_name):
+        if _name != "openai" and _name in _offered:
             providers.append({"name": _name, "ok": True, "latency_ms": None})
 
     result["providers"] = providers

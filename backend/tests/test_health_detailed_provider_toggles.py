@@ -84,3 +84,47 @@ def test_with_nothing_saved_the_environment_decides(client, admin_headers, saved
     rows = _rows(client, admin_headers)
     assert rows["openai"]["ok"] is True, rows
     assert rows["anthropic"]["ok"] is False, rows
+
+
+# -- A row for every provider the picker offers (2026-10-31) -----------------------
+# The picker and the chat's dispatch gate offer OpenAI and Anthropic on their
+# toggle OR a configured key (providers.offered_providers, the registry's
+# dormant-until-keyed rule). The view listed them on the toggle alone, and its
+# registry loop skipped OpenAI, so a key-only OpenAI or Anthropic was offered
+# in the picker and had no row here.
+
+def test_a_key_only_provider_the_picker_offers_has_a_row(client, admin_headers, saved,
+                                                         monkeypatch):
+    from app.providers import offered_providers
+    monkeypatch.setenv("ENABLE_OPENAI", "false")
+    monkeypatch.setenv("ENABLE_ANTHROPIC", "false")
+    saved("provider_openai_enabled", "false")
+    saved("provider_anthropic_enabled", "false")
+    saved("openai_api_key", "test-openai-value")
+    saved("anthropic_api_key", "test-anthropic-value")
+    assert {"openai", "anthropic"} <= offered_providers()
+    rows = _rows(client, admin_headers)
+    assert rows.get("openai", {}).get("ok") is True, rows
+    assert rows.get("anthropic", {}).get("ok") is True, rows
+
+
+def test_the_rows_are_the_providers_the_picker_offers(client, admin_headers, saved,
+                                                      monkeypatch):
+    """One predicate: no row for a provider the picker does not offer, one row
+    (never two) for each it does, Ollama aside (it is probed, not listed)."""
+    from app.providers import offered_providers
+    monkeypatch.setenv("ENABLE_OPENAI", "false")
+    monkeypatch.setenv("ENABLE_ANTHROPIC", "false")
+    saved("provider_openai_enabled", "true")
+    saved("provider_anthropic_enabled", "false")
+    saved("openai_api_key", "test-openai-value")
+    saved("anthropic_api_key", "")
+    names = [p["name"] for p in _rows_list(client, admin_headers)]
+    assert len(names) == len(set(names)), names
+    assert set(names) == offered_providers() - {"ollama"}, names
+
+
+def _rows_list(client, headers) -> list:
+    r = client.get("/api/health/detailed", headers=headers)
+    assert r.status_code == 200, r.text
+    return r.json()["providers"]
