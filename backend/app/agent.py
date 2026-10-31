@@ -646,7 +646,12 @@ def execute_tool(name: str, args: dict, user_level: int | None = None) -> str:
         else:
             return f"Error: unknown tool '{name}'"
 
+    # The tool result the model reads, and may repeat in its answer: an
+    # exception's words bounded at 300 (2026-10-31), the type first - for a
+    # PermissionError the prefix names it, and the workspace guard's own
+    # sentence reads as before. Both were the words whole: a library's error
+    # body, a path, a decoder's bytes from the file.
     except PermissionError as e:
-        return f"Permission denied: {e}"
+        return "Permission denied: " + str(e)[:300]
     except Exception as e:
-        return f"Error executing {name}: {e}"
+        return f"Error executing {name}: " + f"{type(e).__name__}: {e}"[:300]

@@ -129,8 +129,8 @@ def test_the_drain_stops_at_the_timeout(monkeypatch, tmp_path):
     cmd = f"{PY} loop.py && echo done"
     try:
         out = _run(cmd, timeout=1)
-        assert out == (f"Error executing run_command: Command '{cmd}' timed "
-                       f"out after 1 seconds"), out
+        assert out == (f"Error executing run_command: TimeoutExpired: Command "
+                       f"'{cmd}' timed out after 1 seconds"), out
         deadline = time.monotonic() + 10
         while not (tmp_path / "loop.ended").exists() and time.monotonic() < deadline:
             time.sleep(0.1)
@@ -148,5 +148,7 @@ def test_a_timeout_is_as_before(monkeypatch, tmp_path):
     _shell(monkeypatch, tmp_path)
     cmd = f"{PY} -c \"import time; time.sleep(5)\""
     out = _run(cmd, timeout=1)
-    assert out == (f"Error executing run_command: Command '{cmd}' timed out "
-                   f"after 1 seconds"), out
+    # The type first since 2026-10-31 (a tool's error is bounded at 300, the
+    # type first, in what the model reads - test_agent_tool_error_bounded.py).
+    assert out == (f"Error executing run_command: TimeoutExpired: Command '{cmd}' "
+                   f"timed out after 1 seconds"), out
