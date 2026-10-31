@@ -18,16 +18,15 @@ literal. Storing the exception object itself is not its words. It does not
 follow a value computed into a plain variable first - the behaviour tests
 below cover the ones that do (the eval row, the judge, the peer record).
 
-FILED, not fixed here: self_check.probe_disk's {"error": str(e)}. The module
-is one text on every surface (the fleet drift check's IDENTICAL set), so its
-change travels with that file's next sync, never alone.
+self_check.probe_disk's {"error": str(e)} was filed here, not fixed, on
+2026-10-31: the module is one text on every surface, so its change travels
+as that file, never alone. It is bounded now, in the same commit as the
+module, and nothing is left filed.
 """
 import ast
 import pathlib
 
 from tests.test_logged_exception_text_bounded import APP, _bounded_slice, _modules, _unbounded
-
-_FILED = {("app/self_check.py", "probe_disk")}
 
 _LONG = "x" * 2000
 
@@ -69,17 +68,11 @@ def _stored_in(src: str, rel: str) -> list[tuple[str, str, int]]:
 
 
 def test_no_exception_text_is_stored_unbounded():
-    found = [f for p in _modules() for f in _stored(p) if f[:2] not in _FILED]
+    found = [f for p in _modules() for f in _stored(p)]
     assert found == [], (
         "exception text stored with no bound - keep "
         "f\"{type(e).__name__}: {e}\"[:300] instead:\n  "
         + "\n  ".join(f"{r}:{line} ({fn})" for r, fn, line in found))
-
-
-def test_the_filed_entry_is_still_there():
-    """When the filed line is fixed, this says so and the entry goes."""
-    found = {f[:2] for p in _modules() for f in _stored(p)}
-    assert _FILED <= found, "the filed store is bounded now - drop it from _FILED"
 
 
 def test_the_scan_flags_a_store_and_leaves_the_bounded_and_the_object():
@@ -167,6 +160,19 @@ def test_a_refused_peer_url_is_recorded_type_first(monkeypatch):
     assert peers.query_peer_kb({"id": "p1", "name": "p", "url": "http://h"}, "q") == []
     assert recorded and recorded[0].startswith("PeerURLRefused: Peer host"), recorded
     assert len(recorded[0]) <= 300
+
+
+def test_the_disk_probe_error_is_bounded_and_typed(monkeypatch):
+    """probe_disk kept {"error": str(e)}, whole and untyped; the detailed
+    health view serves it (2026-10-31)."""
+    from app import self_check
+
+    def _boom(path):
+        raise OSError(_LONG)
+
+    monkeypatch.setattr(self_check.shutil, "disk_usage", _boom)
+    err = self_check.probe_disk("/nowhere")["error"]
+    assert err.startswith("OSError: xxx") and len(err) <= 300, err[:80]
 
 
 def test_the_detailed_health_db_error_is_bounded(client, admin_headers, monkeypatch):

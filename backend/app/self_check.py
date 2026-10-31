@@ -134,7 +134,12 @@ def ollama_model_list(resp) -> list | None:
     Settings Test button and the probe below, so the three cannot disagree
     about whether a URL is Ollama. A wrong base URL answering HTML, another
     service's JSON or an error page is None. Here, in the module every
-    surface carries the same, so each surface's routes share it as is."""
+    surface carries the same, so each surface's routes share it as is.
+
+    And every entry a model with a name (2026-10-31): Ollama always names
+    its models, and any list used to pass, so a list of bare names or of
+    nameless objects read up on the timer and "Connected - n model(s)" on
+    the Test button."""
     if not 200 <= resp.status_code < 300:
         return None
     try:
@@ -142,7 +147,11 @@ def ollama_model_list(resp) -> list | None:
     except ValueError:
         return None
     models = body.get("models") if isinstance(body, dict) else None
-    return models if isinstance(models, list) else None
+    if not isinstance(models, list):
+        return None
+    if not all(isinstance(m, dict) and isinstance(m.get("name"), str) for m in models):
+        return None
+    return models
 
 
 def redis_enabled() -> bool:
@@ -195,7 +204,9 @@ def probe_disk(data_dir: str) -> dict:
     try:
         usage = shutil.disk_usage(data_dir)
     except Exception as e:
-        return {"error": str(e)}
+        # Bounded and typed (2026-10-31): the detailed health view serves it,
+        # and it was the OS's words whole.
+        return {"error": f"{type(e).__name__}: {e}"[:300]}
     pct = round(usage.used / usage.total * 100, 1)
     result = {"used_gb": round(usage.used / 1e9, 2),
               "total_gb": round(usage.total / 1e9, 2),

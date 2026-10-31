@@ -75,6 +75,22 @@ def test_a_real_model_list_reads_up_with_no_alert(fired, models):
     assert out["ok"] is True and fired == []
 
 
+@pytest.mark.parametrize("models", [
+    ["llama3", "mistral"],
+    [{"size": 1}],
+    [{"name": 5}],
+    [{"name": "a"}, "b"],
+], ids=["bare-names", "nameless-object", "name-not-a-string", "one-bad-entry"])
+def test_a_list_whose_entries_are_not_named_models_is_not_ollamas(fired, models):
+    """Every entry must be a model with a name (2026-10-31): Ollama always
+    names its models, and the helper took ANY list, so a list of bare names or
+    of nameless objects read up here, connected on /api/status (whose
+    names line then raised) and "Connected - n model(s)" on the Test button."""
+    assert self_check.ollama_model_list(_Answer(200, {"models": models})) is None
+    out = self_check.probe_ollama(lambda path, timeout: _Answer(200, {"models": models}))
+    assert out["ok"] is False and fired == ["ollama_down"]
+
+
 def test_the_three_readers_share_one_shape_check():
     """/api/status, the Settings Test button and the probe ask the one helper;
     no copy of the shape check is left in either route."""
