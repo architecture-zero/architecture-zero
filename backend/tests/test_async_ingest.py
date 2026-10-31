@@ -358,21 +358,26 @@ def test_a_full_queue_answers_503_and_closes_its_job_row(client, admin_headers,
                                                          monkeypatch):
     """The job row is created before dispatch, so a refusal has to close it.
     Left queued it would describe a document no queue ever accepted - and the
-    next boot's reconcile would report it as interrupted work."""
+    next boot's reconcile would report it as interrupted work.
+
+    The refusal is the real dispatch's, at the cap, so the sentence asserted
+    is the one the code writes (2026-10-30). A stand-in raised a shorter
+    sentence of its own - one the jobs route does not serve as stored."""
     monkeypatch.setattr(jobs, "ENABLE_ASYNC_JOBS", True)
-
-    def _full(*a, **k):
-        raise jobs.JobQueueFull("20 documents already queued")
-
-    monkeypatch.setattr(jobs, "dispatch_ingest", _full)
+    jobs._PENDING = jobs.ASYNC_JOB_MAX_QUEUED   # the autouse fixture puts it back
     r = client.post("/api/ingest/upload",
                     files={"file": ("late.md", b"Body.", "text/plain")},
                     data={"department": "general"}, headers=admin_headers)
     assert r.status_code == 503, r.text
-    assert "queue is full" in r.json()["detail"].lower()
+    n = jobs.ASYNC_JOB_MAX_QUEUED
+    said = f"{n} documents already queued (ASYNC_JOB_MAX_QUEUED={n})"
+    assert r.json()["detail"] == f"Ingest queue is full: {said}"
     row = next(j for j in jobs.list_jobs(limit=200) if j["source"] == "late.md")
     assert row["status"] == "failed"
     assert row["completed_at"]
+    # The row's refusal is one of the sentences the jobs route serves as
+    # stored (jobs.served_job_error), not the generic one.
+    assert row["error"] == said
 
 
 def test_jobs_endpoint_reports_posture_not_just_rows(client, admin_headers):
