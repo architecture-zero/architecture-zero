@@ -64,6 +64,8 @@ from app.runtime_config import (_config_or_default, DEFAULT_MODEL, RAG_ONLY_MODE
                                 _output_filter, _pii_receipt, OutputFilter,
                                 _SAFETY_RULES, _NON_OWNER_RULES, _GROUNDING_RULES,
                                 _CONTEXT_DATA_RULES, _NO_WEB_NOTICE,
+                                _TOOL_RESULTS_DATA_RULE,
+                                data_rules_tool_results_on,
                                 _all_origins, _allow_all)
 
 logger = logging.getLogger(__name__)
@@ -999,6 +1001,12 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
     # context.
     if caller_level < OWNER_LEVEL:
         system_content += _NON_OWNER_RULES
+    # Tool results are data (2026-10-30; dormant): a TAIL notice under the
+    # per-call key, so the cached core above is byte-identical off or on. The
+    # eval runner and the injection probe append it under the same key, after
+    # the tier block as here, so a measured run sees this prompt.
+    if data_rules_tool_results_on():
+        system_content += _TOOL_RESULTS_DATA_RULE
     if not use_rag:
         system_content += _RAG_OFF_NOTICE
     # The reply's room and the request's cap, one figure (2026-10-29): a

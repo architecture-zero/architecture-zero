@@ -531,13 +531,20 @@ def _answer(question: str, context: str, model_override: str) -> str:
     """
     from app.runtime_config import (_GROUNDING_RULES, _SAFETY_RULES,
                                     _CONTEXT_DATA_RULES, _NO_WEB_NOTICE,
+                                    _TOOL_RESULTS_DATA_RULE,
+                                    data_rules_tool_results_on,
                                     RAG_ONLY_MODE, DEFAULT_MODEL,
                                     _config_or_default)
     from app.config import get_system_prompt
     from app.providers import stream_chat
 
-    system = (get_system_prompt() + _GROUNDING_RULES + _SAFETY_RULES
-              + _CONTEXT_DATA_RULES + _NO_WEB_NOTICE)
+    core = (get_system_prompt() + _GROUNDING_RULES + _SAFETY_RULES
+            + _CONTEXT_DATA_RULES + _NO_WEB_NOTICE)
+    # The tool-results rule rides as the chat's keyed tail (2026-10-30,
+    # routers/chat.py): a probe run with the key on must measure the prompt
+    # the chat sends, the core still the cache prefix. Off, `system` is the
+    # core, byte for byte, as before.
+    system = core + (_TOOL_RESULTS_DATA_RULE if data_rules_tool_results_on() else "")
     if context:
         if RAG_ONLY_MODE:
             user = ("Answer the question using ONLY the context below. "
@@ -555,7 +562,7 @@ def _answer(question: str, context: str, model_override: str) -> str:
     msgs = [{"role": "system", "content": system},
             {"role": "user", "content": user}]
     try:
-        return "".join(stream_chat(msgs, model, system_prompt=system,
+        return "".join(stream_chat(msgs, model, system_prompt=core,
                                    max_tokens=700))
     except Exception as e:
         return f"[ERROR: {e}]"

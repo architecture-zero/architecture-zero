@@ -31,7 +31,8 @@ from app.runtime_config import (_config_or_default, RAG_ONLY_MODE,
                                 EVAL_JUDGE_MODEL_DEFAULT, _output_filter,
                                 _SAFETY_RULES, _NON_OWNER_RULES,
                                 _GROUNDING_RULES, _CONTEXT_DATA_RULES,
-                                _NO_WEB_NOTICE)
+                                _NO_WEB_NOTICE, _TOOL_RESULTS_DATA_RULE,
+                                data_rules_tool_results_on)
 
 EVAL_SEED_PATH         = os.getenv("EVAL_SEED_PATH", "")
 
@@ -347,6 +348,12 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
             _q_level = q.get("as_level")
             system_prompt = base_system_prompt + (
                 _NON_OWNER_RULES if _q_level is not None and _q_level < OWNER_LEVEL else "")
+            # The tool-results rule (2026-10-30; dormant) rides the eval's
+            # uncached tail under the SAME key the chat reads, after the tier
+            # block as the chat appends it, read per question as the chat
+            # reads it per turn - or a run would measure a different prompt.
+            if data_rules_tool_results_on():
+                system_prompt += _TOOL_RESULTS_DATA_RULE
             retrieved_sources: list[str] = []
             retrieved: list[dict] = []
             context = ""
