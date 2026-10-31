@@ -14,7 +14,7 @@ from app.rag_config import (
     EMBED_MODEL, VECTOR_WEIGHT, BM25_WEIGHT, BM25_K1, BM25_B, BM25_FETCH,
     RECENCY_HALF_LIFE_DAYS, RECENCY_FLOOR,
     HNSW_SYNC_THRESHOLD, HNSW_BATCH_SIZE, RERANK_FETCH,
-    derive_trust,
+    derive_trust, department_key,
 )
 
 log = logging.getLogger("database")
@@ -158,8 +158,10 @@ def _collection_name(department: str | None = None) -> str:
     has the rest)."""
     if not department:
         return GLOBAL_COLLECTION
-    # Sanitize: lowercase, replace spaces/special chars with underscore
-    safe = re.sub(r"[^a-z0-9_-]", "_", department.lower())
+    # Sanitize: lowercase, replace spaces/special chars with underscore - in
+    # rag_config.department_key since 2026-10-31, so the clearance floor is
+    # looked up by the same key the collection is named by.
+    safe = department_key(department)
     if safe == "general":
         return GLOBAL_COLLECTION
     return f"kb_{safe}"

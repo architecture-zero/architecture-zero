@@ -7,10 +7,11 @@ docs - the numbers cannot drift because they are never hand-copied into prose.
 Values stay env-overridable (a deploy can tune without a code change); the
 default is the canonical documented reference.
 
-Deliberately dependency-free (only `os`) so an offline doc generator can
-import it without pulling chromadb / fastembed / requests.
+Deliberately dependency-free (only `os` and `re`) so an offline doc
+generator can import it without pulling chromadb / fastembed / requests.
 """
 import os
+import re
 
 
 def _env_set(name: str, default: str) -> set[str]:
@@ -130,13 +131,30 @@ DEPARTMENT_DEFAULT_MIN_LEVEL = 3  # fail-closed: an unlisted department is Owner
 FLOOR_DEPARTMENTS: list[str] = ["restricted"]
 
 
+def department_key(department: str | None) -> str:
+    """The sanitized name a department's collection is keyed by - the ONE
+    derivation (database._collection_name calls it; "general" is the global
+    collection): lowercased, every character outside [a-z0-9_-] an
+    underscore. "Sales" and "sales" key one collection; " general" and
+    "sales team" key others."""
+    return re.sub(r"[^a-z0-9_-]", "_", (department or "").lower())
+
+
 def department_min_level(department: str | None) -> int:
     """Minimum clearance level to retrieve from `department`. None / "general"
     is the shared floor (0). Unrecognized departments fail closed to
-    Owner-only."""
-    if not department or department == "general":
+    Owner-only.
+
+    Looked up by the collection the name keys (2026-10-31): the raw spelling
+    was compared, so with "sales" listed an account stored in "Sales" - the
+    same collection - read the Owner-only default, while the KB write check,
+    which compares collections, let it write there. Two listed spellings of
+    one collection take the higher floor (fail closed)."""
+    key = department_key(department)
+    if not department or key == "general":
         return DEPARTMENT_MIN_LEVEL["general"]
-    return DEPARTMENT_MIN_LEVEL.get(department, DEPARTMENT_DEFAULT_MIN_LEVEL)
+    levels = [lvl for name, lvl in DEPARTMENT_MIN_LEVEL.items() if department_key(name) == key]
+    return max(levels) if levels else DEPARTMENT_DEFAULT_MIN_LEVEL
 
 
 # Source -> department mapping. Lives HERE (not in main) on purpose: retrieval
