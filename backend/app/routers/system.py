@@ -326,17 +326,22 @@ def health_detailed(current_user: dict = Depends(require_owner)):
         result["db_ms"] = None
         result["db_error"] = str(e)
 
-    # Provider health
+    # Provider health. The toggles and keys are the ones saved in Settings,
+    # through the reader the chat, the picker and the Settings tab use
+    # (providers.get_provider_config: the saved value, then the environment).
+    # Until 2026-10-31 the OpenAI and Anthropic rows read ENABLE_OPENAI /
+    # ENABLE_ANTHROPIC and the key from the environment alone, so a provider
+    # turned on in Settings had no row here, one turned off kept its row, and
+    # a key saved in Settings read as missing.
     providers = []
-    _enable_openai    = os.getenv("ENABLE_OPENAI",    "false").lower() == "true"
-    _enable_anthropic = os.getenv("ENABLE_ANTHROPIC", "false").lower() == "true"
+    _cfg = get_provider_config()
 
     if ollama_enabled():
         providers.append(probe_ollama(_ollama_get))
-    if _enable_openai:
-        providers.append({"name": "openai", "ok": bool(os.getenv("OPENAI_API_KEY")), "latency_ms": None})
-    if _enable_anthropic:
-        providers.append({"name": "anthropic", "ok": bool(os.getenv("ANTHROPIC_API_KEY")), "latency_ms": None})
+    if "openai" in _cfg["enabled_providers"]:
+        providers.append({"name": "openai", "ok": _cfg["openai_configured"], "latency_ms": None})
+    if "anthropic" in _cfg["enabled_providers"]:
+        providers.append({"name": "anthropic", "ok": _cfg["anthropic_configured"], "latency_ms": None})
     # Keyed registry providers ("ok" = key present, same semantic as openai
     # above).
     for _name in OPENAI_COMPAT:
