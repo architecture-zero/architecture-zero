@@ -547,7 +547,7 @@ def sync_system_records() -> dict:
         snap = _snapshot()
     except Exception as e:
         log_error("system_records_snapshot_failed", error=f"{type(e).__name__}: {e}"[:300])
-        return {"snapshot": {"status": "error", "error": str(e)}}
+        return {"snapshot": {"status": "error", "error": f"{type(e).__name__}: {e}"[:300]}}
 
     out: dict = {}
     for source, builder in ((POSTURE_SOURCE, build_posture),
@@ -557,5 +557,5 @@ def sync_system_records() -> dict:
             out[source] = _ingest(source, builder(snap))
         except Exception as e:
             log_error("system_record_failed", source=source, error=f"{type(e).__name__}: {e}"[:300])
-            out[source] = {"status": "error", "error": str(e)}
+            out[source] = {"status": "error", "error": f"{type(e).__name__}: {e}"[:300]}
     return out

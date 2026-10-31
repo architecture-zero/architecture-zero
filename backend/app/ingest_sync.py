@@ -451,9 +451,9 @@ def _sync_knowledge_dir(force: bool = True) -> dict:
             # The server cannot parse this type (2026-10-29): skipped, the
             # file's rows and fingerprint left as they are for a build with
             # the library to read. _read_watched logged the library.
-            results[rel] = {"status": "skipped", "reason": str(e)}
+            results[rel] = {"status": "skipped", "reason": str(e)[:300]}
         except Exception as e:
-            results[rel] = {"status": "error", "error": str(e)}
+            results[rel] = {"status": "error", "error": f"{type(e).__name__}: {e}"[:300]}
     # Prune knowledge sources whose file is gone. The watcher removes a deleted
     # file's chunks only while it runs, so a file deleted while the backend was
     # down kept serving with nothing left to remove it - the job _sync_docs's
@@ -474,7 +474,7 @@ def _sync_knowledge_dir(force: bool = True) -> dict:
         if pr.get("skipped"):
             results["knowledge/_prune"] = {"status": "skipped", "reason": pr["skipped"]}
     except Exception as e:
-        results["knowledge/_prune"] = {"status": "error", "error": str(e)}
+        results["knowledge/_prune"] = {"status": "error", "error": f"{type(e).__name__}: {e}"[:300]}
         log_error("knowledge_orphan_prune_failed", error=f"{type(e).__name__}: {e}"[:300])
     return results
 
@@ -707,9 +707,9 @@ def _sync_docs(force: bool = True) -> dict:
             # held: a textless file of this name below is no reason to
             # remove the rows this one's last read wrote.
             synced.add(f"docs/{p.name}")
-            results[f"docs/{p.name}"] = {"status": "skipped", "reason": str(e)}
+            results[f"docs/{p.name}"] = {"status": "skipped", "reason": str(e)[:300]}
         except Exception as e:
-            results[f"docs/{p.name}"] = {"status": "error", "error": str(e)}
+            results[f"docs/{p.name}"] = {"status": "error", "error": f"{type(e).__name__}: {e}"[:300]}
     # A file there without text is gone for the index (2026-10-29) - after
     # the walk: docs/ sources are keyed by file name, and a source another
     # file of that name synced above is not gone.
@@ -721,7 +721,7 @@ def _sync_docs(force: bool = True) -> dict:
             if removed:
                 results[source] = {"status": "pruned", "chunks": removed}
         except Exception as e:
-            results[source] = {"status": "error", "error": str(e)}
+            results[source] = {"status": "error", "error": f"{type(e).__name__}: {e}"[:300]}
     # Prune orphaned docs/ sources (deleted files whose chunks linger).
     try:
         # Summed per source, as the knowledge sync's prune entries are
@@ -737,7 +737,7 @@ def _sync_docs(force: bool = True) -> dict:
         # removing documentation that was DELETED from disk but is still
         # retrievable - so a silent failure leaves the assistant answering from
         # files the operator believes are gone, and says nothing.
-        results["docs/_prune"] = {"status": "error", "error": str(e)}
+        results["docs/_prune"] = {"status": "error", "error": f"{type(e).__name__}: {e}"[:300]}
         log_error("docs_orphan_prune_failed", error=f"{type(e).__name__}: {e}"[:300])
     return results
 

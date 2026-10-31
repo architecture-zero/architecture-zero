@@ -258,7 +258,7 @@ def admin_release_quarantine(item_id: int,
             with get_session() as db:
                 r = db.get(QuarantinedDoc, item_id)
                 if r:
-                    r.release_error = str(e)[:500]
+                    r.release_error = f"{type(e).__name__}: {e}"[:300]
             # The caller gets the fixed sentence below, never the store's
             # words (file paths among them); the log gets those words bounded
             # to 300, the one rule for an internal error's detail (2026-10-30).

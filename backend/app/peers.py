@@ -306,7 +306,8 @@ def _record_failure(peer_id: str, error: str):
     failures = h.get("consecutive_failures", 0) + 1
     h["consecutive_failures"] = failures
     h["last_failure_at"]      = time.time()
-    h["last_error"]           = error
+    # Bounded at the one writer (2026-10-31): the peer panel serves it.
+    h["last_error"]           = (error or "")[:300]
     h["total_queries"]        = h.get("total_queries", 0) + 1
     h["total_errors"]         = h.get("total_errors", 0) + 1
     if failures >= _CB_THRESHOLD:
@@ -387,7 +388,7 @@ def query_peer_kb(peer: dict, query: str, n_results: int = 8, timeout: int = 10)
         # Counts as a peer failure so the breaker opens on a row that will
         # never be fetchable, instead of re-resolving it on every chat.
         log.warning("peer '%s' refused: %s", name, f"{type(e).__name__}: {e}"[:300])
-        _record_failure(peer_id, str(e))
+        _record_failure(peer_id, f"{type(e).__name__}: {e}"[:300])
         return []
     if ip is None:
         # An ordinary outage, not a security refusal: nothing to connect to,

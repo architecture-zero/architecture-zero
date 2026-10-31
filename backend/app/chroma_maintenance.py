@@ -422,16 +422,19 @@ def run_chroma_maintenance(
     clears ingest fingerprints those syncs then act on. Never raises."""
     client = client or _default_client
     target = collection_metadata()
+    # Every error kept in this summary is the exception's type first and 300
+    # characters (2026-10-31): the summary is logged whole at boot
+    # (main.py), so a store's words here were a log line's words unbounded.
     summary: dict = {"orphans_before": {}, "collections": {}, "orphans_after": {}}
     try:
         summary["orphans_before"] = purge_orphan_segments(chroma_path)
     except Exception as e:
-        summary["orphans_before"] = {"error": str(e)}
+        summary["orphans_before"] = {"error": f"{type(e).__name__}: {e}"[:300]}
         log.error("orphan segment purge failed: %s", f"{type(e).__name__}: {e}"[:300])
     try:
         names = [c.name for c in client.list_collections()]
     except Exception as e:
-        summary["error"] = f"list_collections failed: {e}"
+        summary["error"] = "list_collections failed: " + f"{type(e).__name__}: {e}"[:300]
         log.error("chroma maintenance could not list collections: %s", f"{type(e).__name__}: {e}"[:300])
         return summary
     # Consume the flag only once the collection list is in hand. Consuming it
@@ -450,7 +453,7 @@ def run_chroma_maintenance(
                 name, target, clear_fingerprints, client,
                 force_rebuild=name in forced)
         except Exception as e:
-            summary["collections"][name] = {"status": "error", "error": str(e)}
+            summary["collections"][name] = {"status": "error", "error": f"{type(e).__name__}: {e}"[:300]}
             log.error("chroma maintenance FAILED for %s: %s", name, f"{type(e).__name__}: {e}"[:300])
     # Second sweep: a rebuild above deletes a collection, and delete_collection
     # strands its metadata rows and vector directory - collect that debris in
@@ -458,7 +461,7 @@ def run_chroma_maintenance(
     try:
         summary["orphans_after"] = purge_orphan_segments(chroma_path)
     except Exception as e:
-        summary["orphans_after"] = {"error": str(e)}
+        summary["orphans_after"] = {"error": f"{type(e).__name__}: {e}"[:300]}
         log.error("post-rebuild orphan purge failed: %s", f"{type(e).__name__}: {e}"[:300])
     # ...and evict the cached segment instances the same behaviour leaves
     # behind, or this boot's own shutdown flush fails against purged dirs.
@@ -466,6 +469,6 @@ def run_chroma_maintenance(
         summary["stale_instances"] = _drop_stale_segment_instances(
             client, chroma_path)
     except Exception as e:
-        summary["stale_instances"] = {"error": str(e)}
+        summary["stale_instances"] = {"error": f"{type(e).__name__}: {e}"[:300]}
         log.error("stale instance eviction failed: %s", f"{type(e).__name__}: {e}"[:300])
     return summary

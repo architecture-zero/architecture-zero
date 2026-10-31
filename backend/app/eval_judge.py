@@ -477,7 +477,7 @@ def _run_judge(system: str, user: str, model: str) -> tuple[int | None, str]:
                 tokens.append(t)
             raw = "".join(tokens)
         except Exception as e:
-            return None, f"[judge error: {e}]"
+            return None, "[judge error: " + f"{type(e).__name__}: {e}"[:300] + "]"
         verdict = _parse_verdict(raw)
         if verdict is not None:
             return (1 if verdict["pass"] else 0), verdict["rationale"]

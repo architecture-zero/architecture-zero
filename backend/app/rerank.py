@@ -295,7 +295,7 @@ def _get_encoder(model: str | None = None):
                      if name in _CUSTOM_MODELS else _CACHE_DIR)
             enc = TextCrossEncoder(model_name=name, cache_dir=cache)
         except Exception as e:
-            _load_errors[name] = repr(e)
+            _load_errors[name] = f"{type(e).__name__}: {e}"[:300]
             log.warning("reranker load failed (%s), falling back to no-rerank: %s", name, f"{type(e).__name__}: {e}"[:300])
             return None
         evicted = [k for k in _encoders if k != name]
@@ -311,9 +311,9 @@ def status() -> dict:
     """Observable health check: does the provider in effect actually score,
     and does it rank? 'loaded' means the same thing on every arm - THIS
     provider scored a two-doc self-test here, now (a clearly relevant snippet
-    must outscore an irrelevant one). Unavailable providers report WHY (load
-    error verbatim, missing url, closed latch, missing key NAME - never a
-    value)."""
+    must outscore an irrelevant one). Unavailable providers report WHY (the
+    load error, its type first and 300 characters since 2026-10-31; missing
+    url, closed latch, missing key NAME - never a value)."""
     provider = rerank_provider()
     model = rerank_model()
     info = {"enabled": rerank_enabled(), "provider": provider, "model": model,
@@ -344,7 +344,7 @@ def status() -> dict:
         info["self_test"] = {"scores": [round(float(s), 3) for s in scores],
                              "ranks_correct": scores[0] > scores[1]}
     except Exception as e:
-        info["error"] = f"rerank call failed: {e!r}"
+        info["error"] = "rerank call failed: " + f"{type(e).__name__}: {e}"[:300]
     return info
 
 

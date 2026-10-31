@@ -324,7 +324,8 @@ def health_detailed(current_user: dict = Depends(require_owner)):
         result["db_ms"] = round((_time.perf_counter() - t0) * 1000, 2)
     except Exception as e:
         result["db_ms"] = None
-        result["db_error"] = str(e)
+        # The driver's words, type first and bounded (2026-10-31).
+        result["db_error"] = f"{type(e).__name__}: {e}"[:300]
 
     # Provider health. The toggles and keys are the ones saved in Settings,
     # through the reader the chat, the picker and the Settings tab use

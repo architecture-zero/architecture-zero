@@ -307,7 +307,10 @@ def test_a_refused_or_failed_prune_is_reported_not_swallowed(kdir, deletions, mo
 
     monkeypatch.setattr(ingest_mod, "list_file_sources", unreadable)
     res = ingest_mod._sync_knowledge_dir(force=True)
-    assert res["knowledge/_prune"] == {"status": "error", "error": "index unavailable"}
+    # The error kept in a sync result is the exception's type first, bounded
+    # to 300 (2026-10-31; POST /api/kb/sync answers it).
+    assert res["knowledge/_prune"] == {"status": "error",
+                                       "error": "RuntimeError: index unavailable"}
     assert res["faq.md"]["status"] == "ok"   # the files still synced
 
 

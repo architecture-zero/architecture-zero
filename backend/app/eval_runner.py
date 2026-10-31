@@ -570,7 +570,7 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                         if "429" in str(e) and attempt == 0:
                             time.sleep(65)
                             continue
-                        response = f"[ERROR: {e}]"
+                        response = "[ERROR: " + f"{type(e).__name__}: {e}"[:300] + "]"
                         break
                 time.sleep(10)
 
@@ -705,7 +705,7 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
         # before it goes, then let it propagate to the thread's logger.
         st = _eval_runs.setdefault(run_id, {})
         st["failed"] = True
-        st["error"] = str(e)[:500]
+        st["error"] = f"{type(e).__name__}: {e}"[:300]
         log_error("eval_run_crashed", run_id=run_id, error=f"{type(e).__name__}: {e}"[:300])
         raise
     finally:
