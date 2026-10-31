@@ -284,12 +284,25 @@ def admin_delete_quarantine(item_id: int,
                             current_user: dict = Depends(require_permission("manage_kb"))):
     """Discard held content - it was never indexed, so this just marks the
     review row deleted (the text is retained for audit unless purged). A row
-    above the caller's level answers as absent, matching the listing."""
+    the caller cannot read answers as absent, matching the listing.
+
+    A discard is a write (2026-10-31): it decides, for a department, that the
+    held content never enters it. So below the Owner it takes the write check
+    the upload, the ingest and the source delete take - until that day it
+    took the read axis alone, which was the clearance level, and an Admin in
+    one shared department discarded another's held upload. The Owner, who
+    writes anywhere, is not asked: the check's reserved-name refusal guards
+    the index, and a discard writes only this review row, so a row held in
+    that name before it was reserved can still be cleared."""
     from app.models import QuarantinedDoc
+    from app.permissions import is_owner
     with get_session() as db:
         row = db.get(QuarantinedDoc, item_id)
         if not row or not _clears_department(current_user, row.department):
             raise HTTPException(status_code=404, detail="No quarantine item with that id.")
+        if not is_owner(current_user):
+            _check_department_write(current_user, row.department or "general",
+                                    action="discard from")
         row.status = "deleted"
         row.reviewed_at = _dt.datetime.utcnow().isoformat()
     log("quarantine_deleted", quarantine_id=item_id, admin_id=current_user["id"])
