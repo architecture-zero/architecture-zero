@@ -52,6 +52,7 @@ ids mean the chunks that did land are skipped rather than re-embedded.
 """
 import hashlib
 import os
+import re
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -85,6 +86,31 @@ class JobQueueFull(Exception):
 # their own sentences below.
 INGEST_JOB_FAILED = "The document could not be indexed. See the server log."
 INGEST_WORKER_CRASHED = "The ingest worker crashed. See the server log."
+INGEST_JOB_INTERRUPTED = "interrupted by a restart - re-upload to retry"
+
+# What GET /api/admin/jobs serves from a row's error (2026-10-30): a sentence
+# this module or the upload route writes today, else the generic sentence
+# below. A row failed BEFORE the fixed sentences above keeps the words it was
+# stored with - str(e), "worker crashed: <e>" - and the route served the
+# column as stored. Read side on purpose: the stored row is never rewritten.
+# A quarantine hold carries its review id, a full queue's refusal its counts
+# (JobQueueFull in dispatch_ingest, written by the upload route).
+INGEST_JOB_ERROR_NOT_SHOWN = "The job failed. See the server log."
+_SERVED_JOB_ERRORS = re.compile("|".join((
+    re.escape(INGEST_JOB_FAILED),
+    re.escape(INGEST_WORKER_CRASHED),
+    re.escape(INGEST_JOB_INTERRUPTED),
+    r"quarantined for review \(id [\w-]+\)",
+    r"\d+ documents already queued \(ASYNC_JOB_MAX_QUEUED=\d+\)",
+)))
+
+
+def served_job_error(stored: str | None) -> str | None:
+    """A row's error as the jobs route may serve it: as stored when it is one
+    of the sentences the code writes, the generic sentence otherwise."""
+    if not stored:
+        return stored
+    return stored if _SERVED_JOB_ERRORS.fullmatch(stored) else INGEST_JOB_ERROR_NOT_SHOWN
 
 
 def async_enabled() -> bool:
@@ -173,7 +199,7 @@ def list_jobs(limit: int = 100) -> list[dict]:
                 "department": r.department,
                 "chunks_processed": r.chunks_processed,
                 "chunks_total": r.chunks_total,
-                "error": r.error,
+                "error": served_job_error(r.error),
                 "created_at": r.created_at,
                 "completed_at": r.completed_at,
             }
@@ -199,7 +225,7 @@ def reconcile_orphaned_jobs() -> dict:
             _update(IngestJob)
             .where(IngestJob.status.in_(("queued", "running")))
             .values(status="failed", completed_at=now,
-                    error="interrupted by a restart - re-upload to retry")
+                    error=INGEST_JOB_INTERRUPTED)
         )
         s.commit()
         return {"orphaned_jobs_failed": res.rowcount or 0}
