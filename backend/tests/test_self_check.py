@@ -158,8 +158,9 @@ def test_the_timer_runs_the_pass_with_no_reader(monkeypatch):
     monkeypatch.setattr(self_check, "SELF_CHECK_INTERVAL_SECONDS", 0.01)
     monkeypatch.setattr(self_check, "run_self_check", lambda *a: runs.append(a) or {})
     _drive()
-    # The fifth is the retrieval-lane probe (AZ-02): none wired in this call.
-    assert len(runs) >= 2 and runs[0] == (".", None, None, ("backup", "drill"), None)
+    # The fifth is the retrieval-lane probe (AZ-02), the sixth the startup
+    # hook's own rule for Ollama (2026-10-31): none wired in this call.
+    assert len(runs) >= 2 and runs[0] == (".", None, None, ("backup", "drill"), None, None)
 
 
 def test_a_crashing_pass_does_not_stop_the_timer(monkeypatch):

@@ -14,8 +14,9 @@ checks.
 
 What it watches is decided by the deployment's startup hook, which passes it
 in: the data volume's disk use always; Ollama through the given reader while
-Ollama is on in Settings (None: not watched here; the toggle is read every
-pass - ollama_enabled says why); and the backup job's
+Ollama is on in Settings and the hook's own rule, if it passed one, holds -
+watching_ollama, asked every pass (None: not watched here; the toggle is read
+every pass - ollama_enabled says why); and the backup job's
 and the restore drill's heartbeats through the given status reader - the same
 function a public /api/backup-status probe serves, so the alarm and the probe
 cannot disagree (None: this deployment's backups are watched elsewhere).
@@ -109,6 +110,20 @@ def ollama_enabled() -> bool:
     boot holds from the next pass."""
     from app.providers import get_provider_config
     return "ollama" in get_provider_config()["enabled_providers"]
+
+
+def watching_ollama(ollama_get, ollama_watched=None) -> bool:
+    """Whether a pass watches Ollama, decided now: the startup hook passed a
+    reader, Ollama is on in Settings, and the hook's own rule - when it passed
+    one - holds. The ONE decision (2026-10-31): the timer asks it at boot and
+    every pass, and a route that probes Ollama beside the timer can ask it
+    too, so the two cannot disagree. The rule is a callable asked each time,
+    so a deployment that watches Ollama only under a condition of its own (the
+    saved URL is a server it runs, say) needs no copy of this module, and a
+    URL saved after boot holds from the next pass. No rule: exactly the reader
+    and the toggle, as before."""
+    return (ollama_get is not None and ollama_enabled()
+            and (ollama_watched is None or bool(ollama_watched())))
 
 
 def ollama_model_list(resp) -> list | None:
@@ -417,10 +432,15 @@ def _note(failing: list) -> None:
 
 
 def run_self_check(data_dir: str, ollama_get=None, backup_state=None,
-                   backup_kinds=("backup", "drill"), rag_probe=None) -> dict:
-    """One pass of every probe this deployment watches; the log says what changed."""
+                   backup_kinds=("backup", "drill"), rag_probe=None,
+                   ollama_watched=None) -> dict:
+    """One pass of every probe this deployment watches; the log says what changed.
+
+    `ollama_watched` is the startup hook's own rule for Ollama, asked this
+    pass through watching_ollama (None: no rule beyond the reader and the
+    Settings toggle)."""
     result = {"disk": probe_disk(data_dir)}
-    if ollama_get is not None and ollama_enabled():
+    if watching_ollama(ollama_get, ollama_watched):
         result["ollama"] = probe_ollama(ollama_get)
     if redis_enabled():
         result["redis"] = probe_redis()
@@ -469,13 +489,17 @@ async def _boot_lane_pass(rag_probe, interval: float) -> None:
 
 
 async def self_check_loop(data_dir: str, ollama_get=None, backup_state=None,
-                          backup_kinds=("backup", "drill"), rag_probe=None) -> None:
+                          backup_kinds=("backup", "drill"), rag_probe=None,
+                          ollama_watched=None) -> None:
     """The timer. Started from the startup hook; the probes run off the event
-    loop (a blocking disk or HTTP read must never stall a request)."""
+    loop (a blocking disk or HTTP read must never stall a request). Whether
+    Ollama is watched is decided here for the boot and again by every pass,
+    which is handed the hook's rule (2026-10-31)."""
     global _rag_wired, _ollama_wired, _redis_wired, _started_at
     _rag_wired, _started_at = rag_probe is not None, time.time()
-    # The saved toggle is a database read, so off the event loop (2026-10-30).
-    _ollama_wired = ollama_get is not None and await asyncio.to_thread(ollama_enabled)
+    # The saved toggle is a database read, and the hook's rule may read it
+    # too, so the boot's decision is made off the event loop (2026-10-30).
+    _ollama_wired = await asyncio.to_thread(watching_ollama, ollama_get, ollama_watched)
     _redis_wired = redis_enabled()
     interval = SELF_CHECK_INTERVAL_SECONDS
     if interval <= 0:
@@ -491,14 +515,15 @@ async def self_check_loop(data_dir: str, ollama_get=None, backup_state=None,
             await asyncio.sleep(interval)
             try:
                 found = await asyncio.to_thread(run_self_check, data_dir, ollama_get,
-                                                backup_state, backup_kinds, rag_probe)
+                                                backup_state, backup_kinds, rag_probe,
+                                                ollama_watched)
             except Exception as e:
                 log_error("self_check_crashed", error=str(e)[:300])
             else:
-                # The pass read the saved toggle; the health routes' word for
-                # Ollama follows it (2026-10-30) - skipped once it is turned
-                # off in Settings, watched once it is turned on, never the
-                # boot's reading for the life of the process.
+                # The pass read the saved toggle and the hook's rule; the
+                # health routes' word for Ollama follows it (2026-10-30) -
+                # skipped once either says no, watched once both say yes,
+                # never the boot's reading for the life of the process.
                 _ollama_wired = "ollama" in (found or {})
     finally:
         if boot is not None:
