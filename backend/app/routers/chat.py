@@ -1002,8 +1002,9 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
     # context.
     if caller_level < OWNER_LEVEL:
         system_content += _NON_OWNER_RULES
-    # Tool results are data (2026-10-30; dormant): a TAIL notice under the
-    # per-call key, so the cached core above is byte-identical off or on. The
+    # Tool results are data (2026-10-30; on unless the key reads off since
+    # 2026-10-31): a TAIL notice under the per-call key, so the cached core
+    # above is byte-identical off or on. The
     # eval runner and the injection probe append it under the same key, after
     # the tier block as here, so a measured run sees this prompt.
     if data_rules_tool_results_on():

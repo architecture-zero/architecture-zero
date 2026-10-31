@@ -348,7 +348,7 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
             _q_level = q.get("as_level")
             system_prompt = base_system_prompt + (
                 _NON_OWNER_RULES if _q_level is not None and _q_level < OWNER_LEVEL else "")
-            # The tool-results rule (2026-10-30; dormant) rides the eval's
+            # The tool-results rule (2026-10-30; on by default 2026-10-31) rides the eval's
             # uncached tail under the SAME key the chat reads, after the tier
             # block as the chat appends it, read per question as the chat
             # reads it per turn - or a run would measure a different prompt.

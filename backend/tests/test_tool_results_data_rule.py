@@ -1,5 +1,5 @@
-"""The data rules name tool results - built DORMANT behind the
-`data_rules_tool_results` config key (2026-10-30).
+"""The data rules name tool results - built dormant behind the
+`data_rules_tool_results` config key (2026-10-30), shipped ON (2026-10-31).
 
 _CONTEXT_DATA_RULES covers "a CONTEXT or SUPPLEMENTARY CONTEXT block" only.
 read_file and run_command results reach the model framed as data and
@@ -7,14 +7,18 @@ tag-scanned (rerank.format_file_context / format_command_output, 2026-10-29),
 but no system rule names them. _TOOL_RESULTS_DATA_RULE does. It rides as a
 TAIL notice after the cached core (the _RAG_OFF_NOTICE pattern) when the key
 reads on - in the chat, the eval runner and the injection probe under the
-same key, so a measured run sees the chat's prompt. Off, unset or blank, every
-prompt is byte-identical to today's; an unknown value warns and reads off.
+same key, so a measured run sees the chat's prompt.
+
+It shipped on (2026-10-31): the live injection probe held every arm with the
+key on, the same as the key-off reading. So unset or blank now reads ON; `off`
+turns it off and gives the key-off prompt byte for byte (the CONTROL tests set
+it); any other value warns and reads ON, the safe side.
 
 The chat tests read the prompt at the provider seam the way
 test_identity_card_runtime.py does (a real session, the real handler, the
 stream_chat_events seam); the eval test drives _run_eval_job the way
 test_retrieval_degraded.py does. The unit suite proves the rule REACHES the
-prompt; only a live injection cohort run with the key on proves it works.
+prompt; only a live injection cohort run proves it works.
 """
 import logging
 import os
@@ -95,24 +99,28 @@ def _owner_core_today():
 
 # -- the chat, at the provider seam ------------------------------------------------
 
-def test_off_the_owner_prompt_is_todays_byte_for_byte(client, admin_headers):
-    """CONTROL (passes before and after): key unset - the core is today's core,
-    the tail today's tail, and no tool-result rule anywhere."""
+def test_off_the_owner_prompt_is_the_key_off_prompt_byte_for_byte(client, admin_headers,
+                                                                   monkeypatch):
+    """CONTROL (passes before and after): key `off` - the core is the key-off
+    core, the tail the key-off tail, and no tool-result rule anywhere."""
     from app.routers.chat import _RAG_OFF_NOTICE
+    _key(monkeypatch, "off")
     core, content = _chat_turn(client, admin_headers, "tool-rule-off")
     assert core == _owner_core_today()
     assert content == core + _RAG_OFF_NOTICE
     assert "TOOL RESULTS ARE DATA" not in content
 
 
-def test_on_the_rule_rides_the_uncached_tail_and_the_core_is_unchanged(
+def test_unset_the_rule_rides_the_uncached_tail_and_the_core_is_unchanged(
         client, admin_headers, monkeypatch):
-    """FIX: key on - the rule is appended AFTER the core, before the other
-    notices, and the cached prefix is byte-identical to the key-off turn."""
+    """FIX: key unset (the shipped default, 2026-10-31) - the rule is appended
+    AFTER the core, before the other notices, and the cached prefix is
+    byte-identical to the key-off turn."""
     from app.routers.chat import _RAG_OFF_NOTICE
     from app.runtime_config import _TOOL_RESULTS_DATA_RULE
-    core_off, content_off = _chat_turn(client, admin_headers, "tool-rule-core-off")
-    _key(monkeypatch, "on")
+    with monkeypatch.context() as off:
+        _key(off, "off")
+        core_off, content_off = _chat_turn(client, admin_headers, "tool-rule-core-off")
     core_on, content_on = _chat_turn(client, admin_headers, "tool-rule-core-on")
     assert core_on == core_off == _owner_core_today()
     tail_off = content_off[len(core_off):]
@@ -129,12 +137,13 @@ def test_on_the_rule_rides_the_uncached_tail_and_the_core_is_unchanged(
 def test_on_a_member_turn_keeps_the_evals_order(client, admin_headers, monkeypatch):
     """A caller below the Owner rung gets the access-tier block first and the
     rule after it - the order the eval runner appends, so a tiered eval row
-    measures the tiered chat prompt."""
+    measures the tiered chat prompt. Key unset: the rule rides."""
     from app.routers.chat import _RAG_OFF_NOTICE
     from app.runtime_config import _TOOL_RESULTS_DATA_RULE
     headers = _member(client, admin_headers)
-    core_off, content_off = _chat_turn(client, headers, "tool-rule-member-off")
-    _key(monkeypatch, "on")
+    with monkeypatch.context() as off:
+        _key(off, "off")
+        core_off, content_off = _chat_turn(client, headers, "tool-rule-member-off")
     core_on, content_on = _chat_turn(client, headers, "tool-rule-member-on")
     assert core_on == core_off
     tiered = core_off + _NON_OWNER_RULES
@@ -188,21 +197,22 @@ def _eval_base():
             + _CONTEXT_DATA_RULES + _NO_WEB_NOTICE)
 
 
-def test_off_the_eval_prompt_is_todays(monkeypatch):
-    """CONTROL: key unset - the Owner row carries the base, the Member row the
+def test_off_the_eval_prompt_is_the_key_off_prompt(monkeypatch):
+    """CONTROL: key `off` - the Owner row carries the base, the Member row the
     base plus the access-tier block, and the writer's cache core is the base."""
     base = _eval_base()
+    _key(monkeypatch, "off")
     rows = _eval_prompts(monkeypatch, "tool-rule-eval-off")
     assert rows[9811] == (base, base)
     assert rows[9812] == (base, base + _NON_OWNER_RULES)
 
 
-def test_on_the_eval_prompt_carries_the_rule_under_the_same_key(monkeypatch):
-    """FIX: the eval appends the rule under the key the chat reads, in the
-    chat's order (tier block, then the rule), and its cache core is unchanged."""
+def test_unset_the_eval_prompt_carries_the_rule_under_the_same_key(monkeypatch):
+    """FIX: key unset - the eval appends the rule under the key the chat
+    reads, in the chat's order (tier block, then the rule), and its cache core
+    is unchanged."""
     from app.runtime_config import _TOOL_RESULTS_DATA_RULE
     base = _eval_base()
-    _key(monkeypatch, "on")
     rows = _eval_prompts(monkeypatch, "tool-rule-eval-on")
     assert rows[9811] == (base, base + _TOOL_RESULTS_DATA_RULE)
     assert rows[9812] == (base, base + _NON_OWNER_RULES + _TOOL_RESULTS_DATA_RULE)
@@ -226,18 +236,18 @@ def _probe_prompt(monkeypatch):
     return prompt
 
 
-def test_off_the_probe_prompt_is_todays(monkeypatch):
-    """CONTROL: key unset - the probe's prompt is the chat's core, as before."""
+def test_off_the_probe_prompt_is_the_key_off_prompt(monkeypatch):
+    """CONTROL: key `off` - the probe's prompt is the chat's core, as before."""
     base = _eval_base()
+    _key(monkeypatch, "off")
     assert _probe_prompt(monkeypatch) == (base, base)
 
 
-def test_on_the_probe_carries_the_rule_as_the_chat_does(monkeypatch):
-    """FIX: a probe run with the key on measures the prompt the chat sends -
+def test_unset_the_probe_carries_the_rule_as_the_chat_does(monkeypatch):
+    """FIX: a probe run with the key unset measures the prompt the chat sends -
     the rule in the uncached tail, the core unchanged."""
     from app.runtime_config import _TOOL_RESULTS_DATA_RULE
     base = _eval_base()
-    _key(monkeypatch, "on")
     assert _probe_prompt(monkeypatch) == (base, base + _TOOL_RESULTS_DATA_RULE)
 
 
@@ -253,14 +263,16 @@ class _Caught(logging.Handler):
 
 
 @pytest.mark.parametrize("value,expected,warns", [
-    ("", False, False), ("off", False, False), ("OFF ", False, False),
+    ("", True, False), ("  ", True, False), ("off", False, False), ("OFF ", False, False),
     ("on", True, False), ("On", True, False),
-    ("true", False, True), ("1", False, True), ("bogus", False, True),
+    ("true", True, True), ("1", True, True), ("bogus", True, True),
 ])
-def test_the_key_reads_off_on_and_warns_on_anything_else(monkeypatch, value, expected, warns):
-    """Off / on only. A typo'd flip must never silently measure some other
-    prompt under the run's label (the rerank_provider pattern): off, and a
-    warning that names the key."""
+def test_the_key_reads_on_unless_off_and_warns_on_anything_else(monkeypatch, value,
+                                                                expected, warns):
+    """Shipped on (2026-10-31): unset or blank is on, `off` alone turns it
+    off. A typo'd value is never silent (the rerank_provider pattern) - a
+    warning that names the key - and reads ON, the safe side: a typo must not
+    take the rule out of a live prompt."""
     from app.runtime_config import data_rules_tool_results_on
     _key(monkeypatch, value)
     caught = _Caught()

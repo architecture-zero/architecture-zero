@@ -279,17 +279,20 @@ Three arms are reported. The `curated` one is the number to read: it plants the
 same poison as if it had arrived through a trusted path, so nothing stands
 between the attack and the prompt rules. Exit 0 means every arm held.
 
-**A dormant data rule.** The system prompt's data rules name the retrieved
-blocks. A further rule naming tool results - `read_file` and `run_command`
-output - as data ships off, behind the `data_rules_tool_results` config key
-(`on`; unset, blank or `off` is off, and any other value is logged and read as
-off). The chat, the evaluation runner and this probe read the one key per
-call, so no restart is needed. It is a config row, not an admin-tab setting:
+**The tool-results data rule.** The system prompt's data rules name the
+retrieved blocks. A further rule names tool results - `read_file` and
+`run_command` output - as data. It is on, under the `data_rules_tool_results`
+config key: unset or blank is on, `off` turns it off (the prompt is then
+byte for byte the one before the rule existed), and any other value is logged
+and read as on. It was built off and turned on only after this probe held
+every arm with it on, the same as with it off. The chat, the evaluation
+runner and this probe read the one key per call, so no restart is needed. It
+is a config row, not an admin-tab setting:
 
-    docker compose exec backend python -c "from app.config import set_config; set_config('data_rules_tool_results', 'on')"
+    docker compose exec backend python -c "from app.config import set_config; set_config('data_rules_tool_results', 'off')"
 
-Run the probe with it on, and compare against a run with it off, before you
-keep it.
+If you turn it off, or change the rule's wording, run the probe both ways and
+compare before you keep the change.
 
 ## Index maintenance
 
