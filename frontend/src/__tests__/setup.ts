@@ -10,3 +10,10 @@ import '@testing-library/jest-dom'
 if (!Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = function scrollIntoView() { /* no layout in jsdom */ }
 }
+
+// findBy* and waitFor give up after Testing Library's own 1 s by default, below
+// vitest's 20 s testTimeout above: on a loaded CI runner a refusal that renders
+// in 80 ms on a workstation took over 1 s and failed a gate whose code was
+// green 12 minutes earlier (2026-10-31). 5 s still fails a wait that never ends.
+import { configure } from '@testing-library/react'
+configure({ asyncUtilTimeout: 5000 })
