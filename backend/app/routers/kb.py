@@ -296,7 +296,17 @@ def _check_department_write(current_user: dict, department: str,
     from app.permissions import is_owner
     if is_owner(current_user):
         return
-    if department not in ("general", current_user.get("department")):
+    # Compared as the collections they name (2026-10-31), the one derivation
+    # the index keys a department by (database._collection_name): "Finance
+    # Team", "finance team" and the listing's label "finance_team" are one
+    # collection, and every spelling of "general" is the global one. Compared
+    # as typed, an account stored in "Finance Team" was refused a delete from
+    # its own department as the listing names it. Spellings that key different
+    # collections (" general", "finance-team") still differ, so nothing past
+    # the caller's own collection and the global one opens.
+    from app.database import _collection_name
+    allowed = {_collection_name("general"), _collection_name(current_user.get("department"))}
+    if _collection_name(department) not in allowed:
         raise HTTPException(status_code=403, detail=f"Not permitted to {action} department: {department}")
 
 
