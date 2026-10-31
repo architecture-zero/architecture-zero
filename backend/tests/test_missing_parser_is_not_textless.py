@@ -238,4 +238,5 @@ def test_control_the_upload_answers_a_corrupt_pdf_with_its_422():
         kb._ingest_upload("a.pdf", "pdf", b"not a pdf at all", "general",
                           {"id": 1, "role": "admin"})
     assert raised.value.status_code == 422
-    assert raised.value.detail.startswith("Failed to extract text: "), raised.value.detail
+    # The fixed sentence since 2026-10-31; the parser's words are logged.
+    assert raised.value.detail == kb.EXTRACT_FAILED_DETAIL, raised.value.detail

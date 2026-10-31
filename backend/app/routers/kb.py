@@ -50,6 +50,10 @@ router = APIRouter()
 
 
 MAX_UPLOAD_MB                = int(os.getenv("MAX_UPLOAD_MB", "50"))
+# What the upload answers for a file of a handled type whose text could not
+# be read (2026-10-31); the parser's words go to the log only.
+EXTRACT_FAILED_DETAIL = ("Failed to extract text from this file. "
+                         "The details are in the server's log.")
 # Read granularity for uploads. Bounds how far past MAX_UPLOAD_MB a rejected
 # body can push memory: at most one chunk beyond the limit, not the whole file.
 _UPLOAD_CHUNK_BYTES          = 1024 * 1024
@@ -660,7 +664,11 @@ def _ingest_upload(name: str, ext: str, data: bytes, department: str,
                       error=f"{type(e).__name__}: {e}"[:300])
             raise HTTPException(status_code=500,
                                 detail=PARSER_MISSING_DETAIL.format(ext=ext))
-        raise HTTPException(status_code=422, detail=f"Failed to extract text: {e}")
+        # A fixed sentence (2026-10-31): the detail carried the parser's own
+        # words after "Failed to extract text: ". They go to the log, bounded.
+        log_error("ingest_extract_failed", source=name, ext=ext,
+                  error=f"{type(e).__name__}: {e}"[:300])
+        raise HTTPException(status_code=422, detail=EXTRACT_FAILED_DETAIL)
 
     # Injection gate: scan the FULL document text BEFORE chunking (a payload
     # spanning a chunk boundary must not dodge the scan, and the caller must

@@ -111,7 +111,12 @@ def resolve_peer_url(url: str, require_resolution: bool = True) -> tuple[str, st
                                    proto=socket.IPPROTO_TCP)
     except socket.gaierror as e:
         if require_resolution:
-            raise PeerURLRefused(f"Peer host '{host}' does not resolve: {e}")
+            # The refusal is this code's sentence (2026-10-31): the peer
+            # routes answer it, and it carried the resolver's words. They go
+            # to the log, bounded.
+            log.warning("peer host %r does not resolve: %s", host[:100],
+                        f"{type(e).__name__}: {e}"[:300])
+            raise PeerURLRefused(f"Peer host '{host}' does not resolve")
         return raw, None
     ips: list[str] = []
     for info in infos:
