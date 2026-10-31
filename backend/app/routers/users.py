@@ -47,6 +47,33 @@ def get_users(current_user: dict = Depends(require_permission("manage_users"))):
     return {"users": safe}
 
 
+def _refuse_create_beyond_creator(current_user: dict, role: str, department: str) -> None:
+    """The create door's ceiling below the Owner (2026-10-31).
+
+    With manage_users alone, a holder below the Owner created an account in
+    ANY department with a password of its choosing, signed in as it and read
+    that department through the chat - the widening the department change
+    door was closed against, through the create door. So: the creator's own
+    department or the shared one, compared as the collections the names key
+    (database._collection_name, the KB write check's comparison) - an account
+    in the shared department reads only what every account reads. And never
+    a role above the creator's own rung (a Member holding manage_users minted
+    an Admin), nor one whose preset holds a scope the creator does not (an
+    Admin the Owner narrowed minted the preset it was denied): the permission
+    door's rule, can_grant, on the role's preset."""
+    from app.database import _collection_name
+    from app.permissions import ROLE_LEVELS, can_grant, effective_level
+    if ROLE_LEVELS[role] > effective_level(current_user):
+        raise HTTPException(status_code=403, detail="Cannot create an account above your own role")
+    refusal = can_grant(current_user, None, ROLE_PERMISSIONS[role])
+    if refusal:
+        raise HTTPException(status_code=403, detail=refusal)
+    allowed = {_collection_name("general"), _collection_name(current_user.get("department"))}
+    if _collection_name(department) not in allowed:
+        raise HTTPException(status_code=403,
+                            detail="Only an Owner can create an account in another department")
+
+
 @router.post("/api/users")
 def add_user(request: CreateUserRequest, current_user: dict = Depends(require_permission("manage_users"))):
     from app.permissions import is_owner
@@ -66,6 +93,8 @@ def add_user(request: CreateUserRequest, current_user: dict = Depends(require_pe
     # must not be able to escalate anyone (incl. itself) to superuser.
     if request.role == "owner" and not is_owner(current_user):
         raise HTTPException(status_code=403, detail="Only an Owner can create an Owner")
+    if not is_owner(current_user):
+        _refuse_create_beyond_creator(current_user, request.role, request.department)
     errors = validate_password(request.password)
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))
