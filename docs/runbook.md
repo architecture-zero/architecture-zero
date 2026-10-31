@@ -32,8 +32,9 @@ override was added; the README carries the same note).
    Ollama word is `pending`: the first full pass comes one
    `SELF_CHECK_INTERVAL_SECONDS` after boot (300 s by default), and then it
    says `connected`, or `degraded` / `unreachable` if the CHAT endpoint is
-   not up, which a cloud-only deployment can ignore (`ENABLE_OLLAMA=false`
-   reads `skipped`). It says nothing about the embedder: that is a separate
+   not up, which a cloud-only deployment can ignore (Ollama turned off in
+   Settings - or `ENABLE_OLLAMA=false` where nothing is saved there - reads
+   `skipped` from the next pass). It says nothing about the embedder: that is a separate
    endpoint (`EMBED_BASE`, model `nomic-embed-text`) and it is required no
    matter which provider answers chat. Without it the instance still boots
    and `/api/health` reports healthy, every ingest fails, and a question
@@ -519,7 +520,11 @@ per-check cooldown (`ALERT_COOLDOWN_SECONDS`, an hour by default). So
 alert with nobody signed in. Before the timer the alerts fired only when an
 Owner read the detailed route - the Monitoring tab's load and its 30-second
 refresh - and a 2026-09-29 rehearsal sent nothing for five minutes with
-Ollama stopped. `SELF_CHECK_BACKUP=false` leaves the heartbeats out, for a
+Ollama stopped. The Ollama probe counts Ollama as up only when its URL
+answers with Ollama's model list - the test `/api/status` and the Settings
+tab's Test button use - so a wrong URL answering a web page alerts as well,
+and it watches Ollama while Ollama is on in Settings, read every pass.
+`SELF_CHECK_BACKUP=false` leaves the heartbeats out, for a
 deployment that backs up some other way. The timer lives inside the process
 it watches, so it cannot report that process being down: point an outside
 monitor at the routes that need no session, and each says a different

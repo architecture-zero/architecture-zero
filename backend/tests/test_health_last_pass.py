@@ -23,7 +23,12 @@ _BOUND = 2 * 300 + 60   # two intervals and a minute, at the 300 s interval
 
 
 class _Tags:
+    # Up is Ollama's model list since 2026-10-30, not any 200
+    # (self_check.ollama_model_list).
     status_code = 200
+
+    def json(self):
+        return {"models": []}
 
 
 class _Redis:

@@ -12,9 +12,10 @@ and the same per-key cooldown (app.alerting). The detailed route calls the
 same probes, so what an Owner sees on the Monitoring tab is what the timer
 checks.
 
-What it watches is decided once, by the deployment's startup hook, which
-passes it in: the data volume's disk use always; Ollama through the given
-reader when Ollama is enabled (None: not watched here); and the backup job's
+What it watches is decided by the deployment's startup hook, which passes it
+in: the data volume's disk use always; Ollama through the given reader while
+Ollama is on in Settings (None: not watched here; the toggle is read every
+pass - ollama_enabled says why); and the backup job's
 and the restore drill's heartbeats through the given status reader - the same
 function a public /api/backup-status probe serves, so the alarm and the probe
 cannot disagree (None: this deployment's backups are watched elsewhere).
@@ -99,7 +100,34 @@ _INSTANCE_NAME = os.getenv("VITE_INSTANCE_NAME", "Architecture Zero")
 
 
 def ollama_enabled() -> bool:
-    return os.getenv("ENABLE_OLLAMA", "true").lower() == "true"
+    """Whether Ollama is on: the toggle saved in Settings, through the one
+    reader the chat, the picker and the Settings tab use
+    (providers.get_provider_config: the saved value, then ENABLE_OLLAMA).
+    Until 2026-10-30 this read ENABLE_OLLAMA alone, so an operator who turned
+    Ollama off in Settings still got ollama_down alerts, and one who turned
+    it on got no watch. Read every pass, never cached: a toggle saved after
+    boot holds from the next pass."""
+    from app.providers import get_provider_config
+    return "ollama" in get_provider_config()["enabled_providers"]
+
+
+def ollama_model_list(resp) -> list | None:
+    """Ollama's model list from an answer to GET /api/tags, or None when the
+    answer is not Ollama's: a 2xx whose body is an object carrying a "models"
+    list - an empty list included (an Ollama with nothing pulled yet is
+    reachable). The ONE shape check (2026-10-30) behind /api/status, the
+    Settings Test button and the probe below, so the three cannot disagree
+    about whether a URL is Ollama. A wrong base URL answering HTML, another
+    service's JSON or an error page is None. Here, in the module every
+    surface carries the same, so each surface's routes share it as is."""
+    if not 200 <= resp.status_code < 300:
+        return None
+    try:
+        body = resp.json()
+    except ValueError:
+        return None
+    models = body.get("models") if isinstance(body, dict) else None
+    return models if isinstance(models, list) else None
 
 
 def redis_enabled() -> bool:
@@ -164,20 +192,31 @@ def probe_disk(data_dir: str) -> dict:
 
 
 def probe_ollama(ollama_get) -> dict:
-    """Ollama's model list within 3 s, and the alert when it does not answer.
-    Recorded for the health routes, unless a pass that started later already
-    was (R-AZ-02)."""
+    """Ollama's model list within 3 s, and the alert when it does not answer
+    or answers with something else. Recorded for the health routes, unless a
+    pass that started later already was (R-AZ-02).
+
+    Up means Ollama's model list (ollama_model_list), not any HTTP 200
+    (2026-10-30): the body went unread, so a wrong base URL answering HTML
+    read up, and the alert fired only when the request raised."""
     global _ollama_last
     ticket, started = _ticket()
     try:
         t0 = time.perf_counter()
         r = ollama_get("/api/tags", timeout=3)
-        result = {"name": "ollama", "ok": r.status_code == 200,
+        ok = ollama_model_list(r) is not None
+        result = {"name": "ollama", "ok": ok,
                   "latency_ms": round((time.perf_counter() - t0) * 1000, 2)}
     except Exception:
+        r = None
+        result = {"name": "ollama", "ok": False, "latency_ms": None}
+    if r is None:
         fire_alert("ollama_down", f"Ollama unreachable - {_INSTANCE_NAME}",
                    "Ollama did not respond within 3s. Chat will fail for Ollama models.")
-        result = {"name": "ollama", "ok": False, "latency_ms": None}
+    elif not result["ok"]:
+        fire_alert("ollama_down", f"Ollama unreachable - {_INSTANCE_NAME}",
+                   f"Ollama's URL answered HTTP {r.status_code} without a model "
+                   "list. Chat will fail for Ollama models.")
     with _record_lock:
         recorded = _claim("ollama", ticket)
         if recorded:
@@ -435,7 +474,8 @@ async def self_check_loop(data_dir: str, ollama_get=None, backup_state=None,
     loop (a blocking disk or HTTP read must never stall a request)."""
     global _rag_wired, _ollama_wired, _redis_wired, _started_at
     _rag_wired, _started_at = rag_probe is not None, time.time()
-    _ollama_wired = ollama_get is not None and ollama_enabled()
+    # The saved toggle is a database read, so off the event loop (2026-10-30).
+    _ollama_wired = ollama_get is not None and await asyncio.to_thread(ollama_enabled)
     _redis_wired = redis_enabled()
     interval = SELF_CHECK_INTERVAL_SECONDS
     if interval <= 0:
@@ -450,10 +490,16 @@ async def self_check_loop(data_dir: str, ollama_get=None, backup_state=None,
         while True:
             await asyncio.sleep(interval)
             try:
-                await asyncio.to_thread(run_self_check, data_dir, ollama_get, backup_state,
-                                        backup_kinds, rag_probe)
+                found = await asyncio.to_thread(run_self_check, data_dir, ollama_get,
+                                                backup_state, backup_kinds, rag_probe)
             except Exception as e:
                 log_error("self_check_crashed", error=str(e)[:300])
+            else:
+                # The pass read the saved toggle; the health routes' word for
+                # Ollama follows it (2026-10-30) - skipped once it is turned
+                # off in Settings, watched once it is turned on, never the
+                # boot's reading for the life of the process.
+                _ollama_wired = "ollama" in (found or {})
     finally:
         if boot is not None:
             boot.cancel()

@@ -179,7 +179,12 @@ def test_ollamas_record_keeps_the_same_order(monkeypatch, lane):
     gate, started = threading.Event(), threading.Event()
 
     class _Answered:
+        # Up is Ollama's model list since 2026-10-30, not any 200
+        # (self_check.ollama_model_list).
         status_code = 200
+
+        def json(self):
+            return {"models": []}
 
     def older_get(path, timeout=None):
         started.set()
