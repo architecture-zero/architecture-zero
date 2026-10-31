@@ -152,7 +152,8 @@ def _rebuild_chat_sessions_unique():
             print("chat_sessions: rebuilt with per-owner unique", flush=True)
         except Exception as exc:
             conn.rollback()
-            print("chat_sessions unique rebuild FAILED: %s" % exc, flush=True)
+            err = f"{type(exc).__name__}: {exc}"[:300]
+            print("chat_sessions unique rebuild FAILED: %s" % err, flush=True)
 
 
 def sweep_fk_orphans() -> dict:
@@ -308,7 +309,8 @@ def expire_pre_update_copies(now: float | None = None) -> dict:
                 print(f"pre-update copy deleted: {name} - older than "
                       f"PRE_UPDATE_COPY_KEEP_DAYS ({PRE_UPDATE_COPY_KEEP_DAYS})", flush=True)
             except OSError as e:
-                print(f"pre-update copy: could not delete {path} ({e})", flush=True)
+                err = f"{type(e).__name__}: {e}"[:300]
+                print(f"pre-update copy: could not delete {path} ({err})", flush=True)
         else:
             out["held"].append(name)
             until = time.strftime("%Y-%m-%d", time.gmtime(taken + PRE_UPDATE_COPY_KEEP_DAYS * 86400))
@@ -369,7 +371,8 @@ def take_pre_update_copy() -> str | None:
             os.remove(os.path.join(dest_dir, old))
         return dest
     except Exception as e:
-        print(f"pre-update copy: could not write it ({e})", flush=True)
+        err = f"{type(e).__name__}: {e}"[:300]
+        print(f"pre-update copy: could not write it ({err})", flush=True)
         return None
 
 

@@ -344,7 +344,7 @@ def check_peer_health(url: str, timeout: int = 5) -> bool:
         finally:
             _release(r)
     except PeerURLRefused as e:
-        log.warning("peer health check refused: %s", e)
+        log.warning("peer health check refused: %s", f"{type(e).__name__}: {e}"[:300])
         return False
     except Exception:
         return False
@@ -386,7 +386,7 @@ def query_peer_kb(peer: dict, query: str, n_results: int = 8, timeout: int = 10)
     except PeerURLRefused as e:
         # Counts as a peer failure so the breaker opens on a row that will
         # never be fetchable, instead of re-resolving it on every chat.
-        log.warning("peer '%s' refused: %s", name, e)
+        log.warning("peer '%s' refused: %s", name, f"{type(e).__name__}: {e}"[:300])
         _record_failure(peer_id, str(e))
         return []
     if ip is None:

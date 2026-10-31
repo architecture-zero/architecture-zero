@@ -331,7 +331,7 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                     _inj_planted = True
                     log("eval_injection_plant", run_id=run_id, chunks=_n)
                 except Exception as e:
-                    log("eval_injection_plant_error", run_id=run_id, error=str(e))
+                    log("eval_injection_plant_error", run_id=run_id, error=f"{type(e).__name__}: {e}"[:300])
             question_text = q["question"]
             # Multi-turn cohort: scripted prior turns replayed as history.
             # setup None = single-turn, byte-identical behavior.
@@ -388,7 +388,7 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                     # recall miss. The row records the outage instead (below),
                     # and the run goes on.
                     log_error("eval_retrieval_unavailable", run_id=run_id,
-                              question_id=q.get("id"), error=str(e))
+                              question_id=q.get("id"), error=f"{type(e).__name__}: {e}"[:300])
                     retrieval_down = True
                     context_results = []
                 if context_results:
@@ -706,7 +706,7 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
         st = _eval_runs.setdefault(run_id, {})
         st["failed"] = True
         st["error"] = str(e)[:500]
-        log_error("eval_run_crashed", run_id=run_id, error=str(e))
+        log_error("eval_run_crashed", run_id=run_id, error=f"{type(e).__name__}: {e}"[:300])
         raise
     finally:
         # complete=True belongs in the finally, not at the end of the try. A
@@ -729,7 +729,7 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
             from app.trust_panel import clear_trust_cache
             clear_trust_cache()
         except Exception as _e:   # cache hygiene never kills the run's exit
-            log_error("trust_cache_clear_failed", run_id=run_id, error=str(_e))
+            log_error("trust_cache_clear_failed", run_id=run_id, error=f"{type(_e).__name__}: {_e}"[:300])
         if _inj_planted:
             # A leftover plant moves the corpus fingerprint AND leaves live
             # poison in chat retrieval - clean even if the run died.
@@ -738,7 +738,7 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                 residual = cleanup_general()
                 log("eval_injection_cleanup", run_id=run_id, residual=residual)
             except Exception as e:
-                log("eval_injection_cleanup_error", run_id=run_id, error=str(e))
+                log("eval_injection_cleanup_error", run_id=run_id, error=f"{type(e).__name__}: {e}"[:300])
 _RAG_METRICS_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "rag_metrics.json")
 
 

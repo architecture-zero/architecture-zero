@@ -79,7 +79,9 @@ def test_a_flush_that_raises_does_not_fail_the_backup(monkeypatch, data_dir, lin
 
     monkeypatch.setattr(database, "flush_vector_segments", flush)
     assert admin.run_backup(current_user=_OWNER)["status"] == "completed"
-    assert ("ERROR", "backup_chroma_flush_failed", {"error": "segment manager unreachable"}) in lines
+    # The type first, bounded to 300 (2026-10-31: every logged exception).
+    assert ("ERROR", "backup_chroma_flush_failed",
+            {"error": "RuntimeError: segment manager unreachable"}) in lines
     assert any(n.endswith("data_level0.bin") for n in _archived(data_dir))
 
 

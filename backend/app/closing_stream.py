@@ -57,4 +57,4 @@ class ClosingStreamingResponse(StreamingResponse):
         except Exception as exc:
             # A cleanup that fails must not replace the response's own outcome;
             # the operator reads it here.
-            log_error("stream_close_failed", error=str(exc))
+            log_error("stream_close_failed", error=f"{type(exc).__name__}: {exc}"[:300])

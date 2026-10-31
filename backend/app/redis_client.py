@@ -46,7 +46,7 @@ def get_redis():
         log.info("Redis connected: %s", url)
         _client = client
     except Exception as exc:
-        log.warning("Redis unavailable (%s) - falling back to in-memory/DB", exc)
+        log.warning("Redis unavailable (%s) - falling back to in-memory/DB", f"{type(exc).__name__}: {exc}"[:300])
         _client = None
 
     return _client

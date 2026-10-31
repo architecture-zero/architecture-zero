@@ -58,7 +58,7 @@ def _email(subject: str, body: str) -> None:
             s.send_message(msg)
         log("alert_email_sent", to=_EMAIL_TO)
     except Exception as e:
-        log_error("alert_email_failed", error=str(e))
+        log_error("alert_email_failed", error=f"{type(e).__name__}: {e}"[:300])
 
 
 _POOL = None

@@ -296,7 +296,7 @@ def _get_encoder(model: str | None = None):
             enc = TextCrossEncoder(model_name=name, cache_dir=cache)
         except Exception as e:
             _load_errors[name] = repr(e)
-            log.warning("reranker load failed (%s), falling back to no-rerank: %s", name, e)
+            log.warning("reranker load failed (%s), falling back to no-rerank: %s", name, f"{type(e).__name__}: {e}"[:300])
             return None
         evicted = [k for k in _encoders if k != name]
         globals()["_encoders"] = {name: enc}
@@ -372,7 +372,7 @@ def rerank(query: str, candidates: list[dict], top_k: int | None = None,
     try:
         scores = _score(provider, query, texts)
     except Exception as e:
-        log.warning("rerank (%s) failed: %s", provider, e)
+        log.warning("rerank (%s) failed: %s", provider, f"{type(e).__name__}: {e}"[:300])
         scores = None
     # FALLBACK CHAIN: a failed or unavailable NON-local provider degrades to
     # the LOCAL encoder before giving up - slower, never dumber. A napping GPU
@@ -384,7 +384,7 @@ def rerank(query: str, candidates: list[dict], top_k: int | None = None,
         try:
             scores = _score_local(query, texts)
         except Exception as e:
-            log.warning("local rerank fallback failed too: %s", e)
+            log.warning("local rerank fallback failed too: %s", f"{type(e).__name__}: {e}"[:300])
             scores = None
     if scores is None:
         served = "none"

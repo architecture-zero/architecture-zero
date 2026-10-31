@@ -151,7 +151,7 @@ def _save_state(state: dict) -> None:
         p.write_text(json.dumps(state, indent=1, sort_keys=True), encoding="utf-8")
     except Exception as e:
         # A lost state file costs one re-embed at the next boot, nothing else.
-        log.warning("help_docs: state not saved (%s) - every page re-syncs next boot", e)
+        log.warning("help_docs: state not saved (%s) - every page re-syncs next boot", f"{type(e).__name__}: {e}"[:300])
 
 
 def _store_counts() -> dict[str, int]:
@@ -162,7 +162,7 @@ def _store_counts() -> dict[str, int]:
         return {r["source"]: int(r["count"])
                 for r in database.list_sources(department=HELP_DEPARTMENT)}
     except Exception as e:
-        log.warning("help_docs: store unreadable (%s) - every page re-syncs", e)
+        log.warning("help_docs: store unreadable (%s) - every page re-syncs", f"{type(e).__name__}: {e}"[:300])
         return {}
 
 
@@ -212,7 +212,7 @@ def sync(force: bool = False) -> dict:
         try:
             database.flush_vector_segments()
         except Exception as e:
-            log.warning("help_docs: vector flush failed (%s) - the next graceful stop flushes", e)
+            log.warning("help_docs: vector flush failed (%s) - the next graceful stop flushes", f"{type(e).__name__}: {e}"[:300])
     _save_state(seen)
     return {"pages": len(seen), "ingested": ingested, "unchanged": unchanged,
             "removed": removed, "chunks": chunks}

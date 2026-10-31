@@ -467,7 +467,7 @@ def run_backup(current_user: dict = Depends(require_owner)):
         except Exception as e:
             # Never fail a backup over the flush - an unflushed archive still
             # carries every SQLite file correctly, which is most of its value.
-            log_error("backup_chroma_flush_failed", error=str(e))
+            log_error("backup_chroma_flush_failed", error=f"{type(e).__name__}: {e}"[:300])
 
     try:
         for item in os.listdir(_DATA_DIR):

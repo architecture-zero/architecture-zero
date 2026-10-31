@@ -620,7 +620,7 @@ def _needs_setup() -> bool:
     try:
         return not owner_exists()
     except Exception as e:
-        log_error("auth_needs_setup_failed", error=str(e))
+        log_error("auth_needs_setup_failed", error=f"{type(e).__name__}: {e}"[:300])
         return False
 
 

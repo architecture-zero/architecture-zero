@@ -449,7 +449,7 @@ def check_daily_guest_budget(limit: int) -> None:
             # protect. Logged, never silent - a security control that quietly
             # changes scope is the worse failure.
             from app.logger import log_error
-            log_error("guest_budget_redis_degraded", error=str(e))
+            log_error("guest_budget_redis_degraded", error=f"{type(e).__name__}: {e}"[:300])
             count = None
     if count is None:
         # Database fallback: one counter per UTC day, expiring ~25h after its

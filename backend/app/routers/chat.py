@@ -274,9 +274,10 @@ def query_kb_for_peer(req: Request, q: str, n: int = Query(8, ge=1, le=20)):
         # there as a healthy answer; a 503 is recorded as this peer failing,
         # so its breaker learns it. The detail names nothing - the collection
         # names in the error are department names, which this key's scope may
-        # not cover - and the full error goes to this instance's log.
+        # not cover - and the error, its type first and bounded to 300
+        # (2026-10-31), goes to this instance's log.
         increment("retrieval_unavailable_total")
-        log_error("peer_kb_unavailable", scope=scope, error=str(e))
+        log_error("peer_kb_unavailable", scope=scope, error=f"{type(e).__name__}: {e}"[:300])
         raise HTTPException(status_code=503,
                             detail="This instance's knowledge base is unavailable right now.")
     # NOT `level=` - app/logger.py's formatter writes the severity under that
@@ -828,7 +829,7 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
             # about the corpus, made on behalf of a system fault. The turn
             # goes on with no local context (a peer may still answer it); the
             # answer below decides what to say.
-            logger.error("retrieval unavailable for this turn: %s", e)
+            logger.error("retrieval unavailable for this turn: %s", f"{type(e).__name__}: {e}"[:300])
             increment("retrieval_unavailable_total")
             retrieval_down = True
             context_results = []
@@ -1103,7 +1104,7 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
                     )
             except Exception as bookkeeping_error:
                 log_error("chat_bookkeeping_error", session_id=request.session_id,
-                          error=str(bookkeeping_error))
+                          error=f"{type(bookkeeping_error).__name__}: {bookkeeping_error}"[:300])
             yield f"data: {json.dumps({'token': refusal})}\n\n"
             yield "data: [DONE]\n\n"
             return
@@ -1370,17 +1371,19 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
                     pii_out=_pii_receipt(*_pii_rounds)["pii_out_hits"])
             except Exception as bookkeeping_error:
                 log_error("chat_bookkeeping_error", session_id=request.session_id,
-                          error=str(bookkeeping_error))
+                          error=f"{type(bookkeeping_error).__name__}: {bookkeeping_error}"[:300])
             yield "data: [DONE]\n\n"
         except Exception as e:
             increment("chat_errors_total")
-            # The full exception goes to the log, where operators read it. What
+            # The exception goes to the log, where operators read it - its type
+            # first and bounded to 300 (2026-10-31), the rule for every logged
+            # exception (tests/test_logged_exception_text_bounded.py). What
             # crosses the wire is a stable code: str(e) on a provider or DB
             # failure carries connection strings, file paths and internal
             # hostnames, and this stream reaches any authenticated caller.
             error_id = uuid.uuid4().hex[:12]
             log_error("chat_error", session_id=request.session_id,
-                      error_id=error_id, error=str(e))
+                      error_id=error_id, error=f"{type(e).__name__}: {e}"[:300])
             yield f"data: {json.dumps({'error': 'The assistant failed to complete this answer.', 'error_id': error_id})}\n\n"
 
     # When the client goes away mid-answer (Stop, a closed tab), Starlette 0.41

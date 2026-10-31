@@ -94,7 +94,7 @@ def _consume_force_rebuild(chroma_path: str | None = None) -> set:
         log.warning("force-rebuild flag consumed: %s", names)
         return set(names)
     except Exception as e:
-        log.error("force-rebuild flag unreadable, ignoring it: %s", e)
+        log.error("force-rebuild flag unreadable, ignoring it: %s", f"{type(e).__name__}: {e}"[:300])
         return set()
     finally:
         try:
@@ -172,7 +172,7 @@ def _export_embeddings(col) -> tuple[dict, bool]:
         log.warning("embedding export halted for %s at offset %d "
                     "(records past this point count as dead; the index is "
                     "treated as CORRUPT and the rebuild path is forced): %s",
-                    getattr(col, "name", "?"), offset, e)
+                    getattr(col, "name", "?"), offset, f"{type(e).__name__}: {e}"[:300])
     return out, halted
 
 
@@ -373,7 +373,7 @@ def _maintain_collection(name: str, target: dict,
             col.query(query_embeddings=[embs[ids[healthy[0]]]], n_results=1)
         except Exception as e:
             res["status"] = "probe_failed"
-            log.error("post-maintenance knn probe FAILED for %s: %s", name, e)
+            log.error("post-maintenance knn probe FAILED for %s: %s", name, f"{type(e).__name__}: {e}"[:300])
     return res
 
 
@@ -427,12 +427,12 @@ def run_chroma_maintenance(
         summary["orphans_before"] = purge_orphan_segments(chroma_path)
     except Exception as e:
         summary["orphans_before"] = {"error": str(e)}
-        log.error("orphan segment purge failed: %s", e)
+        log.error("orphan segment purge failed: %s", f"{type(e).__name__}: {e}"[:300])
     try:
         names = [c.name for c in client.list_collections()]
     except Exception as e:
         summary["error"] = f"list_collections failed: {e}"
-        log.error("chroma maintenance could not list collections: %s", e)
+        log.error("chroma maintenance could not list collections: %s", f"{type(e).__name__}: {e}"[:300])
         return summary
     # Consume the flag only once the collection list is in hand. Consuming it
     # earlier means a failure to list deletes the operator's request without
@@ -451,7 +451,7 @@ def run_chroma_maintenance(
                 force_rebuild=name in forced)
         except Exception as e:
             summary["collections"][name] = {"status": "error", "error": str(e)}
-            log.error("chroma maintenance FAILED for %s: %s", name, e)
+            log.error("chroma maintenance FAILED for %s: %s", name, f"{type(e).__name__}: {e}"[:300])
     # Second sweep: a rebuild above deletes a collection, and delete_collection
     # strands its metadata rows and vector directory - collect that debris in
     # the same boot that made it.
@@ -459,7 +459,7 @@ def run_chroma_maintenance(
         summary["orphans_after"] = purge_orphan_segments(chroma_path)
     except Exception as e:
         summary["orphans_after"] = {"error": str(e)}
-        log.error("post-rebuild orphan purge failed: %s", e)
+        log.error("post-rebuild orphan purge failed: %s", f"{type(e).__name__}: {e}"[:300])
     # ...and evict the cached segment instances the same behaviour leaves
     # behind, or this boot's own shutdown flush fails against purged dirs.
     try:
@@ -467,5 +467,5 @@ def run_chroma_maintenance(
             client, chroma_path)
     except Exception as e:
         summary["stale_instances"] = {"error": str(e)}
-        log.error("stale instance eviction failed: %s", e)
+        log.error("stale instance eviction failed: %s", f"{type(e).__name__}: {e}"[:300])
     return summary

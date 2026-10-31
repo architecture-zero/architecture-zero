@@ -91,7 +91,7 @@ def _save_ingest_state(state: dict) -> None:
             json.dump(state, f)
         os.replace(tmp, _INGEST_STATE_PATH)
     except Exception as e:
-        logging.getLogger("uvicorn.error").warning("ingest-state save failed: %s", e)
+        logging.getLogger("uvicorn.error").warning("ingest-state save failed: %s", f"{type(e).__name__}: {e}"[:300])
 
 
 def _clear_ingest_fingerprints(sources) -> None:
@@ -475,7 +475,7 @@ def _sync_knowledge_dir(force: bool = True) -> dict:
             results["knowledge/_prune"] = {"status": "skipped", "reason": pr["skipped"]}
     except Exception as e:
         results["knowledge/_prune"] = {"status": "error", "error": str(e)}
-        log_error("knowledge_orphan_prune_failed", error=str(e))
+        log_error("knowledge_orphan_prune_failed", error=f"{type(e).__name__}: {e}"[:300])
     return results
 
 
@@ -738,7 +738,7 @@ def _sync_docs(force: bool = True) -> dict:
         # retrievable - so a silent failure leaves the assistant answering from
         # files the operator believes are gone, and says nothing.
         results["docs/_prune"] = {"status": "error", "error": str(e)}
-        log_error("docs_orphan_prune_failed", error=str(e))
+        log_error("docs_orphan_prune_failed", error=f"{type(e).__name__}: {e}"[:300])
     return results
 
 
@@ -906,4 +906,4 @@ async def _watch_knowledge_dir():
                 await asyncio.get_running_loop().run_in_executor(
                     None, _handle_watched_change, change_type == Change.deleted, p)
             except Exception as e:
-                log_error("kb_file_sync_error", file=str(p), error=str(e))
+                log_error("kb_file_sync_error", file=str(p), error=f"{type(e).__name__}: {e}"[:300])

@@ -84,7 +84,7 @@ def health_ready():
         # /api/health/ready is UNAUTHENTICATED (auth.py EXCLUDED_PATHS) so the
         # monitoring prober can reach it - which makes an interpolated exception
         # disclosure to anyone. Body says pass/fail; detail goes to the log.
-        logging.getLogger("uvicorn.error").error("readiness: db check failed: %s", e)
+        logging.getLogger("uvicorn.error").error("readiness: db check failed: %s", f"{type(e).__name__}: {e}"[:300])
         checks["db"] = "error"
         ready = False
 
@@ -103,7 +103,7 @@ def health_ready():
         from app.boot_history import crash_loop_readiness
         checks["crash_loop"], _loop_failing = crash_loop_readiness()
     except Exception as e:
-        logging.getLogger("uvicorn.error").warning("readiness: crash-loop check unavailable: %s", e)
+        logging.getLogger("uvicorn.error").warning("readiness: crash-loop check unavailable: %s", f"{type(e).__name__}: {e}"[:300])
         checks["crash_loop"], _loop_failing = "unavailable", False  # fail OPEN - never invent an outage
     if _loop_failing:
         ready = False

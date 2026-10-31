@@ -209,7 +209,7 @@ async def _claim_code_on_startup():
         # gate itself intact - verify_setup_claim_code mints on first read, so
         # setup still refuses every caller; it just means nobody was handed the
         # code and the operator needs SETUP_CLAIM_CODE.
-        log_error("setup_claim_gate_crashed", error=str(e))
+        log_error("setup_claim_gate_crashed", error=f"{type(e).__name__}: {e}"[:300])
 
 
 @app.on_event("startup")
@@ -241,7 +241,7 @@ async def _system_prompt_divergence_on_startup():
         else:
             log("system_prompt_source_agrees")
     except Exception as e:
-        log_error("system_prompt_divergence_check_crashed", error=str(e))
+        log_error("system_prompt_divergence_check_crashed", error=f"{type(e).__name__}: {e}"[:300])
 
 
 # The boot's background sync - startup_tasks' _bg task: the SQL-only stages,
@@ -309,7 +309,7 @@ async def startup_tasks():
             # (push=deploy; additive + label updates only, never deletes).
             await asyncio.get_running_loop().run_in_executor(None, sync_eval_questions_from_seed)
         except Exception as e:
-            logging.getLogger("uvicorn.error").warning("eval seed sync on startup failed: %s", e)
+            logging.getLogger("uvicorn.error").warning("eval seed sync on startup failed: %s", f"{type(e).__name__}: {e}"[:300])
         try:
             # Guest retention floor: age out anonymous sessions (0 disables).
             # Guest rows are already content-only; aging them out makes "no
@@ -321,7 +321,7 @@ async def startup_tasks():
                     None, lambda: purge_anonymous_sessions(days))
                 log("guest_retention_purge", days=days, **purged)
         except Exception as e:
-            logging.getLogger("uvicorn.error").warning("guest retention purge failed: %s", e)
+            logging.getLogger("uvicorn.error").warning("guest retention purge failed: %s", f"{type(e).__name__}: {e}"[:300])
         try:
             # Ingest jobs run on a thread in THIS process, so a restart leaves
             # any queued or running row describing work that nothing is doing.
@@ -333,7 +333,7 @@ async def startup_tasks():
                 None, reconcile_orphaned_jobs)
             log("ingest_jobs_reconciled", **orphans)
         except Exception as e:
-            logging.getLogger("uvicorn.error").warning("ingest job reconcile failed: %s", e)
+            logging.getLogger("uvicorn.error").warning("ingest job reconcile failed: %s", f"{type(e).__name__}: {e}"[:300])
 
         # INDEX MAINTENANCE, after the SQL-only stages and BEFORE the syncs.
         # The ordering is load-bearing in both directions: this drops records
@@ -353,7 +353,7 @@ async def startup_tasks():
                 None, lambda: run_chroma_maintenance(_clear_ingest_fingerprints))
             log("chroma_maintenance", **maint)
         except Exception as e:
-            log_error("chroma_maintenance_crashed", error=str(e))
+            log_error("chroma_maintenance_crashed", error=f"{type(e).__name__}: {e}"[:300])
 
         # EMBED-HEAVY syncs (knowledge + docs). These can run for many
         # minutes on a loaded box; _startup_ingest_active stays True across
@@ -365,12 +365,12 @@ async def startup_tasks():
             res = await asyncio.get_running_loop().run_in_executor(None, lambda: _sync_knowledge_dir(force=False))
             _report_sync("knowledge", res)
         except Exception as e:
-            log_error("startup_sync_crashed", stage="knowledge", error=str(e))
+            log_error("startup_sync_crashed", stage="knowledge", error=f"{type(e).__name__}: {e}"[:300])
         try:
             res = await asyncio.get_running_loop().run_in_executor(None, lambda: _sync_docs(force=False))
             _report_sync("docs", res)
         except Exception as e:
-            log_error("startup_sync_crashed", stage="docs", error=str(e))
+            log_error("startup_sync_crashed", stage="docs", error=f"{type(e).__name__}: {e}"[:300])
         # IN-PRODUCT HELP (2026-09-21): the help pages shipped in the image
         # into their reserved collection (app/help_docs.py). Off the request
         # path like the two syncs above; a changed page costs one batch embed,
@@ -401,7 +401,7 @@ async def startup_tasks():
                           note="move these accounts to another department - the help "
                                "pages merge into their normal answers while they stay")
         except Exception as e:
-            log_error("reserved_department_check_crashed", error=str(e))
+            log_error("reserved_department_check_crashed", error=f"{type(e).__name__}: {e}"[:300])
         # Live-system records LAST of the three ingest stages: the corpus record
         # reports source and chunk counts, and those are only true for this boot
         # once both file syncs have finished moving them. Still inside the
@@ -413,7 +413,7 @@ async def startup_tasks():
                 None, sync_system_records)
             _report_sync("system-records", res)
         except Exception as e:
-            log_error("startup_sync_crashed", stage="system-records", error=str(e))
+            log_error("startup_sync_crashed", stage="system-records", error=f"{type(e).__name__}: {e}"[:300])
         # DEPARTMENT-LIST INVARIANT: report residue at every boot, not just
         # when someone happens to call the endpoint. An empty kb_* collection
         # here means some tool created it and cleaned up imperfectly -
@@ -432,7 +432,7 @@ async def startup_tasks():
             else:
                 log("department_residue_clean")
         except Exception as e:
-            log_error("department_residue_check_crashed", error=str(e))
+            log_error("department_residue_check_crashed", error=f"{type(e).__name__}: {e}"[:300])
         # A kb_general from before 2026-10-26 (database.LEGACY_GENERAL_COLLECTION):
         # unreachable and unlisted by construction, so named here or nowhere.
         try:
@@ -442,7 +442,7 @@ async def startup_tasks():
             if n is not None:
                 log_error("legacy_kb_general_found", records=n)
         except Exception as e:
-            log_error("legacy_kb_general_check_crashed", error=str(e))
+            log_error("legacy_kb_general_check_crashed", error=f"{type(e).__name__}: {e}"[:300])
 
         runtime_config._startup_ingest_active = False
         asyncio.create_task(_watch_knowledge_dir())
@@ -496,4 +496,4 @@ async def _flush_chroma_on_shutdown():
         res = flush_vector_segments()
         log("chroma_shutdown_flush", **res)
     except Exception as e:
-        log_error("chroma_shutdown_flush_failed", error=str(e))
+        log_error("chroma_shutdown_flush_failed", error=f"{type(e).__name__}: {e}"[:300])

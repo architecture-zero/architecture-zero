@@ -107,7 +107,7 @@ def flush_vector_segments() -> dict:
     try:
         instances = list(client._server._manager._instances.values())
     except Exception as e:
-        log.warning("flush_vector_segments: cannot reach segment manager: %s", e)
+        log.warning("flush_vector_segments: cannot reach segment manager: %s", f"{type(e).__name__}: {e}"[:300])
         out["errors"] += 1
         return out
     for seg in instances:
@@ -134,7 +134,7 @@ def flush_vector_segments() -> dict:
             out["flushed"] += 1
         except Exception as e:
             out["errors"] += 1
-            log.warning("flush_vector_segments: segment flush failed: %s", e)
+            log.warning("flush_vector_segments: segment flush failed: %s", f"{type(e).__name__}: {e}"[:300])
     return out
 
 
@@ -224,7 +224,7 @@ def _embed(text: str, retries: int = 2, timeout: float = 60) -> list[float]:
             last_err = e
             if attempt < retries:
                 log.warning("embed attempt %d/%d failed, retrying: %s",
-                            attempt + 1, retries + 1, e)
+                            attempt + 1, retries + 1, f"{type(e).__name__}: {e}"[:300])
                 time.sleep(2 * (attempt + 1))
     raise last_err
 
@@ -685,7 +685,7 @@ def _embed_batch(texts: list[str]) -> list[list[float]]:
                     "falling back to per-text embeddings")
     except Exception as e:
         log.warning("_embed_batch: batch endpoint failed (%s); "
-                    "falling back to per-text embeddings", e)
+                    "falling back to per-text embeddings", f"{type(e).__name__}: {e}"[:300])
     return [_embed(t) for t in texts]
 
 
@@ -999,7 +999,7 @@ def _knn(col, embedding: list[float], k: int, include: list[str], caller: str) -
             if k <= 1 or "contigious 2D array" not in str(e):
                 raise
             log.warning("%s: %s knn refused k=%d (%s), retrying k=%d",
-                        caller, getattr(col, "name", "?"), k, e, k // 2)
+                        caller, getattr(col, "name", "?"), k, f"{type(e).__name__}: {e}"[:300], k // 2)
             k //= 2
 
 
@@ -1078,7 +1078,7 @@ def query_similar(query: str, n_results: int = 5,
             # on purpose: the surviving collections returned real candidates,
             # so the answer is narrower rather than wrong.
             failed_collections.append(getattr(col, "name", "?"))
-            log.warning("query_similar: query failed on collection %s: %s", getattr(col, "name", "?"), e)
+            log.warning("query_similar: query failed on collection %s: %s", getattr(col, "name", "?"), f"{type(e).__name__}: {e}"[:300])
             continue
 
         # Full-corpus BM25 leg: union in the top lexical hits the embedding
@@ -1101,7 +1101,7 @@ def query_similar(query: str, n_results: int = 5,
                 all_metas.append(meta)
         except Exception as e:
             log.warning("query_similar: BM25 leg failed on collection %s: %s",
-                        getattr(col, "name", "?"), e)
+                        getattr(col, "name", "?"), f"{type(e).__name__}: {e}"[:300])
 
     # An outage, not an empty corpus, whenever a collection failed and no
     # collection that answered returned a candidate: every one failed, or the
@@ -1184,7 +1184,7 @@ def list_file_sources() -> list[dict]:
             metas = col.get(include=["metadatas"])["metadatas"]
         except Exception as e:
             log.warning("list_file_sources: collection %s unreadable, its sources "
-                        "are not prune candidates: %s", col_name, e)
+                        "are not prune candidates: %s", col_name, f"{type(e).__name__}: {e}"[:300])
             continue
         for meta in metas:
             m = meta or {}
