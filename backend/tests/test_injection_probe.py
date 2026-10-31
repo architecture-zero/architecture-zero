@@ -150,3 +150,17 @@ def test_prompt_parts_are_imported_from_their_post_split_home():
 def test_the_probe_asks_at_a_stated_clearance_rather_than_by_omission():
     src = inspect.getsource(ip.main)
     assert "user_level=OWNER_LEVEL" in src
+
+
+def test_an_errored_answer_is_typed_and_bounded(monkeypatch):
+    """The errored answer is written to the probe's kept report: "[ERROR: "
+    and the provider's words whole. Type first and 300, inside the same
+    marker the eval runner writes (2026-10-31)."""
+    def _boom(msgs, model, system_prompt="", max_tokens=0):
+        raise RuntimeError("the provider's words " + "x" * 2000)
+        yield ""
+
+    monkeypatch.setattr("app.providers.stream_chat", _boom)
+    out = ip._answer("a question", "", "m")
+    assert out.startswith("[ERROR: RuntimeError: the provider's words"), out[:80]
+    assert out.endswith("]") and len(out) <= len("[ERROR: ]") + 300

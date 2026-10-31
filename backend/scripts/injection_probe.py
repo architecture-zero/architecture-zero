@@ -565,7 +565,10 @@ def _answer(question: str, context: str, model_override: str) -> str:
         return "".join(stream_chat(msgs, model, system_prompt=core,
                                    max_tokens=700))
     except Exception as e:
-        return f"[ERROR: {e}]"
+        # Type first and 300 (2026-10-31), the eval runner's errored-answer
+        # shape: the row lands in the kept report, and it held the
+        # provider's words whole.
+        return "[ERROR: " + f"{type(e).__name__}: {e}"[:300] + "]"
 
 
 if __name__ == "__main__":
