@@ -178,7 +178,11 @@ def update_job(
         s.commit()
 
 
-def list_jobs(limit: int = 100) -> list[dict]:
+def list_jobs(limit: int = 100, keep=None) -> list[dict]:
+    """The newest `limit` job rows; with `keep` (a department -> bool test),
+    the newest `limit` of the rows it keeps (2026-10-31: the jobs route's
+    read axis), so another department's newer batch does not empty a
+    caller's view of its own."""
     from app.db import get_session
     from app.models import IngestJob
     from sqlalchemy import select
@@ -187,12 +191,17 @@ def list_jobs(limit: int = 100) -> list[dict]:
     # rows after the with-block raises DetachedInstanceError the moment a single
     # job exists. A version of this that reads after the block passes every test
     # written against an empty table.
+    query = select(IngestJob).order_by(IngestJob.created_at.desc())
+    if keep is None:
+        query = query.limit(limit)
+    out: list[dict] = []
     with get_session() as s:
-        rows = s.execute(
-            select(IngestJob).order_by(IngestJob.created_at.desc()).limit(limit)
-        ).scalars().all()
-        return [
-            {
+        for r in s.execute(query).scalars():
+            if len(out) >= limit:
+                break
+            if keep is not None and not keep(r.department):
+                continue
+            out.append({
                 "job_id": r.job_id,
                 "status": r.status,
                 "source": r.source,
@@ -202,9 +211,8 @@ def list_jobs(limit: int = 100) -> list[dict]:
                 "error": served_job_error(r.error),
                 "created_at": r.created_at,
                 "completed_at": r.completed_at,
-            }
-            for r in rows
-        ]
+            })
+        return out
 
 
 def reconcile_orphaned_jobs() -> dict:

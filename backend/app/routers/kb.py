@@ -483,6 +483,18 @@ def kb_sync(current_user: dict = Depends(require_permission("manage_kb"))):
         from app import help_docs
         out["help"] = help_docs.sync()
     out["system_records"] = sync_system_records()
+    # The per-source report is on the read axis (2026-10-31): below the
+    # Owner it names only the sources whose department the caller clears,
+    # by the classifier the sync itself stamps with (dept_for_source) - the
+    # file listing's rule. It named every synced source, Owner-only internal
+    # files included, to the caller the listing hides them from. The sync
+    # itself still runs over everything.
+    from app.permissions import is_owner
+    if not is_owner(current_user):
+        from app.rag_config import dept_for_source
+        for key in ("files", "docs"):
+            out[key] = {name: res for name, res in out[key].items()
+                        if _clears_department(current_user, dept_for_source(name))}
     return out
 
 
@@ -524,11 +536,13 @@ def kb_files(current_user: dict = Depends(require_permission("manage_kb"))):
 
 
 # The department NAMES, for the KB tab's picker and the Users tab's
-# (2026-10-30): a manage_users holder already creates a user in any
-# department and reads every account's department, so reading the names is
-# no new privilege. (Moving an account between departments is the Owner's
-# alone since 2026-10-31 - routers/users.change_department.) Names only; what a department
-# holds stays behind the read axis.
+# (2026-10-30): a manage_users holder already reads every account's
+# department in the user listing, so reading the names is no new privilege.
+# (Moving an account between departments is the Owner's alone since
+# 2026-10-31 - routers/users.change_department - and below the Owner an
+# account is created only in the creator's own department or the shared one,
+# routers/users.add_user.) Names only; what a department holds stays behind
+# the read axis.
 @router.get("/api/ingest/departments")
 def get_departments(current_user: dict = Depends(require_any_permission("manage_kb", "manage_users"))):
     return {"departments": list_departments()}
@@ -812,11 +826,19 @@ def admin_ingest_jobs(limit: int = Query(50, ge=1, le=200),
     `enabled` is the posture, `queued` the live depth: a list of finished jobs
     on an instance with async ingest switched off reads as a working queue
     unless the payload says otherwise.
+
+    The rows are on the read axis (2026-10-31): below the Owner, only the
+    departments the caller clears (_clears_department - the shared one and
+    its own, under the level gate), as the source listings and the
+    quarantine queue. Every department's rows - source names and
+    departments - went to any manage_kb holder. The depth stays a count.
     """
+    from app.permissions import is_owner
+    keep = None if is_owner(current_user) else (lambda d: _clears_department(current_user, d))
     return {"enabled": jobs.async_enabled(),
             "queued": jobs.pending_count(),
             "max_queued": jobs.ASYNC_JOB_MAX_QUEUED,
-            "jobs": jobs.list_jobs(limit)}
+            "jobs": jobs.list_jobs(limit, keep=keep)}
 
 
 @router.post("/api/admin/kb/prune-orphans")
