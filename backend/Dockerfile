@@ -20,6 +20,10 @@ RUN python -c "from fastembed.rerank.cross_encoder import TextCrossEncoder; from
 COPY ./app ./app
 COPY ./scripts ./scripts
 COPY ./eval-questions.json ./eval-questions.json
+# The extractor service's socket folder (app/text_extract.py). 1777 so the
+# shared volume works whichever container mounts it first; the extractor
+# image makes the same folder the same way.
+RUN mkdir -p /run/extractor && chmod 1777 /run/extractor
 # Build identity - passed by whatever builds this image; the shipped compose
 # file forwards `${GIT_SHA:-unknown}`. Surfaced at GET /api/version. Placed
 # last so changing it only rebuilds this tiny layer, not pip install / COPYs.

@@ -333,6 +333,29 @@ re-adds it. Documents that came from files on disk can always be re-ingested;
 **uploaded documents have no copy outside the index**, so if a rebuild is
 interrupted they are gone.
 
+## The extractor service
+
+PDF and Word files are parsed in one place: the `extractor` container
+(`extractor/server.py`). The backend has neither library installed; it hands
+each file over the socket on the `extractor_socket` volume and gets text back.
+The container runs with no network, no `.env`, no mount but that volume, a
+read-only filesystem, no Linux capabilities, a non-root user, and caps of
+640 MB and half a CPU; inside it each file gets a fresh child process with a
+20-second clock, a 512 MB memory cap and no file writes. Files over 64 MB are
+refused unread - keep `MAX_UPLOAD_MB` at or under 64.
+
+After any change to it or to its compose block, prove the locks from inside
+the running box - every line must read PASS:
+
+    docker compose exec extractor python -I check_locks.py
+
+`docker compose logs extractor` has one line per file (the outcome and the
+milliseconds, never the content): `timeout` and `memory` are files stopped at
+a limit. If the service is down, uploads of PDF and docx answer 500 with
+"cannot read .pdf files right now", the syncs skip those files and keep what
+is indexed, and the next sync after `docker compose up -d extractor` reads
+them; nothing is parsed anywhere else in the meantime.
+
 ## Large uploads and the ingest queue
 
 By default an upload is indexed inside the request: `POST /api/ingest/upload`
@@ -669,7 +692,15 @@ python -m venv .venv
 cd backend && ../.venv/bin/python -m pytest tests -q           # Windows: ..\.venv\Scripts\python
 ```
 The suite mocks the vector store and embedder - it needs no Ollama, no
-network, and no API keys. CI runs the same suite plus a secret scan, a
+network, and no API keys. It also stands in for the extractor service
+(tests/extractor_stub.py); the service has a suite of its own, which needs
+Linux for its limits and socket (Windows runs the parse tests and skips the
+rest):
+
+```
+.venv/bin/pip install -r extractor/requirements-dev.txt
+cd extractor && ../.venv/bin/python -m pytest tests -q
+``` CI runs the same suite plus a secret scan, a
 private-residue guard (see `.github/residue-denylist.txt`), and dependency
 and static-analysis scanning (pip-audit, bandit, trivy) on every push. The
 scanners and the suite also run on a daily schedule; the secret scan and the
@@ -698,6 +729,8 @@ script costs one API call per sampled file.
 ## Where things live
 
 - `backend/data/` - all persistent state (the only directory to back up)
+- `extractor/` - the locked box PDF and Word files are parsed in; it holds
+  no state (its one volume, `extractor_socket`, carries only the socket)
 - `knowledge/` - the corpus (edit or add files; the watcher live-ingests)
 - `docs/` - operator docs, ingested as corpus
 - `backend/eval-questions.json` - the eval seed (synced to the DB on boot)

@@ -6,7 +6,10 @@ a watched file that reads "" (_drop_textless_source). So a build without
 pypdf - or without python-docx, or without a library pypdf needs for a
 stream it found (its DependencyError) - removed every watched PDF's rows and
 fingerprint at its next sync, boot included. A missing parser is the
-server's fault, not the file's.
+server's fault, not the file's. Since 2026-11-01 parsing happens in the
+extractor service, so the server's fault is that service down, built without
+a parser, or lacking a library one file needs - the cases below put the
+service's stand-in (tests/extractor_stub.py) in each of those states.
 
 What these pin: with the parser missing, the knowledge sync and the docs sync
 skip such a file - its rows and its fingerprint exactly as they were, one
@@ -24,8 +27,6 @@ The store is test_knowledge_orphan_prune's index fixture, real in-memory
 chroma and the fake, through test_knowledge_sync_reads_through_extractor's
 tree fixture.
 """
-import sys
-
 import pytest
 from fastapi import HTTPException
 
@@ -33,6 +34,7 @@ import app.database as database
 import app.ingest_sync as ingest_mod
 from app import text_extract
 from app.routers import kb
+from tests.extractor_stub import STUB, answer
 from tests.test_knowledge_orphan_prune import EMBEDDING, index  # noqa: F401
 from tests.test_knowledge_sync_reads_through_extractor import (  # noqa: F401
     WORDS, _docx, _pdf, tree)
@@ -40,35 +42,33 @@ from tests.test_knowledge_sync_reads_through_extractor import (  # noqa: F401
 TEXT = "## Hours\n\nOpen nine to five.\n"
 
 
-def _without(module):
-    """The build without this library: `import <module>` raises ImportError
-    (a None in sys.modules halts the import)."""
+def _service(reply):
+    """The extractor service in a state that is the server's fault, never the
+    file's (2026-11-01, when parsing moved there): `reply` is what it answers,
+    or the exception the client raises when it cannot be reached."""
     def setup(mp):
-        mp.setitem(sys.modules, module, None)
+        mp.setattr(STUB, "answer_with", reply)
     return setup
 
 
-def _pypdf_dependency_missing(mp):
-    """pypdf present, a library it needs for this file's streams not: the
-    DependencyError it raises for that."""
-    import pypdf
-    from pypdf.errors import DependencyError
+_down = _service(text_extract.ReaderUnavailable("extractor not reachable: FileNotFoundError"))
+_no_pypdf = _service(answer("parser_missing", "ModuleNotFoundError: No module named 'pypdf'"))
+_no_docx = _service(answer("parser_missing", "ModuleNotFoundError: No module named 'docx'"))
+_pypdf_dependency_missing = _service(
+    answer("dependency_missing", "DependencyError: cryptography>=3.1 is required for AES algorithm"))
 
-    def reader(*a, **k):
-        raise DependencyError("cryptography>=3.1 is required for AES algorithm")
-    mp.setattr(pypdf, "PdfReader", reader)
-
-
-# What the libraries' own messages say, which never reaches a result or a
+# What the service and the libraries say, which never reaches a result or a
 # response (the fixed sentence names the type, ".docx", and nothing else).
-LIBRARY_WORDS = ("import of", "halted", "sys.modules", "pypdf", "cryptography", "AES")
+LIBRARY_WORDS = ("ModuleNotFoundError", "pypdf", "cryptography", "AES", "not reachable",
+                 "FileNotFoundError", "parser_missing", "dependency_missing")
 
-# (file name, its bytes, the missing parser, a word naming the library)
+# (file name, its bytes, the server's fault, a word naming it)
 CASES = [
-    pytest.param("refunds.pdf", lambda: _pdf(WORDS), _without("pypdf"), "pypdf", id="no-pypdf"),
+    pytest.param("refunds.pdf", lambda: _pdf(WORDS), _down, "not reachable", id="service-down"),
+    pytest.param("refunds.pdf", lambda: _pdf(WORDS), _no_pypdf, "pypdf", id="no-pypdf"),
     pytest.param("refunds.pdf", lambda: _pdf(WORDS), _pypdf_dependency_missing, "cryptography",
                  id="pypdf-dependency"),
-    pytest.param("refunds.docx", lambda: _docx(WORDS), _without("docx"), "docx",
+    pytest.param("refunds.docx", lambda: _docx(WORDS), _no_docx, "docx",
                  id="no-python-docx"),
 ]
 
@@ -135,10 +135,8 @@ def test_fix_a_textless_docs_file_of_its_name_takes_none_of_its_rows(tree, monke
     """docs/ sources are keyed by file name. A file of the name the server
     cannot parse holds the name as a file with text does: a textless one
     elsewhere in docs/ is not a reason to remove its rows. The shape that can
-    happen: pypdf present, and only the indexed PDF needs the library pypdf
-    lacks (an encrypted one, say) - the textless one parses, to no text."""
-    import pypdf
-    from pypdf.errors import DependencyError
+    happen: the extractor's pypdf lacks the library only the indexed PDF needs
+    (an encrypted one, say) - the textless one parses, to no text."""
     d = tree["docs"]
     (d / "a").mkdir()
     (d / "b").mkdir()
@@ -147,15 +145,15 @@ def test_fix_a_textless_docs_file_of_its_name_takes_none_of_its_rows(tree, monke
     rows = _rows(tree, "docs/guide.pdf")
     assert rows
     (d / "b" / "guide.pdf").write_bytes(_pdf(None))
-    real = pypdf.PdfReader
 
-    def reader(stream, *a, **k):
-        if WORDS.encode() in stream.getvalue():
-            raise DependencyError("cryptography>=3.1 is required for AES algorithm")
-        return real(stream, *a, **k)
+    def reply(ext, data):
+        if WORDS.encode() in data:
+            return answer("dependency_missing",
+                          "DependencyError: cryptography>=3.1 is required for AES algorithm")
+        return STUB.default(ext, data)
 
     with monkeypatch.context() as mp:
-        mp.setattr(pypdf, "PdfReader", reader)
+        mp.setattr(STUB, "answer_with", reply)
         res = ingest_mod._sync_docs(force=True)
     assert _rows(tree, "docs/guide.pdf") == rows, res
 
@@ -178,12 +176,12 @@ def test_fix_the_watcher_leaves_it_with_one_line_naming_the_library(
 
 
 def test_fix_the_corpus_probe_counts_a_file_it_cannot_parse_as_a_document(tree, monkeypatch):
-    """A tree of PDFs on a build without pypdf holds the operator's documents:
-    an empty store beside them is an error, not "not required"."""
+    """A tree of PDFs the server cannot read right now holds the operator's
+    documents: an empty store beside them is an error, not "not required"."""
     (tree["knowledge"] / "refunds.pdf").write_bytes(_pdf(WORDS))
     seen = _logged(monkeypatch)
     with monkeypatch.context() as mp:
-        _without("pypdf")(mp)
+        _down(mp)
         assert ingest_mod._knowledge_dir_has_documents() is True
     assert seen == [], "the probe runs every self-check pass and logs nothing"
 
@@ -223,8 +221,7 @@ def test_control_a_text_file_syncs_as_before_while_a_parser_is_missing(tree, mon
     k = tree["knowledge"]
     (k / "faq.md").write_text(TEXT, encoding="utf-8")
     with monkeypatch.context() as mp:
-        _without("pypdf")(mp)
-        _without("docx")(mp)
+        _down(mp)
         assert ingest_mod._sync_knowledge_dir(force=False)["faq.md"]["status"] == "ok"
         assert _rows(tree, "faq.md")
         (k / "faq.md").write_text("", encoding="utf-8")

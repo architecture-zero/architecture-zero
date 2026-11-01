@@ -44,6 +44,13 @@ aspirational.
   Unicode. Hot findings in untrusted content are quarantined for owner
   review; the owner's own content is tagged, never withheld. Content from
   federated peers gets the same scan at the chat boundary.
+- **Documents parsed in a locked box** - the backend has no PDF or Word
+  parser. Every such file goes to the extractor service, a container with
+  no network, no secrets, no mounts but its socket, a read-only filesystem,
+  no capabilities and a non-root user, where each file is parsed in a fresh
+  process under a 20-second clock and a 512 MB cap. A file built to hang or
+  exhaust the parser costs one child process, never the backend.
+  `check_locks.py` proves every lock from inside the running box.
 - **Judged evals** - five rubrics (correctness, faithfulness, freshness,
   honesty, and a knows-it's-gone check for documents the owner removed on
   purpose) with a pinned judge that must differ in provider family from
@@ -206,11 +213,13 @@ beyond the core and how modules graduate into it.
   bands, answer-layer runs, outside-model holdout authoring, the live-fire
   injection probe)
 - `frontend/` - the reference web client (React + Vite, served by nginx)
+- `extractor/` - the locked box every PDF and Word file is parsed in
+  (server, per-file worker, the lock checker, its own tests)
 - `scripts/acceptance.sh` - end-to-end check against a RUNNING deployment
 - `knowledge/` - the shipped corpus (help docs + demo company)
 - `docs/` - operator docs, ingested as corpus
-- `docker-compose.yml`, `backend/Dockerfile`, `frontend/Dockerfile` - the
-  single-VM shape
+- `docker-compose.yml`, `backend/Dockerfile`, `frontend/Dockerfile`,
+  `extractor/Dockerfile` - the single-VM shape
 
 ## Development
 

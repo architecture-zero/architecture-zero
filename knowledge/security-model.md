@@ -20,6 +20,27 @@ because a corpus legitimately quotes attack strings (these very docs do).
 Every ingestion path shares one gate choke point, so a new ingestion
 surface inherits the scan by construction.
 
+## Documents are parsed in a locked box
+
+The injection gate reads TEXT, so something has to turn a PDF or Word file
+into text first, and that parser is the one piece that handles a hostile
+file's raw bytes. A file can be built to make a parser loop forever or
+exhaust its memory, so the backend never parses one itself - it does not
+even have the PDF and Word libraries installed. Every PDF and docx, from
+every path (upload, the knowledge sync, the agent's read_file), goes to the
+extractor service: a separate container with no network, no secrets, no
+mount but the socket it answers on, a read-only filesystem, no Linux
+capabilities and a non-root user. Inside it, each file is parsed in a fresh
+child process held to a 20-second clock and a 512 MB memory cap, and it can
+write no file at all. A hostile file costs that one child process; a parser
+bug bad enough to run code would land in an empty box, where the most it
+can do is answer with false text - which then meets the same injection gate
+as any other untrusted text. If the service is down, documents wait (a
+fixed "this server cannot read .pdf files right now" message, indexed
+copies untouched) rather than being parsed anywhere else.
+`docker compose exec extractor python -I check_locks.py` proves each lock
+from inside the running box.
+
 ## Quarantine review and release
 
 Quarantined content never touched the index - its full text waits in a

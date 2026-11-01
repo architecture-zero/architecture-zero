@@ -127,9 +127,10 @@ def _read_file_text(p: Path, shown: str) -> str:
             text = extract_text(p.name, p.read_bytes())
         except Exception as e:
             # A MISSING PARSER IS THE SERVER'S LIMIT, NOT THE FILE'S FAULT
-            # (2026-10-29): a build without the library (an ImportError, or
-            # pypdf's DependencyError - text_extract.parser_missing) was told
-            # to the model as a broken document. The upload's own fixed
+            # (2026-10-29): the server unable to read the type (since
+            # 2026-11-01 the extractor service down, busy or without a
+            # parser - text_extract.parser_missing) was told to the model as
+            # a broken document. The upload's own fixed
             # sentence naming the type; the library's words to the log,
             # bounded as the upload bounds them.
             if parser_missing(e):

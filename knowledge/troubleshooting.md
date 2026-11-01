@@ -332,6 +332,17 @@ txt, pdf, docx, py, js, ts, json, yaml. "No text could be extracted" on a
 PDF usually means a scanned/image-only PDF - run OCR first, the platform
 ingests text, not images.
 
+"This server cannot read .pdf files right now" (or .docx) is the server's
+side, not the file's: PDF and Word files are parsed only by the extractor
+service, a separate locked container, and it is not answering. `docker
+compose ps extractor` shows whether it is up and healthy; `docker compose up
+-d extractor` starts it, and `docker compose logs extractor` shows one line
+per file it read (the outcome and the time, never the content). Indexed
+copies are left as they were while it is down, and the next sync reads the
+files again. A single PDF refused with "could not be read" while others
+work is that file: past the 20-second clock, the 512 MB memory cap or the
+64 MB size limit, or not a valid PDF.
+
 ## I cannot delete or demote a user
 
 These protections fire here by design: you cannot deactivate yourself or

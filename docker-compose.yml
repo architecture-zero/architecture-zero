@@ -39,6 +39,11 @@ services:
       # The eval seed also ships inside the image; this ro mount lets an
       # edited seed land with a restart instead of a rebuild.
       - ./backend/eval-questions.json:/app/eval-questions.json:ro
+      # The extractor service's socket: every PDF and Word file is parsed
+      # there, never in this container.
+      - extractor_socket:/run/extractor
+    depends_on:
+      - extractor
     extra_hosts:
       # Lets OLLAMA_BASE / EMBED_BASE reach an Ollama server on the host with
       # the default http://host.docker.internal:11434 on Linux too.
@@ -68,3 +73,43 @@ services:
     # Set VITE_API_URL only when the API is served from somewhere else, and
     # then set CORS_ORIGIN to this frontend's origin to match.
     restart: unless-stopped
+
+  # The file reader's locked box: every PDF and Word file is parsed here,
+  # never in the backend (extractor/server.py). Each setting below is one
+  # lock, and extractor/check_locks.py proves them all from inside the
+  # running container - run it after any change here:
+  #   docker compose exec extractor python -I check_locks.py
+  # A parser bug in a hostile file then costs one child process in an empty
+  # box: nothing here to steal, nowhere to send it, nothing to change.
+  extractor:
+    build:
+      context: ./extractor
+    container_name: az_extractor
+    # No network at all; the backend reaches it through the socket folder.
+    network_mode: none
+    # No env_file: it holds no secret because it is given none. No mount but
+    # the socket folder: none of the instance's files or data.
+    volumes:
+      - extractor_socket:/run/extractor
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # The whole box. It parses one file at a time, each in a child process
+    # capped at 512 MB and 20 s (extractor/server.py).
+    mem_limit: 640m
+    cpus: 0.5
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "python", "-I", "-c", "import socket; s = socket.socket(socket.AF_UNIX); s.connect('/run/extractor/extractor.sock')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  extractor_socket:

@@ -209,6 +209,25 @@ def real_embed(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _extractor_stub(monkeypatch):
+    """The extractor service's stand-in, for every test (2026-11-01). PDF and
+    Word files go to that service over a Unix socket and the suite runs none,
+    so app.text_extract's one call to it is answered by tests/extractor_stub.py
+    instead; a test sets STUB.answer_with to put the service in another state.
+    The client's own wire handling is tested in test_text_extract.py with a
+    fake socket, and the service itself in extractor/tests/."""
+    from app import text_extract
+    from tests.extractor_stub import STUB
+    STUB.answer_with = None
+    STUB.calls.clear()
+    # raising=False: on code from before the service the attribute does not
+    # exist, and test_extraction_one_door.py must fail there for its own
+    # reasons, not here.
+    monkeypatch.setattr(text_extract, "_ask_extractor", STUB, raising=False)
+    yield STUB
+
+
+@pytest.fixture(autouse=True)
 def _reset_setup_throttle():
     """Clear the always-on auth-abuse counters between tests (2026-08-27).
 

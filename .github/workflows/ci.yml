@@ -101,8 +101,10 @@ jobs:
         with:
           # requirements-dev.txt opens with `-r requirements.txt`, so this one
           # input covers the runtime pins too. Passing both files reports every
-          # shared finding twice.
-          inputs: backend/requirements-dev.txt
+          # shared finding twice. The extractor's pins are their own file
+          # (2026-11-01): pypdf and python-docx live there now, not in the
+          # backend, and an advisory on them must still fail this job.
+          inputs: backend/requirements-dev.txt extractor/requirements.txt
           #
           # ACCEPTED, permanently - chromadb 0.5.23, CVE-2026-45830 / -45831 /
           # -45833. No fix exists at any version: the affected range is 0.4.17
@@ -260,7 +262,7 @@ jobs:
       # Without the confidence filter this flags every subprocess call and
       # every assert, and a job that is noisy by default is a job people learn
       # to skim past, which is the same outcome as not running it.
-      - run: bandit -r backend/app -ll -ii
+      - run: bandit -r backend/app extractor -ll -ii --exclude extractor/tests
 
   # The overlapping layer: the same dependency set plus the lockfiles, the
   # container definitions and the compose files, scanned for vulnerabilities,
@@ -326,6 +328,26 @@ jobs:
           sys.exit(0 if tests and not fail and not err else 1)
           EOF
 
+  # The file reader's locked box (extractor/): the parse, the per-file clock,
+  # memory cap and no-file-writes limit, the wire format, and the backend's
+  # own client talking to a real server over a real socket. Linux, as the box
+  # runs - the limits are rlimits and the wire a Unix socket.
+  extractor:
+    name: extractor (limits, wire, client end to end)
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: extractor/requirements-dev.txt
+      - name: Install dependencies
+        run: pip install -r extractor/requirements-dev.txt
+      - name: Run the extractor's tests
+        working-directory: extractor
+        run: python -m pytest tests -q
+
   frontend:
     name: frontend (type-check, tests, build)
     runs-on: ubuntu-26.04
@@ -367,3 +389,33 @@ jobs:
       # passing `npm run build` does not prove this path.
       - name: Build frontend image
         run: docker build ./frontend
+      # The extractor as compose runs it, with every lock the compose file
+      # sets: check_locks.py proves each one from inside the running box, and
+      # a PDF goes through the shared socket volume from a second container
+      # with the backend's own client - the path the backend takes.
+      - name: Start the extractor as compose runs it
+        run: |
+          docker compose up -d --build extractor
+          for i in $(seq 1 30); do
+            docker compose exec -T extractor python -I -c "import socket; s = socket.socket(socket.AF_UNIX); s.connect('/run/extractor/extractor.sock')" && break
+            sleep 1
+          done
+      - name: The extractor's locks hold in the running box
+        run: docker compose exec -T extractor python -I check_locks.py
+      - name: A PDF through the socket, end to end
+        run: |
+          vol=$(docker volume ls -q --filter name=extractor_socket)
+          docker run --rm -v "$vol:/run/extractor" -v "$PWD:/repo:ro" -w /repo python:3.11-slim \
+            python -I -c "
+          import importlib.util, sys
+          sys.path.insert(0, 'extractor/tests')
+          from sample_files import pdf
+          spec = importlib.util.spec_from_file_location('client', 'backend/app/text_extract.py')
+          client = importlib.util.module_from_spec(spec); spec.loader.exec_module(client)
+          text = client.extract_text('policy.pdf', pdf(['Refunds within thirty days']))
+          assert 'Refunds within thirty days' in text, text
+          print('end to end: the box answered the text')
+          "
+      - name: The extractor's log
+        if: always()
+        run: docker compose logs extractor | tail -20

@@ -129,13 +129,14 @@ def _read_watched(p: pathlib.Path, quiet: bool = False) -> str:
     indexed and never stops a sync, as the upload refuses one. An OSError
     reading the file propagates, as read_text's did.
 
-    A parser this build lacks raises _ParserMissing instead (2026-10-29),
-    with one log line naming the type and the library (none when quiet). It
-    came back "" too, and the syncs remove a file that reads "" - so a build
-    without pypdf removed every watched PDF's rows and fingerprint at its
-    next sync, boot included. The file did not fail; the server did. Every
-    caller leaves such a file as it is, and a build with the library reads
-    it again."""
+    A file the server cannot read right now raises _ParserMissing instead
+    (2026-10-29), with one log line naming the type and the reason (none
+    when quiet) - since 2026-11-01 that is the extractor service down, busy
+    or without a parser (text_extract.parser_missing). It came back "" too,
+    and the syncs remove a file that reads "" - so a build without pypdf
+    removed every watched PDF's rows and fingerprint at its next sync, boot
+    included. The file did not fail; the server did. Every caller leaves
+    such a file as it is, and a healthy server reads it again."""
     if p.suffix.lower().lstrip(".") in TEXT_EXTS:
         return p.read_text(encoding="utf-8", errors="ignore")
     data = p.read_bytes()
@@ -154,8 +155,8 @@ def _read_watched(p: pathlib.Path, quiet: bool = False) -> str:
 
 
 class _ParserMissing(Exception):
-    """_read_watched could not read a watched file: this build lacks a library
-    its type needs (text_extract.parser_missing; 2026-10-29). Not "no text" -
+    """_read_watched could not read a watched file: the server cannot read its
+    type right now (text_extract.parser_missing; 2026-10-29). Not "no text" -
     the file's rows and fingerprint stay exactly as they are. Its message is
     text_extract.PARSER_MISSING_DETAIL, a fixed sentence naming the type, so
     a sync result can carry it; the library's words are in the log line."""

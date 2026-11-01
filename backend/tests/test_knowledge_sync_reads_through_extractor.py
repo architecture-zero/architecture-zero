@@ -18,7 +18,6 @@ The store is test_knowledge_orphan_prune's index fixture, real in-memory chroma
 and the fake, as the sync's other store-level tests run.
 """
 import hashlib
-import io
 
 import pytest
 
@@ -26,6 +25,7 @@ import app.database as database
 import app.ingest_sync as ingest_mod
 from app.chunking import chunk_markdown_sections
 from app.text_extract import SUPPORTED_EXTS, extract_text
+from tests import extractor_stub
 from tests.test_knowledge_orphan_prune import EMBEDDING, index  # noqa: F401
 
 WORDS = "Refunds go to the original card within thirty days"
@@ -33,7 +33,13 @@ WORDS = "Refunds go to the original card within thirty days"
 
 def _pdf(text: str | None) -> bytes:
     """A one-page PDF built by hand: Helvetica, one line of `text` (None
-    gives a page with no text), a correct xref table."""
+    gives a page with no text), a correct xref table. Registered with the
+    extractor service's stand-in, which answers its text (since 2026-11-01
+    the backend parses no PDF; extractor/tests/ parses this same file)."""
+    return extractor_stub.register(_pdf_bytes(text), text)
+
+
+def _pdf_bytes(text: str | None) -> bytes:
     content = (f"BT /F1 18 Tf 72 720 Td ({text}) Tj ET" if text is not None else "").encode()
     objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -58,12 +64,10 @@ def _pdf(text: str | None) -> bytes:
 
 
 def _docx(text: str) -> bytes:
-    import docx
-    doc = docx.Document()
-    doc.add_paragraph(text)
-    buf = io.BytesIO()
-    doc.save(buf)
-    return buf.getvalue()
+    """A docx's stand-in: bytes that start like one (a zip), registered with
+    the extractor service's stand-in, which answers `text`. The backend has
+    no python-docx since 2026-11-01; extractor/tests/ parses real docx files."""
+    return extractor_stub.register(b"PK\x03\x04 docx stand-in: " + text.encode(), text)
 
 
 def _cid(text: str, name: str, dept: str = "general") -> str:
