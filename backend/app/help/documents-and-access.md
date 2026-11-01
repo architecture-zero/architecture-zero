@@ -26,9 +26,9 @@ The usual reasons, in order of likelihood:
 
 1. It is not in the assistant yet. A file in the server folder is picked up within moments; an uploaded file is in as soon as the upload finishes. Your administrator can see the full list under Knowledge Base.
 2. It is in a department above your tier.
-3. It was withheld. Documents from outside sources are checked for hidden instructions when they are added; a suspicious one is held instead of being indexed. Administrators see it under Quarantine for the departments their clearance covers; the owner sees every department and decides whether to release it.
+3. It was withheld. Documents from outside sources are checked for hidden instructions when they are added; a suspicious one is held instead of being indexed. Administrators see it under Quarantine for the general department and their own, within their clearance; the owner sees every department and decides whether to release it.
 4. Its file type is not one the assistant can read.
 
 ## Checking what the assistant knows
 
-Ask it. A question like "What do you have about the vendor onboarding policy?" gets you the documents it can see on that topic. For the full list of everything ingested, ask your administrator: the admin panel shows every document, its department and how many passages it holds.
+Ask it. A question like "What do you have about the vendor onboarding policy?" gets you the documents it can see on that topic. For the full list of everything ingested, ask the owner: the admin panel shows the owner every document, its department and how many passages it holds (an administrator sees the general department and their own).

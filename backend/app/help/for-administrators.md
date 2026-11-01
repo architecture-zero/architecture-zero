@@ -7,7 +7,7 @@ A short map of the admin panel. The operator's manual ships with the product: do
 Sign in as an owner or administrator and click Admin at the top of the page. The tabs:
 
 - Trust: the live evaluation numbers behind the public Trust page.
-- Knowledge Base: every ingested document with its department and passage count; upload new documents; remove old ones.
+- Knowledge Base: the ingested documents of the general department and your own (the owner sees every department), each with its department and passage count; upload new documents; remove old ones.
 - Quarantine: uploads withheld by the injection scan. Administrators can review the list; releasing an item is the owner's call.
 - System Prompt: the assistant's standing instructions, and the suggestions shown on an empty chat.
 - Ingestion Queue: background ingest jobs, when they are enabled.

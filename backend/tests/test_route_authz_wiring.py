@@ -195,7 +195,7 @@ REQUIRED_GUARD = {
     ("POST", "/api/admin/kb/prune-orphans"): "require_owner",
     # The declared guard is the scope; the read axis runs in the body since
     # 2026-09-23 - the list shows, and discard reaches, only rows whose
-    # department the caller's level clears, and release stays Owner-only
+    # department the caller clears, and release stays Owner-only
     # in the body. Carried by test_read_axis_listings.py and
     # test_corpus_scan.py::test_quarantine_release_requires_owner.
     ("GET", "/api/admin/kb/quarantine"): "require_permission:manage_kb",

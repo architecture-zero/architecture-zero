@@ -97,7 +97,7 @@ def _sources_the_caller_clears(current_user: dict, sources: list[dict]) -> list[
 @router.get("/api/admin/pii-sources")
 def admin_pii_sources(current_user: dict = Depends(require_permission("manage_kb"))):
     """Sources flagged during PII scanning, limited to the departments the
-    caller's level clears."""
+    caller clears."""
     return {"sources": _sources_the_caller_clears(current_user, list_pii_sources()),
             "mode": PII_SCAN_MODE}
 
@@ -107,7 +107,7 @@ def admin_pii_sources(current_user: dict = Depends(require_permission("manage_kb
 @router.get("/api/admin/injection-sources")
 def admin_injection_sources(current_user: dict = Depends(require_permission("manage_kb"))):
     """Sources carrying INDEXED-but-flagged chunks (tagged, not withheld),
-    limited to the departments the caller's level clears."""
+    limited to the departments the caller clears."""
     from app.database import list_injection_flagged_sources
     from app.corpus_scan import INJECTION_SCAN_MODE
     return {"sources": _sources_the_caller_clears(current_user, list_injection_flagged_sources()),
@@ -119,7 +119,7 @@ def admin_list_quarantine(status: str = "held",
                           current_user: dict = Depends(require_permission("manage_kb"))):
     """Content the injection gate WITHHELD from the corpus, awaiting review.
     A manage_kb surface, newest first, showing only the rows whose department
-    the caller's level clears (the Owner sees every row). Release stays
+    the caller clears (the Owner sees every row). Release stays
     Owner-only below."""
     from app.models import QuarantinedDoc
     with get_session() as db:
@@ -463,7 +463,7 @@ def ingest(request: IngestRequest, current_user: dict = Depends(require_permissi
 
 @router.get("/api/ingest/sources")
 def get_sources(department: str | None = None, current_user: dict = Depends(require_permission("manage_kb"))):
-    # Limited to the departments the caller's level clears. An explicit
+    # Limited to the departments the caller clears. An explicit
     # ?department= above the caller's level lists nothing rather than
     # refusing: the department names are code, not a secret.
     return {"sources": _sources_the_caller_clears(current_user, list_sources(department=department))}
