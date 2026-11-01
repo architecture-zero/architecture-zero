@@ -12,8 +12,8 @@ The answer is {"ok": true, "text": ..., "truncated": bool} or
   memory              the parse ran out of its memory cap
   parser_missing      this build lacks pypdf or python-docx (the build's fault)
   dependency_missing  pypdf lacks a library a stream in this file needs
-                      (brotli, an AES provider) - left out of the box on
-                      purpose, so such a file is never decoded here
+                      (brotli, a native decoder left out of the box on
+                      purpose, so such a file is never decoded here)
 detail is the exception's type and words, bounded; it goes to a log line,
 never to a user.
 """

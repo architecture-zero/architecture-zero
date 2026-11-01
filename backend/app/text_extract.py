@@ -41,8 +41,8 @@ class ReaderUnavailable(RuntimeError):
 
 
 class DependencyMissing(ReaderUnavailable):
-    """pypdf lacks a library a stream in this file needs (brotli, an AES
-    provider - left out of the extractor on purpose). The server's limit, as
+    """pypdf lacks a library a stream in this file needs (brotli, a native
+    decoder left out of the extractor on purpose). The server's limit, as
     a missing parser is, but tied to this one file: a caller that retries
     the server's faults may treat this one as final for the file."""
 
