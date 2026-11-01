@@ -48,7 +48,8 @@ aspirational.
   parser. Every such file goes to the extractor service, a container with
   no network, no secrets, no mounts but its socket, a read-only filesystem,
   no capabilities and a non-root user, where each file is parsed in a fresh
-  process under a 20-second clock and a 512 MB cap. A file built to hang or
+  process under a clock (20 seconds, growing with the file's size to 2
+  minutes) and a 512 MB cap. A file built to hang or
   exhaust the parser costs one child process, never the backend.
   `check_locks.py` proves every lock from inside the running box.
 - **Judged evals** - five rubrics (correctness, faithfulness, freshness,

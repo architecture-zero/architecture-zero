@@ -340,7 +340,8 @@ compose ps extractor` shows whether it is up and healthy; `docker compose up
 per file it read (the outcome and the time, never the content). Indexed
 copies are left as they were while it is down, and the next sync reads the
 files again. A single PDF refused with "could not be read" while others
-work is that file: past the 20-second clock, the 512 MB memory cap or the
+work is that file: past its clock (20 seconds, more for a big file, at most
+2 minutes), the 512 MB memory cap or the
 64 MB size limit, or not a valid PDF.
 
 ## I cannot delete or demote a user

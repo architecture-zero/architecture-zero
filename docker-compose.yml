@@ -100,9 +100,11 @@ services:
     security_opt:
       - no-new-privileges:true
     # The whole box. It parses one file at a time, each in a child process
-    # capped at 512 MB and 20 s (extractor/server.py).
+    # capped at 512 MB and a clock of 20 s that grows with the file's size to
+    # 2 minutes (extractor/server.py). A full CPU while it reads, so an
+    # honest long document finishes inside its clock.
     mem_limit: 640m
-    cpus: 0.5
+    cpus: 1.0
     pids_limit: 64
     healthcheck:
       test: ["CMD", "python", "-I", "-c", "import socket; s = socket.socket(socket.AF_UNIX); s.connect('/run/extractor/extractor.sock')"]

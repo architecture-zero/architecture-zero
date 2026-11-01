@@ -23,6 +23,18 @@ def pdf(pages: list[str | None]) -> bytes:
     return _assemble(objects)
 
 
+def encrypted_pdf(pages: list[str | None], algorithm: str, user_password: str = "") -> bytes:
+    """pdf(pages), encrypted. An empty user password is the common case - a
+    PDF that opens without asking but is encrypted all the same."""
+    from pypdf import PdfReader, PdfWriter
+    writer = PdfWriter(clone_from=PdfReader(io.BytesIO(pdf(pages))))
+    writer.encrypt(user_password=user_password, owner_password="owner-secret",
+                   algorithm=algorithm)
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
 def bomb_pdf(inflated_bytes: int) -> bytes:
     """A one-page PDF whose content stream is small on disk and inflates to
     `inflated_bytes` - a decompression bomb, built without ever holding the

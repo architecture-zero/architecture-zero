@@ -28,8 +28,16 @@ import time
 SOCKET_PATH = os.environ.get("EXTRACTOR_SOCKET", "/run/extractor/extractor.sock")
 
 # The per-file limits (decided 2026-11-01): a normal 50-page PDF parses in
-# well under a second, so these catch only files built to attack.
+# well under a second, so these catch only files built to attack. The clock
+# is 20 s for a normal file and grows with the file's size - 5 s a megabyte
+# past the first, to at most 2 minutes - because an honest long document is
+# big in bytes: measured in the box at half a CPU, a 117-page, 5.3 MB PDF
+# took 8.2 s and a 468-page, 22 MB one ran past a flat 20 s. A small file
+# built to hang still gets 20 s. (Decided the same day, after that
+# measurement, with the box raised to a full CPU.)
 TIMEOUT_S = 20
+TIMEOUT_PER_MB_S = 5
+TIMEOUT_MAX_S = 120
 MEMORY_BYTES = 512 * 1024 * 1024
 # The largest upload any deployment allows; a larger file is refused unread.
 MAX_INPUT_BYTES = 64 * 1024 * 1024
@@ -37,7 +45,8 @@ MAX_INPUT_BYTES = 64 * 1024 * 1024
 # (up to 6 bytes a character), with room to spare.
 MAX_ANSWER_BYTES = 40 * 1024 * 1024
 # One file at a time; a second waits this long for the slot, then is told busy
-# (the caller treats busy as the server's fault and tries again later).
+# (the caller treats busy as the server's fault and tries again later). The
+# client waits longer than SLOT_WAIT_S + TIMEOUT_MAX_S, so this answers first.
 CONCURRENCY = 1
 SLOT_WAIT_S = 30
 # How long a connection may take to send its request.
@@ -52,13 +61,24 @@ SUPPORTED = ("pdf", "docx")
 _slots = threading.BoundedSemaphore(CONCURRENCY)
 
 
-def _limit_child() -> None:
-    """Runs in the child between fork and exec (POSIX only)."""
-    import resource
-    resource.setrlimit(resource.RLIMIT_AS, (MEMORY_BYTES, MEMORY_BYTES))
-    resource.setrlimit(resource.RLIMIT_CPU, (TIMEOUT_S + 5, TIMEOUT_S + 5))
-    resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))   # writes no file at all
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+def clock_for(size: int) -> int:
+    """The wall clock for a file of `size` bytes (see TIMEOUT_S above)."""
+    extra_mb = max(0, size - 1024 * 1024) / (1024 * 1024)
+    return min(TIMEOUT_MAX_S, int(TIMEOUT_S + TIMEOUT_PER_MB_S * extra_mb))
+
+
+def _limits_for(timeout: float):
+    """The child's limits, applied between fork and exec (POSIX only). Its
+    CPU limit follows its wall clock, a little behind it."""
+    cpu = int(timeout) + 5
+
+    def apply() -> None:
+        import resource
+        resource.setrlimit(resource.RLIMIT_AS, (MEMORY_BYTES, MEMORY_BYTES))
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
+        resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))   # writes no file at all
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    return apply
 
 
 def _classify_exit(rc: int, stderr: bytes) -> dict:
@@ -99,7 +119,7 @@ def run_worker(ext: str, data: bytes, command: list | None = None,
         (command or WORKER_COMMAND) + [ext],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         env=CHILD_ENV, close_fds=True,
-        preexec_fn=_limit_child if posix else None,
+        preexec_fn=_limits_for(timeout) if posix else None,
         start_new_session=posix)
     out, err = bytearray(), bytearray()
     flooded = threading.Event()
@@ -180,7 +200,7 @@ def handle_request(rfile) -> dict | None:
     if not _slots.acquire(timeout=SLOT_WAIT_S):
         return _refuse("busy", f"no slot in {SLOT_WAIT_S}s")
     try:
-        return run_worker(ext, data)
+        return run_worker(ext, data, timeout=clock_for(size))
     finally:
         _slots.release()
 

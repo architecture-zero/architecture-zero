@@ -12,7 +12,7 @@ import sys
 import pytest
 
 import worker
-from sample_files import docx, pdf
+from sample_files import docx, encrypted_pdf, pdf
 
 WORDS = "Refunds go to the original card within thirty days"
 WORKER = pathlib.Path(worker.__file__)
@@ -89,9 +89,22 @@ def test_the_script_reads_stdin_and_prints_one_json_line():
     assert len(lines) == 1 and WORDS in json.loads(lines[0])["text"]
 
 
-def test_the_box_installs_no_decoder_beyond_the_two_parsers():
-    """No brotli: pypdf refuses those streams (dependency_missing) instead of
-    decoding them natively. check_locks.py confirms the running image."""
+def test_the_box_installs_the_two_parsers_and_the_aes_provider_only():
+    """cryptography is pypdf's AES provider (2026-11-01: without it an
+    AES-encrypted PDF with an empty password - one the backend used to read -
+    was refused). No brotli: pypdf refuses those streams (dependency_missing)
+    instead of decoding them natively. check_locks.py confirms the image."""
     reqs = (WORKER.parent / "requirements.txt").read_text(encoding="utf-8").lower()
     names = {line.split("==")[0].strip() for line in reqs.splitlines() if line.strip()}
-    assert names == {"pypdf", "python-docx"}, names
+    assert names == {"pypdf", "python-docx", "cryptography"}, names
+
+
+@pytest.mark.parametrize("algorithm", ["RC4-40", "RC4-128", "AES-128", "AES-256"])
+def test_a_pdf_encrypted_with_an_empty_password_reads(algorithm):
+    got = worker.answer("pdf", encrypted_pdf([WORDS], algorithm))
+    assert got["ok"] is True and WORDS in got["text"], got
+
+
+def test_a_pdf_that_needs_a_password_is_unreadable():
+    got = worker.answer("pdf", encrypted_pdf([WORDS], "AES-256", user_password="open-sesame"))
+    assert got["ok"] is False and got["kind"] == "unreadable", got

@@ -128,6 +128,31 @@ def _request(ext: str, data: bytes, size: int | None = None, v: int = 1) -> io.B
     return io.BytesIO(header.encode() + b"\n" + data)
 
 
+@pytest.mark.parametrize("size, clock", [
+    (10 * 1024, 20), (1024 * 1024, 20), (5 * 1024 * 1024 + 512 * 1024, 42),
+    (22 * 1024 * 1024, 120), (64 * 1024 * 1024, 120)])
+def test_the_clock_grows_with_the_file_to_its_ceiling(size, clock):
+    assert server.clock_for(size) == clock
+
+
+def test_a_request_gets_the_clock_for_its_size(monkeypatch):
+    seen = []
+    monkeypatch.setattr(server, "run_worker",
+                        lambda ext, data, timeout: seen.append(timeout) or {"ok": True, "text": "x"})
+    data = b"%PDF" + b"0" * (6 * 1024 * 1024)
+    server.handle_request(_request("pdf", data))
+    assert seen == [server.clock_for(len(data))] and seen[0] > server.TIMEOUT_S
+
+
+def test_the_cpu_limit_follows_the_clock():
+    """The child's RLIMIT_CPU is its wall clock plus five seconds, so a long
+    file's longer clock is not cut short by a fixed CPU limit."""
+    got = server.run_worker("pdf", b"", timeout=42, command=_command(
+        "import json, resource\n"
+        "print(json.dumps({'ok': True, 'text': str(resource.getrlimit(resource.RLIMIT_CPU)[0])}))"))
+    assert got == {"ok": True, "text": "47"}, got
+
+
 def test_a_request_is_answered():
     got = server.handle_request(_request("pdf", pdf([WORDS])))
     assert got["ok"] is True and WORDS in got["text"]

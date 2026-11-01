@@ -31,7 +31,8 @@ every path (upload, the knowledge sync, the agent's read_file), goes to the
 extractor service: a separate container with no network, no secrets, no
 mount but the socket it answers on, a read-only filesystem, no Linux
 capabilities and a non-root user. Inside it, each file is parsed in a fresh
-child process held to a 20-second clock and a 512 MB memory cap, and it can
+child process held to a clock (20 seconds for a normal file, growing with
+its size to at most 2 minutes) and a 512 MB memory cap, and it can
 write no file at all. A hostile file costs that one child process; a parser
 bug bad enough to run code would land in an empty box, where the most it
 can do is answer with false text - which then meets the same injection gate

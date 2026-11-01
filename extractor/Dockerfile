@@ -1,6 +1,9 @@
-# The file reader's locked box (server.py says what it is for). Only Python
-# and the two parsers: no brotli and no jbig2dec, so pypdf refuses those
-# streams (dependency_missing) instead of handing them to native decoders.
+# The file reader's locked box (server.py says what it is for). Only Python,
+# the two parsers and cryptography - pypdf's AES provider, so a PDF encrypted
+# with an empty user password (bank statements and invoices often are) reads
+# as it did in the backend, which had it through python-jose. No brotli and
+# no jbig2dec, so pypdf refuses those streams (dependency_missing) instead of
+# handing them to native decoders.
 # The locks themselves - no network, read-only, no capabilities, capped - are
 # set where the container runs (docker-compose.yml's extractor service) and
 # proven from inside it by check_locks.py.

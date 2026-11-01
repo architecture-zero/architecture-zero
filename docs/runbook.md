@@ -340,8 +340,10 @@ PDF and Word files are parsed in one place: the `extractor` container
 each file over the socket on the `extractor_socket` volume and gets text back.
 The container runs with no network, no `.env`, no mount but that volume, a
 read-only filesystem, no Linux capabilities, a non-root user, and caps of
-640 MB and half a CPU; inside it each file gets a fresh child process with a
-20-second clock, a 512 MB memory cap and no file writes. Files over 64 MB are
+640 MB and one CPU; inside it each file gets a fresh child process with a
+clock of 20 seconds that grows with the file's size (5 seconds a megabyte past
+the first, at most 2 minutes), a 512 MB memory cap and no file writes. Files
+over 64 MB are
 refused unread - keep `MAX_UPLOAD_MB` at or under 64.
 
 After any change to it or to its compose block, prove the locks from inside
@@ -700,7 +702,9 @@ rest):
 ```
 .venv/bin/pip install -r extractor/requirements-dev.txt
 cd extractor && ../.venv/bin/python -m pytest tests -q
-``` CI runs the same suite plus a secret scan, a
+```
+
+CI runs the same suite plus a secret scan, a
 private-residue guard (see `.github/residue-denylist.txt`), and dependency
 and static-analysis scanning (pip-audit, bandit, trivy) on every push. The
 scanners and the suite also run on a daily schedule; the secret scan and the

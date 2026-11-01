@@ -11,8 +11,9 @@ so never "no text".
 PDF AND WORD FILES ARE NEVER PARSED IN THIS PROCESS (2026-11-01). They go to
 the extractor service - a locked container with no network, no secrets, no
 mounts but a socket folder, a read-only filesystem, no capabilities and a
-non-root user, which parses each file in a fresh child process under a 20 s
-clock and a 512 MB memory cap (extractor/server.py). This backend no longer
+non-root user, which parses each file in a fresh child process under a clock
+(20 s for a normal file, growing with its size to at most 2 minutes) and a
+512 MB memory cap (extractor/server.py). This backend no longer
 has pypdf or python-docx installed at all. A parser bug in either library -
 pure-Python pypdf's have all been hangs and memory blow-ups so far - costs
 the box one child process; it cannot reach this process, its secrets or its
@@ -76,9 +77,10 @@ PARSER_MISSING_DETAIL = ("This server cannot read .{ext} files right now: the pa
 
 # The extractor's socket, on the volume both containers mount
 # (docker-compose.yml). The client waits longer than the extractor's own
-# slot wait plus its clock, so the extractor always answers first.
+# slot wait (30 s) plus its longest clock (120 s), so the extractor always
+# answers first.
 EXTRACTOR_SOCKET = os.getenv("EXTRACTOR_SOCKET", "/run/extractor/extractor.sock")
-_CLIENT_TIMEOUT_S = 60
+_CLIENT_TIMEOUT_S = 180
 # The extractor's answer is one JSON line: at most 5M characters of text,
 # escaped. A line past this bound is not an answer.
 _MAX_ANSWER_BYTES = 64 * 1024 * 1024
