@@ -217,7 +217,11 @@ def make_server(path: str = SOCKET_PATH) -> _Server:
     except FileNotFoundError:
         pass
     server = _Server(path, _Handler)
-    os.chmod(path, 0o666)
+    # Owner only: this box's own user, and root, which connects regardless of
+    # the mode - the backend runs as root. Any other user in a container that
+    # mounts the volume cannot connect. (A backend moved to a non-root user
+    # would need a shared group here, 0o660.)
+    os.chmod(path, 0o600)
     return server
 
 

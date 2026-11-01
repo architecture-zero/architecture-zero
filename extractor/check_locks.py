@@ -16,7 +16,9 @@ ALLOWED_ENV = {"PATH", "HOSTNAME", "HOME", "LANG", "GPG_KEY", "PYTHON_VERSION",
                "PYTHON_SHA256", "PYTHONDONTWRITEBYTECODE", "PYTHONUNBUFFERED",
                "PWD", "SHLVL", "TERM", "_"}
 # The only mounts the box should carry beyond the container's own plumbing.
-ALLOWED_MOUNTS = {"/", "/tmp", "/run/extractor", "/proc", "/dev", "/sys",
+# "/tmp" here names the box's 16 MB tmpfs as an expected mount point; nothing
+# writes a temp file from it.
+ALLOWED_MOUNTS = {"/", "/tmp", "/run/extractor", "/proc", "/dev", "/sys",  # nosec B108
                   "/etc/hosts", "/etc/hostname", "/etc/resolv.conf"}
 ALLOWED_MOUNT_PREFIXES = ("/proc/", "/dev/", "/sys/")
 
