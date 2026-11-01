@@ -35,7 +35,16 @@ function DepartmentField({ value, onCommit }: {
   const [draft, setDraft] = useState(value)
   // What this field last sent, so Enter and the blur after it write once.
   const sent = useRef<string | null>(null)
-  useEffect(() => { setDraft(value); sent.current = null }, [value])
+  // The draft follows the stored value when that value CHANGES - not on the
+  // mount, whose effect can run after an edit already typed (a long render
+  // defers it) and overwrite it (__tests__/usersDepartmentFieldRace.test.tsx).
+  const shown = useRef(value)
+  useEffect(() => {
+    if (shown.current === value) return
+    shown.current = value
+    setDraft(value)
+    sent.current = null
+  }, [value])
   const commit = () => {
     const next = draft.trim() || 'general'
     if (next === value || next === sent.current) return
