@@ -7,7 +7,7 @@ Your administrator adds documents in two ways:
 - A folder on the assistant's server. Files placed there are picked up automatically, subfolders included, and a file deleted while the assistant is running is removed.
 - Uploads in the admin panel, under Knowledge Base.
 
-Upload accepts PDF, Word (.docx), plain text, Markdown, JSON, YAML and source code files (.py, .js, .ts). The server folder takes the text formats: Markdown, plain text, JSON, YAML and source files. PDF and Word documents go in through Upload, which extracts their text.
+Upload accepts PDF, Word (.docx), plain text, Markdown, JSON, YAML and source code files (.py, .js, .ts). The server folder takes the same types, and extracts the text of PDF and Word files the same way Upload does.
 
 Some deployments add connected sources such as shared drives. Those are not part of every instance; ask your administrator what this one uses.
 
