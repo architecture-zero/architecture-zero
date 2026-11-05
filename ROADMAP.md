@@ -44,8 +44,8 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   Mechanical, but an edit that wide wants its own change rather than riding a
   release.
 - **Question-set fingerprinting for evaluation banding** - the trust panel
-  bands runs sharing a writer, a corpus fingerprint, a judge-instrument era
-  and an exam SHAPE, where shape is `n_rest`: a count of non-honesty rows.
+  bands runs sharing a writer, a corpus fingerprint, a judge-instrument era,
+  a run setup (`app/run_setup.py`) and an exam SHAPE, where shape is `n_rest`: a count of non-honesty rows.
   A count is not an identity. Two exams with the same number of questions
   band together whatever those questions are, and moving one question
   between the tuned and holdout cohorts leaves the count untouched while
