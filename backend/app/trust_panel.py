@@ -5,8 +5,9 @@ Design rules:
 - A public panel shows THIS instance's own per-corpus numbers, with
   provenance, and shows BANDS (spread across identical-config runs), never a
   single lucky point.
-- Every band names the rows behind it (2026-10-28): the latest run's passed
-  and scored for that axis, beside the spread. A band's `runs` counts runs,
+- Every band names the rows behind it (2026-10-28): the latest JUDGED run's
+  passed and scored for that axis (the band anchors there since 2026-11-04),
+  beside the spread. A band's `runs` counts runs,
   so a rate without its denominator read the same over 3 graded rows as over
   300, and the correctness and holdout tiles never said how many questions
   they grade. Honesty always carried its n; the gap carries none, being a
@@ -195,7 +196,7 @@ def derive_trust_panel(admin: bool = False) -> dict:
     # anchor run. The instrument leg is load-bearing: a rubric or judge change
     # is a NEW instrument, and readings from different instruments must never
     # blend into one "band" - that spread would be instrument drift wearing a
-    # noise band's clothes. The setup leg (2026-11-04, app/run_setup.py) is
+    # noise band's clothes. The setup leg (2026-11-05, app/run_setup.py) is
     # the same rule for the system itself: build, boot, settings and the run's
     # options - two runs alike in the other four, one asking the peers and one
     # not, measured two systems. NULL-era rows never band with stamped ones.
@@ -220,8 +221,9 @@ def derive_trust_panel(admin: bool = False) -> dict:
             return None
         vals = [c[axis] for c in scored]
         band = {"low": min(vals), "high": max(vals), "runs": len(vals)}
-        # The LATEST run's rows behind the rate (2026-10-28) - the newest run
-        # that has the axis; band_runs keeps complete's run_at order. `runs`
+        # The rows behind the rate (2026-10-28): the newest band run that has
+        # the axis (band_runs keeps complete's run_at order) - for a judged
+        # axis the latest JUDGED run's, as the band anchors there. `runs`
         # counts runs, so without these the tile never said how many
         # questions it grades. The gap takes none: it is a difference of two
         # rates, each of which carries its own.

@@ -1,6 +1,6 @@
 """The RUN-SETUP stamp: what a band of "identical runs" has to share.
 
-The trust panel bands runs it calls identical, and until 2026-11-04 identical
+The trust panel bands runs it calls identical, and until 2026-11-05 identical
 meant the same writer, corpus, judge instrument and exam shape. Two runs could
 match on all four and still measure different systems: one whose eval asked
 the instance's peers and one that did not, a changed retrieval threshold, a

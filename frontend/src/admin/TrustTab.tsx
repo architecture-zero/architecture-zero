@@ -4,7 +4,7 @@ import { PRIMARY_COLOR } from '../theme'
 
 // ── Tab: Trust ─────────────────────────────────────────────────────────────
 
-// passed/scored are the LATEST run's rows behind the rate (2026-10-28): `runs`
+// passed/scored are the latest JUDGED run's rows behind the rate (2026-10-28): `runs`
 // counts runs, so a rate without its denominator read the same over 3 graded
 // rows as over 300. The gap carries none - a difference of two rates that
 // each carry their own. The retrieval tile, a point from the latest run
@@ -42,11 +42,12 @@ function trustBandText(b: TrustBand | null | undefined): string {
   return `${b.low}-${b.high}%`
 }
 
-// The rows behind the latest run's rate, in plain words - the same line the
-// public panel shows. Empty for a tile that carries no counts (the gap).
-function trustRowsNote(b: TrustCounts | null | undefined): string {
+// The rows behind a rate, in plain words - the same line the public panel
+// shows, the latest JUDGED run's on a band and the latest run's on retrieval
+// (2026-11-05). Empty for a tile that carries no counts (the gap).
+function trustRowsNote(b: TrustCounts | null | undefined, run = 'the latest judged run'): string {
   if (!b || b.passed == null || b.scored == null) return ''
-  return ` - ${b.passed} of ${b.scored} rows in the latest run`
+  return ` - ${b.passed} of ${b.scored} rows in ${run}`
 }
 
 function trustGapText(b: TrustBand | null | undefined): string {
@@ -265,7 +266,7 @@ export function TrustTab({ api, headers, currentUser }: {
           {data.retrieval && (
             <TrustTile value={`${data.retrieval.pct}%`}
               label="Right document found"
-              note={`for questions with a known home document${trustRowsNote(data.retrieval)}`} />
+              note={`for questions with a known home document${trustRowsNote(data.retrieval, 'the latest run')}`} />
           )}
         </div>
         <p className="text-xs text-gray-500 mt-3">

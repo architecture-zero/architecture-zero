@@ -5,14 +5,14 @@ import { useEffect, useState } from 'react'
 // nothing here is hardcoded, and the band form (low-high across identical
 // runs) is deliberate: a spread is more honest than a lucky point.
 //
-// Each band also carries the LATEST run's passed/scored for its axis
+// Each band also carries the latest JUDGED run's passed/scored for its axis
 // (2026-10-28): `runs` counts runs, so a rate without its denominator read
 // the same over 3 graded rows as over 300. The gap carries none - it is a
 // difference of two rates that each carry their own. The retrieval tile, a
 // point from the latest run rather than a band, carries the same two (also
 // 2026-10-28) - it was the one bare rate left on the panel.
 
-// The rows behind a rate: the latest run's passed and scored for its axis.
+// The rows behind a rate: the passed and scored of the run it comes from.
 interface Counts {
   passed?: number | null
   scored?: number | null
@@ -56,11 +56,14 @@ function bandText(b: Band | null | undefined): string {
   return `${b.low}-${b.high}%`
 }
 
-// The rows behind the latest run's rate, in plain words. Empty for a tile
-// that carries no counts (the gap).
-function rowsNote(b: Counts | null | undefined): string {
+// The rows behind a rate, in plain words, and the run they come from
+// (2026-11-05): a band's are the latest JUDGED run's - the judged tiles anchor
+// there since 2026-11-04, so after a retrieval-only run they are not the
+// latest run's - and the retrieval tile's are the latest run's. Empty for a
+// tile that carries no counts (the gap).
+function rowsNote(b: Counts | null | undefined, run = 'the latest judged run'): string {
   if (!b || b.passed == null || b.scored == null) return ''
-  return ` - ${b.passed} of ${b.scored} rows in the latest run`
+  return ` - ${b.passed} of ${b.scored} rows in ${run}`
 }
 
 function bandNote(b: Band | null | undefined, fallback: string): string {
@@ -193,7 +196,7 @@ export default function TrustPanel() {
                   value={`${data.retrieval.pct}%`}
                   tone={valueTone(false)}
                   label="Right document found"
-                  note={`for questions with a known home document${rowsNote(data.retrieval)}`}
+                  note={`for questions with a known home document${rowsNote(data.retrieval, 'the latest run')}`}
                 />
               )}
             </div>

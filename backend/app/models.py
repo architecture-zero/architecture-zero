@@ -283,7 +283,7 @@ class EvalResult(Base):
     # The RUN SETUP this row was measured under (app/run_setup.py): build,
     # boot, every settings row and the run's own options, stamped once per
     # run. The trust panel bands only runs sharing one; NULL (rows before
-    # 2026-11-04) bands alone.
+    # 2026-11-05) bands alone.
     run_setup     = Column(String(64), nullable=True)
     run_at        = Column(String(50), nullable=False)
 
