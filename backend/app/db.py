@@ -71,6 +71,9 @@ def _run_migrations():
         "ALTER TABLE audit_log ADD COLUMN pii_out_hits INTEGER",
         "ALTER TABLE audit_log ADD COLUMN pii_out_redacted INTEGER",
         "ALTER TABLE audit_log ADD COLUMN pii_out_types VARCHAR(120)",
+        # eval_results.run_setup - the run-setup stamp (2026-11-04,
+        # app/run_setup.py). Rows written before it read NULL and band alone.
+        "ALTER TABLE eval_results ADD COLUMN run_setup VARCHAR(64)",
     ]
     with engine.connect() as conn:
         for sql in stmts:

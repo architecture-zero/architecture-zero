@@ -92,7 +92,8 @@ def derive_trust_panel(admin: bool = False) -> dict:
             "run_id": r.run_id, "category": r.category, "run_at": r.run_at,
             "answer_model": r.answer_model,
             "corpus_fingerprint": r.corpus_fingerprint,
-            "judge_instrument": r.judge_instrument, "score": r.score,
+            "judge_instrument": r.judge_instrument, "run_setup": r.run_setup,
+            "score": r.score,
             "faithfulness": r.faithfulness, "freshness": r.freshness,
             "retrieval_hit": r.retrieval_hit, "holdout": r.holdout,
         } for r in db.query(EvalResult).all()]
@@ -146,6 +147,7 @@ def derive_trust_panel(admin: bool = False) -> dict:
                             if r["corpus_fingerprint"]), None),
             "instrument": next((r["judge_instrument"] for r in rr
                                 if r["judge_instrument"]), None),
+            "setup": next((r["run_setup"] for r in rr if r["run_setup"]), None),
             "n_rest": len(rest),
             "correctness": tuned_pct,
             "correctness_passed": tuned_passed,
@@ -189,11 +191,14 @@ def derive_trust_panel(admin: bool = False) -> dict:
                      for a in ("correctness", "holdout", "faithfulness", "freshness"))]
     anchor = judged[-1] if judged else latest
     # The band group: identical configuration = same writer + same corpus +
-    # same JUDGE INSTRUMENT ERA + same exam shape as the anchor run. The
-    # instrument leg is load-bearing: a rubric or judge change is a NEW
-    # instrument, and readings from different instruments must never blend
-    # into one "band" - that spread would be instrument drift wearing a
-    # noise band's clothes. NULL-era rows never band with stamped ones.
+    # same JUDGE INSTRUMENT ERA + same RUN SETUP + same exam shape as the
+    # anchor run. The instrument leg is load-bearing: a rubric or judge change
+    # is a NEW instrument, and readings from different instruments must never
+    # blend into one "band" - that spread would be instrument drift wearing a
+    # noise band's clothes. The setup leg (2026-11-04, app/run_setup.py) is
+    # the same rule for the system itself: build, boot, settings and the run's
+    # options - two runs alike in the other four, one asking the peers and one
+    # not, measured two systems. NULL-era rows never band with stamped ones.
     # Retrieval is deterministic on a still corpus, so it reports from the
     # latest run alone.
     band_runs = [c for c in complete
@@ -201,10 +206,12 @@ def derive_trust_panel(admin: bool = False) -> dict:
                  and c["corpus"] == anchor["corpus"]
                  and c["instrument"] == anchor["instrument"]
                  and c["instrument"] is not None
+                 and c["setup"] == anchor["setup"]
+                 and c["setup"] is not None
                  and c["n_rest"] == anchor["n_rest"]]
     # Degenerate but honest fallback: if the anchor run itself is unstamped
-    # (pre-stamp history only), band it alone rather than with unknowns.
-    if anchor["instrument"] is None:
+    # (pre-stamp history), band it alone rather than with unknowns.
+    if anchor["instrument"] is None or anchor["setup"] is None:
         band_runs = [anchor]
 
     def _band(axis: str, counted: bool = True) -> dict | None:
@@ -258,6 +265,7 @@ def derive_trust_panel(admin: bool = False) -> dict:
             "judge": get_config("eval_judge_model", ""),
             "corpus_fingerprint": latest["corpus"],
             "band_run_ids": [c["run_id"] for c in band_runs],
+            "run_setup": anchor["setup"],
             "question_set": {"total": n_other_q + n_honesty_q,
                              "honesty": n_honesty_q},
         }

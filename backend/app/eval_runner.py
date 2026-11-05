@@ -309,6 +309,15 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
         run_judge_instrument = (None if retrieval_only else
                                 model_catalog.resolve(_config_or_default(
                                     "eval_judge_model", EVAL_JUDGE_MODEL_DEFAULT)))
+        # Stamp the RUN SETUP once per run (app/run_setup.py): the build, this
+        # boot, every settings row and the run's own options. The trust panel
+        # bands only runs that share it - two runs alike in writer, corpus and
+        # judge can still measure two systems (one asking the peers, one not).
+        from app.run_setup import run_setup_stamp
+        run_setup = run_setup_stamp({
+            "writer": model, "use_rag": use_rag, "n_results": n_results,
+            "retrieval_only": retrieval_only, "use_peers": use_peers})
+        log("eval_run_setup_stamp", run_id=run_id, run_setup=run_setup)
 
         # INJECTION COHORT: its questions run LAST, with the poisoned fixture
         # planted into the REAL general collection only for that tail - planted
@@ -693,6 +702,7 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                     answer_model=model,
                     corpus_fingerprint=corpus_fp,
                     judge_instrument=run_judge_instrument,
+                    run_setup=run_setup,
                     run_at=run_at,
                 )
                 db.add(result)

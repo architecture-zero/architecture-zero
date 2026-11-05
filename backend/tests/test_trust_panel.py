@@ -46,11 +46,12 @@ def _ensure_questions(db, n_other_min=5):
     return db.query(EvalQuestion).count() - nh - ni, nh
 
 
-def _row(run_id, i, run_at, **vals):
+def _row(run_id, i, run_at, setup="setup-1", **vals):
     return EvalResult(run_id=run_id, question_id=10_000 + i,
                       question_text=f"q{i}", category="general", response="a",
                       answer_model="w1", corpus_fingerprint=_CORPUS,
-                      judge_instrument="inst-1", run_at=run_at, **vals)
+                      judge_instrument="inst-1", run_setup=setup,
+                      run_at=run_at, **vals)
 
 
 def _seed_uniform_run(db, run_id, run_at, n_other, n_honesty):
@@ -64,7 +65,8 @@ def _seed_uniform_run(db, run_id, run_at, n_other, n_honesty):
                           question_text=f"h{i}", category="honesty",
                           response="r", score=1, answer_model="w1",
                           corpus_fingerprint=_CORPUS,
-                          judge_instrument="inst-1", run_at=run_at))
+                          judge_instrument="inst-1", run_setup="setup-1",
+                          run_at=run_at))
 
 
 def _seed_mixed_run(db, run_id, run_at, n_other):
@@ -157,7 +159,7 @@ def test_honesty_and_gap_keep_their_shape(client):
                               question_text=f"h{i}", category="honesty",
                               response="r", score=1, answer_model="w1",
                               corpus_fingerprint=_CORPUS,
-                              judge_instrument="inst-1",
+                              judge_instrument="inst-1", run_setup="setup-1",
                               run_at="2026-10-28T04:00:00"))
 
     out = tp.derive_trust_panel(admin=False)
@@ -253,7 +255,7 @@ def _seed_retrieval_only_run(db, run_id, run_at, n_other):
                           question_text=f"q{i}", category="general",
                           response="[retrieval-only]", answer_model="w1",
                           corpus_fingerprint=_CORPUS, judge_instrument=None,
-                          run_at=run_at, score=None, faithfulness=None,
+                          run_setup="setup-1", run_at=run_at, score=None, faithfulness=None,
                           freshness=None, holdout=1 if i in (3, 4) else 0,
                           retrieval_hit=hits[i] if i < len(hits) else None))
 
@@ -341,3 +343,59 @@ def test_no_home_documents_means_no_retrieval_tile(client):
     out = tp.derive_trust_panel(admin=False)
     assert out["available"] is True
     assert out["retrieval"] is None
+
+
+# -- the run-setup leg of "identical" (2026-11-04) ----------------------------------
+# Two runs alike in writer, corpus, judge and exam shape banded as identical even
+# when one asked the peers and one did not - two systems, one "band across 2
+# identical runs". Each run now carries its setup stamp (app/run_setup.py), and a
+# band forms only within one. Rows from before the stamp band alone.
+
+def test_runs_under_two_setups_never_band(client):
+    tp.clear_trust_cache()
+    with get_session() as db:
+        db.query(EvalResult).delete()
+        n_other, n_honesty = _ensure_questions(db)
+        _seed_uniform_run(db, "run-a", "2026-10-28T18:00:00", n_other, n_honesty)
+        _seed_mixed_run(db, "run-b", "2026-10-28T19:00:00", n_other)
+        # run-b under another setup: the same writer, corpus and judge
+        db.flush()
+        db.query(EvalResult).filter(EvalResult.run_id == "run-b").update(
+            {"run_setup": "setup-2"})
+
+    out = tp.derive_trust_panel(admin=False)
+    assert out["correctness"] == {"low": 66.7, "high": 66.7, "runs": 1,
+                                  "passed": 2, "scored": 3}
+    tp.clear_trust_cache()
+    adm = tp.derive_trust_panel(admin=True)
+    assert adm["provenance"]["band_run_ids"] == ["run-b"]
+    assert adm["provenance"]["run_setup"] == "setup-2"
+
+
+def test_runs_before_the_stamp_band_alone(client):
+    tp.clear_trust_cache()
+    with get_session() as db:
+        db.query(EvalResult).delete()
+        n_other, n_honesty = _ensure_questions(db)
+        _seed_uniform_run(db, "run-a", "2026-10-28T20:00:00", n_other, n_honesty)
+        _seed_mixed_run(db, "run-b", "2026-10-28T21:00:00", n_other)
+        db.flush()
+        db.query(EvalResult).update({"run_setup": None})
+
+    out = tp.derive_trust_panel(admin=False)
+    assert (out["correctness"]["low"], out["correctness"]["high"],
+            out["correctness"]["runs"]) == (66.7, 66.7, 1)
+
+
+def test_runs_under_one_setup_still_band(client):
+    """CONTROL - the stamp narrows "identical", it does not end banding."""
+    tp.clear_trust_cache()
+    with get_session() as db:
+        db.query(EvalResult).delete()
+        n_other, n_honesty = _ensure_questions(db)
+        _seed_uniform_run(db, "run-a", "2026-10-28T22:00:00", n_other, n_honesty)
+        _seed_mixed_run(db, "run-b", "2026-10-28T23:00:00", n_other)
+
+    out = tp.derive_trust_panel(admin=False)
+    assert (out["correctness"]["low"], out["correctness"]["high"],
+            out["correctness"]["runs"]) == (66.7, 100.0, 2)
