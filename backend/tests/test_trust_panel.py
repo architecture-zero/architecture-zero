@@ -242,6 +242,90 @@ def test_the_retrieval_tile_is_the_latest_run_alone(client):
     assert out["retrieval"] == {"pct": 75.0, "passed": 3, "scored": 4}
 
 
+def _seed_retrieval_only_run(db, run_id, run_at, n_other):
+    """A complete RETRIEVAL-ONLY run, as the runner writes one: the writer is
+    stamped, the judge instrument is not (nothing was judged), every verdict
+    is None, and the hits read hit, hit, miss, no home document, hit - 3 of
+    4. The holdout flags mirror the mixed run's exam."""
+    hits = [1, 1, 0, None, 1]
+    for i in range(n_other):
+        db.add(EvalResult(run_id=run_id, question_id=10_000 + i,
+                          question_text=f"q{i}", category="general",
+                          response="[retrieval-only]", answer_model="w1",
+                          corpus_fingerprint=_CORPUS, judge_instrument=None,
+                          run_at=run_at, score=None, faithfulness=None,
+                          freshness=None, holdout=1 if i in (3, 4) else 0,
+                          retrieval_hit=hits[i] if i < len(hits) else None))
+
+
+# -- a retrieval-only run after a judged one (2026-11-04) ---------------------------
+# The panel took every judged axis from the latest run, so a retrieval-only run
+# (no verdicts, no instrument) became the band group alone and blanked the judged
+# tiles - "not yet measured" for correctness, holdout, gap, faithfulness and
+# freshness, over the full run a retrieval-only A/B had followed.
+
+def test_a_later_retrieval_only_run_keeps_the_judged_tiles(client):
+    tp.clear_trust_cache()
+    with get_session() as db:
+        db.query(EvalResult).delete()
+        n_other, _ = _ensure_questions(db)
+        _seed_mixed_run(db, "run-judged", "2026-10-28T11:00:00", n_other)
+        _seed_retrieval_only_run(db, "run-retr", "2026-10-29T12:00:00", n_other)
+
+    out = tp.derive_trust_panel(admin=False)
+    assert out["correctness"] == {"low": 66.7, "high": 66.7, "runs": 1,
+                                  "passed": 2, "scored": 3}
+    assert out["holdout"] == {"low": 50.0, "high": 50.0, "runs": 1,
+                              "passed": 1, "scored": 2}
+    assert out["gap"] == {"low": 16.7, "high": 16.7, "runs": 1}
+    assert out["faithfulness"]["passed"] == 2 and out["freshness"]["passed"] == 2
+    # Retrieval and the date are still the latest run's.
+    assert out["retrieval"] == {"pct": 75.0, "passed": 3, "scored": 4}
+    assert out["measured_at"] == "2026-10-29"
+
+
+def test_the_band_group_is_the_judged_runs(client):
+    tp.clear_trust_cache()
+    with get_session() as db:
+        db.query(EvalResult).delete()
+        n_other, _ = _ensure_questions(db)
+        _seed_mixed_run(db, "run-judged", "2026-10-28T13:00:00", n_other)
+        _seed_retrieval_only_run(db, "run-retr", "2026-10-29T14:00:00", n_other)
+
+    adm = tp.derive_trust_panel(admin=True)
+    assert adm["provenance"]["band_run_ids"] == ["run-judged"]
+
+
+def test_a_newer_judged_run_still_leads(client):
+    """CONTROL - a judged run after a retrieval-only one reads exactly as
+    before: its own bands, its own retrieval."""
+    tp.clear_trust_cache()
+    with get_session() as db:
+        db.query(EvalResult).delete()
+        n_other, n_honesty = _ensure_questions(db)
+        _seed_retrieval_only_run(db, "run-retr", "2026-10-28T15:00:00", n_other)
+        _seed_uniform_run(db, "run-judged", "2026-10-29T16:00:00", n_other, n_honesty)
+
+    out = tp.derive_trust_panel(admin=False)
+    assert (out["correctness"]["low"], out["correctness"]["runs"]) == (100.0, 1)
+    assert out["retrieval"]["pct"] == 100.0
+
+
+def test_retrieval_only_history_shows_no_judged_number(client):
+    """CONTROL - with no judged run at all, the judged tiles stay None (the
+    page's "not yet measured") and retrieval still shows."""
+    tp.clear_trust_cache()
+    with get_session() as db:
+        db.query(EvalResult).delete()
+        n_other, _ = _ensure_questions(db)
+        _seed_retrieval_only_run(db, "run-retr", "2026-10-28T17:00:00", n_other)
+
+    out = tp.derive_trust_panel(admin=False)
+    for axis in ("correctness", "holdout", "gap", "faithfulness", "freshness"):
+        assert out[axis] is None, axis
+    assert out["retrieval"] == {"pct": 75.0, "passed": 3, "scored": 4}
+
+
 def test_no_home_documents_means_no_retrieval_tile(client):
     """CONTROL - where no question names a home document the tile stays None
     as before: 0 of 0 is not a number to show."""

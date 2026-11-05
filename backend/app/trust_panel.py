@@ -177,8 +177,19 @@ def derive_trust_panel(admin: bool = False) -> dict:
 
     complete.sort(key=lambda c: c["run_at"])
     latest = complete[-1]
+    # The judged axes read from the newest run that WAS judged (2026-11-04),
+    # the way honesty reads from the newest run with honesty rows below. A
+    # retrieval-only run grades nothing and stamps no instrument, so when one
+    # was the latest it became the band group alone and every judged tile
+    # read "not yet measured" over the judged run it had merely followed (a
+    # retrieval-only A/B run after a full run is enough). Retrieval still
+    # reports from the latest run alone.
+    judged = [c for c in complete
+              if any(c.get(a) is not None
+                     for a in ("correctness", "holdout", "faithfulness", "freshness"))]
+    anchor = judged[-1] if judged else latest
     # The band group: identical configuration = same writer + same corpus +
-    # same JUDGE INSTRUMENT ERA + same exam shape as the latest run. The
+    # same JUDGE INSTRUMENT ERA + same exam shape as the anchor run. The
     # instrument leg is load-bearing: a rubric or judge change is a NEW
     # instrument, and readings from different instruments must never blend
     # into one "band" - that spread would be instrument drift wearing a
@@ -186,15 +197,15 @@ def derive_trust_panel(admin: bool = False) -> dict:
     # Retrieval is deterministic on a still corpus, so it reports from the
     # latest run alone.
     band_runs = [c for c in complete
-                 if c["writer"] == latest["writer"]
-                 and c["corpus"] == latest["corpus"]
-                 and c["instrument"] == latest["instrument"]
+                 if c["writer"] == anchor["writer"]
+                 and c["corpus"] == anchor["corpus"]
+                 and c["instrument"] == anchor["instrument"]
                  and c["instrument"] is not None
-                 and c["n_rest"] == latest["n_rest"]]
-    # Degenerate but honest fallback: if the latest run itself is unstamped
+                 and c["n_rest"] == anchor["n_rest"]]
+    # Degenerate but honest fallback: if the anchor run itself is unstamped
     # (pre-stamp history only), band it alone rather than with unknowns.
-    if latest["instrument"] is None:
-        band_runs = [latest]
+    if anchor["instrument"] is None:
+        band_runs = [anchor]
 
     def _band(axis: str, counted: bool = True) -> dict | None:
         scored = [c for c in band_runs if c[axis] is not None]
