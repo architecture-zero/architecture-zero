@@ -178,6 +178,29 @@ def test_fix_chat_with_the_guard_off_passes_the_figure_and_stamps_null(client, m
     assert _row(sid)[0] is None
 
 
+def _failing_stream(messages, model, tools=None, system_prompt="", max_tokens=1024):
+    yield {"type": "text", "text": "Half an answer: your rate was $150/hr, then"}
+    raise ValueError("provider stream error")
+
+
+def test_fix_a_failed_turn_still_shows_the_held_tail_masked(client, monkeypatch):
+    # The guard holds the last characters back; a round that fails must
+    # release them (through the filter) before the error, not drop them.
+    import app.runtime_config as rc
+    import app.routers.chat as chat_mod
+    monkeypatch.setattr(rc, "PII_OUTPUT_MODE", "off")
+    monkeypatch.setattr(rc, "COMP_FIGURE_GUARD", "redact")
+    monkeypatch.setattr(chat_mod, "ENABLE_AUDIT_LOG", True)
+    with patch("app.routers.chat.guest_chat_available", return_value=True), \
+         patch("app.routers.chat.get_config", side_effect=_guest_enabled_cfg), \
+         patch("app.routers.chat.stream_chat_events", side_effect=_failing_stream):
+        r = client.post("/api/chat", json={"prompt": "Hi", "model": "test-model",
+                                           "session_id": f"comp-err-{uuid.uuid4().hex[:8]}"})
+    assert "".join(_tokens(r)) == "Half an answer: your rate was [REDACTED:comp]/hr, then"
+    assert "150" not in r.text
+    assert "failed to complete" in r.text
+
+
 # -- 2. peer sources -----------------------------------------------------------
 
 QUESTION = "What is the vendor onboarding turnaround?"

@@ -273,5 +273,8 @@ def test_no_per_token_blocklist_call_is_left_and_every_round_flushes(chat_route_
     # filter and one flush each; one audit site stamps the receipt (the model
     # lane) - the refusal lane serves canned text and records NULL by omission.
     assert chat_src.count("_output_filter()") == 2
-    assert chat_src.count(".flush()") == 2
+    # ...plus the error path's release of the held tail (2026-11-06): a round
+    # that fails flushes its filter so the held characters reach the reader.
+    assert chat_src.count(".flush()") == 3
+    assert "_held = _pii_rounds[-1].flush() if _pii_rounds else \"\"" in chat_src
     assert chat_src.count("**_pii_receipt(") == 1

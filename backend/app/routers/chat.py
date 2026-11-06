@@ -1390,6 +1390,19 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
             yield "data: [DONE]\n\n"
         except Exception as e:
             increment("chat_errors_total")
+            # The held tail (2026-11-06). A filter that buffers - the comp
+            # guard, on by default, or PII redact - still holds the last
+            # characters it had not released when the round failed; without
+            # this they were dropped with the error, so the reader lost the
+            # end of what the model wrote. Released through the filter, so a
+            # figure in them is still masked.
+            try:
+                _held = _pii_rounds[-1].flush() if _pii_rounds else ""
+            except Exception:
+                _held = ""
+            if _held:
+                full_response.append(_held)
+                yield f"data: {json.dumps({'token': _held})}\n\n"
             # The exception goes to the log, where operators read it - its type
             # first and bounded to 300 (2026-10-31), the rule for every logged
             # exception (tests/test_logged_exception_text_bounded.py). What
