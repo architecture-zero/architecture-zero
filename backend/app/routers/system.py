@@ -33,6 +33,7 @@ from app import corpus_scan as _corpus_scan
 from app import model_catalog
 from app.runtime_config import (_config_or_default, _ollama_get, DEFAULT_MODEL,
                                 RAG_ONLY_MODE, PII_SCAN_MODE, PII_OUTPUT_MODE,
+                                COMP_FIGURE_GUARD,
                                 PII_OUTPUT_REDACT_TYPES, ALLOW_GUEST_MODE,
                                 guest_chat_available,
                                 DEMO_DAILY_GUEST_LIMIT,
@@ -188,6 +189,8 @@ def status():
         # types redact masks are the positive signal that it is live.
         "pii_output_mode": PII_OUTPUT_MODE,
         "pii_output_redact_types": list(PII_OUTPUT_REDACT_TYPES),
+        # The pay-figure guard (2026-11-06): redact unless set to exactly off.
+        "comp_figure_guard": COMP_FIGURE_GUARD,
         # Corpus injection gate (distinct from security.injection_protection,
         # which screens the USER's prompt). This one screens content ENTERING
         # the corpus and is the positive signal that the gate is live - a

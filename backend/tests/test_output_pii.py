@@ -177,11 +177,13 @@ def test_receipt_helper_sums_rounds_and_is_null_shaped_when_off():
     from app.runtime_config import _pii_receipt
     a = OutputFilter("redact", ALL); a.apply("ssn 123-45-6789.")
     b = OutputFilter("redact", ALL); b.apply("mail a@b.io and 123-45-6789.")
+    # comp_out_masked joined the receipt 2026-11-06 (the comp guard); None
+    # here because these filters run without it.
     assert _pii_receipt(a, b) == {"pii_out_hits": 3, "pii_out_redacted": 3,
-                                  "pii_out_types": "SSN,email"}
+                                  "pii_out_types": "SSN,email", "comp_out_masked": None}
     off = OutputFilter("off"); off.apply("123-45-6789")
     assert _pii_receipt(off) == {"pii_out_hits": None, "pii_out_redacted": None,
-                                 "pii_out_types": None}
+                                 "pii_out_types": None, "comp_out_masked": None}
     assert _pii_receipt() == _pii_receipt(off)
 
 
@@ -236,6 +238,9 @@ def test_chat_off_mode_streams_events_unchanged_with_a_null_receipt(client, monk
     from app.db import get_session
     from app.models import AuditLog
     monkeypatch.setattr(rc, "PII_OUTPUT_MODE", "off")
+    # The comp guard (2026-11-06) is on by default and buffers like a masking
+    # mode; "events unchanged" is the identity with BOTH off.
+    monkeypatch.setattr(rc, "COMP_FIGURE_GUARD", "off")
     monkeypatch.setattr(chat_mod, "ENABLE_AUDIT_LOG", True)
     sid = f"pii-off-{uuid.uuid4().hex[:8]}"
     with patch("app.routers.chat.guest_chat_available", return_value=True), \

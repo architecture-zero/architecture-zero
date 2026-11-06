@@ -27,8 +27,19 @@ def log_audit_entry(
     pii_out_hits: int | None = None,
     pii_out_redacted: int | None = None,
     pii_out_types: str | None = None,
+    comp_out_masked: int | None = None,
+    peer_sources: list[str] | None = None,
 ) -> None:
     """One audit row per answered turn.
+
+    comp_out_masked (2026-11-06): how many pay figures the comp guard masked
+    in the answer (app/pii.py _COMP_FIGURE). NULL when COMP_FIGURE_GUARD is
+    off or the lane never filtered; 0 is a real "none found".
+
+    peer_sources (2026-11-06): "peer: source" for every federation piece that
+    reached the prompt. Before it, `sources` listed local retrieval only, so
+    an answer built from a peer's documents read as "0 sources". NULL when no
+    peer was asked; [] when peers were asked and none was kept.
 
     pii_out_*: the output-side PII receipt from the lane's OutputFilter -
     pattern hits over the finished answer, spans masked before the reader
@@ -64,6 +75,8 @@ def log_audit_entry(
             pii_out_hits=pii_out_hits,
             pii_out_redacted=pii_out_redacted,
             pii_out_types=pii_out_types,
+            comp_out_masked=comp_out_masked,
+            peer_sources=json.dumps(peer_sources) if peer_sources is not None else None,
         ))
 
 
@@ -197,6 +210,10 @@ def _to_dict(e: AuditLog) -> dict:
         "pii_out_hits": e.pii_out_hits,
         "pii_out_redacted": e.pii_out_redacted,
         "pii_out_types": e.pii_out_types,
+        # Pay figures masked by the comp guard; None = guard off / older row.
+        "comp_out_masked": e.comp_out_masked,
+        # Federation pieces that reached the prompt; None = no peer asked.
+        "peer_sources": json.loads(e.peer_sources) if e.peer_sources else None,
     }
 
 
@@ -237,6 +254,7 @@ def export_audit_csv(
         "duration_ms", "ttft_ms",
         "pii_out_hits", "pii_out_redacted", "pii_out_types",
         "prompt_preview", "prompt_hash", "sources",
+        "comp_out_masked", "peer_sources",
     ])
     last_id = 0
     while True:
@@ -255,6 +273,7 @@ def export_audit_csv(
                 r.duration_ms, r.ttft_ms,
                 r.pii_out_hits, r.pii_out_redacted, r.pii_out_types,
                 r.prompt_preview, r.prompt_hash, r.sources,
+                r.comp_out_masked, r.peer_sources,
             ]) for r in batch]
             # Read inside the session: its commit on exit expires the rows.
             last_id = batch[-1].id if batch else last_id

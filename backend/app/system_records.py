@@ -169,7 +169,8 @@ def _snapshot() -> dict:
     from app.corpus_scan import INJECTION_SCAN_MODE
     from app.rerank import rerank_enabled, rerank_provider, rerank_model
     from app.runtime_config import (ALLOW_GUEST_MODE, RAG_ONLY_MODE, PII_SCAN_MODE,
-                                    PII_OUTPUT_MODE, _config_or_default,
+                                    PII_OUTPUT_MODE, COMP_FIGURE_GUARD,
+                                    _config_or_default,
                                     DEFAULT_MODEL, DEMO_DAILY_GUEST_LIMIT,
                                     ENCRYPTION_AT_REST_VERIFIED)
     from app.routers.chat import GUEST_MAX_TURNS
@@ -190,6 +191,7 @@ def _snapshot() -> dict:
     snap["rag_only"] = RAG_ONLY_MODE
     snap["pii_scan_mode"] = PII_SCAN_MODE
     snap["pii_output_mode"] = PII_OUTPUT_MODE
+    snap["comp_figure_guard"] = COMP_FIGURE_GUARD
     snap["injection_scan_mode"] = INJECTION_SCAN_MODE
     snap["encryption_verified"] = ENCRYPTION_AT_REST_VERIFIED
     snap["security"] = get_security_config()
@@ -294,6 +296,9 @@ def build_posture(snap: dict) -> str:
         "- PII scanning: " + _safe(snap["pii_scan_mode"], pii_modes),
         "- Output-side PII on answers: " + _safe(snap["pii_output_mode"], out_modes)
         + " (off scans nothing, warn counts, redact masks the configured types)",
+        "- Pay-figure guard on answers: " + _safe(snap["comp_figure_guard"], {"off", "redact"})
+        + " (redact masks a money amount beside a pay word, whatever the output-PII "
+        "mode; it backs the safety rule against stating a pay figure)",
         "- Indexed sources currently flagged by the injection scan: "
         + _num(snap["flagged_count"]),
         "- Retrieval-only mode (never answer from model memory): "

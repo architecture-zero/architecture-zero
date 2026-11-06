@@ -79,6 +79,63 @@ def build_blocklist(raw: str) -> list[str]:
 # document, a tool result, or the user's own prompt); it does not stop a
 # model that spells a number out in words.
 
+# ── Compensation figures (2026-11-06) ───────────────────────────────────────
+#
+# The safety rules tell the model never to state, estimate or infer a pay
+# figure - and an instruction is a request, not a control: a model with the
+# rule loaded on the turn can still work a figure out from numbers in front of
+# it and state it, and one did. This is the
+# control behind that rule: a money amount next to a PAY word is masked as
+# [REDACTED:comp] before the reader sees it, whatever the model decided.
+#
+# The word list is deliberately narrow, because ordinary money talk is not pay:
+# "a late fee of $35", "the repair labor was $300", "pay $120 by Friday", "an
+# interest rate of 6.5%" all pass. Bare "fee", "rate", "labor", "pay",
+# "income" and "earnings" count only with an owner word in front ("your fee",
+# "my rate", "contractor labor", "annual income"); salary, wages,
+# compensation, comp, paycheck, take-home, base pay and retainer count alone;
+# and an amount followed by an hourly marker ("$150/hr", "$95 an hour") counts
+# with no word at all. Regex-class like the PII patterns above: it masks a
+# figure in digits, not one spelled out in words.
+_AMOUNT = r"\d[\d,]*(?:\.\d+)?(?:\s?[kKmM]\b)?"
+_MONEY = (rf"(?:\$\s?{_AMOUNT}(?:\s?(?:-|to|and)\s?\$?\s?{_AMOUNT})?"   # $64K, $120,000 - $150,000
+          r"|\b\d[\d,]*(?:\.\d+)?\s?(?:[kK]\s?)?(?:dollars|USD)\b)")     # 64,000 dollars
+_OWNER = r"(?:my|his|her|your|their|our|the owner's|annual|yearly|hourly|daily|day|monthly)"
+_PAY_WORD = (r"(?:salary|salaries|wages?|compensation|comp|paycheck|take-home(?:\s+pay)?|base\s+pay|retainer"
+             rf"|{_OWNER}\s+(?:pay|rate|fees?|earnings|income|labor)"
+             r"|(?:bill(?:ing)?|pay|contract(?:or)?|consulting)\s+rate"
+             r"|(?:contract(?:or)?|consulting|project)\s+(?:fees?|labor))")
+_COMP_FIGURE = re.compile(
+    rf"\b{_PAY_WORD}\b[^\n.$]{{0,40}}?(?P<lead>{_MONEY})"
+    rf"|(?P<trail>{_MONEY})\s?(?:/\s?(?:hr|hour)\b|(?:an|per)\s+hour\b|hourly\b)",
+    re.IGNORECASE)
+COMP_MODES = ("off", "redact")
+_COMP_KIND = "comp"
+# A comp match can reach ~70 characters past its amount's first digit (a range
+# plus an hourly marker) and starts up to ~60 before it (the pay word and the
+# gap), so a filter with the comp guard on holds more and keeps the text it
+# already emitted as left context for the pay word.
+_COMP_HOLD = 80
+_COMP_CTX = 80
+
+
+def normalize_comp_mode(raw: str | None) -> str:
+    """'redact' unless set to exactly 'off'. The PII mode falls back to off on
+    a typo; this one falls back to ON - it backs a safety rule, so a mistyped
+    value must leave the control working, never silently disable it."""
+    mode = (raw or "redact").strip().lower()
+    return mode if mode in COMP_MODES else "redact"
+
+
+def comp_figure_spans(text: str) -> list[tuple[int, int]]:
+    """(start, end) of every pay figure's AMOUNT in text - the part masked."""
+    spans = []
+    for m in _COMP_FIGURE.finditer(text):
+        g = "lead" if m.group("lead") is not None else "trail"
+        spans.append((m.start(g), m.end(g)))
+    return spans
+
+
 _HOLD = 24
 _MARK_OUT = "[REDACTED:{}]"
 _BLOCK_MARK = "[BLOCKED]"
@@ -125,16 +182,23 @@ class OutputFilter:
 
     def __init__(self, mode: str = "off",
                  redact_types: list[str] | tuple[str, ...] | None = None,
-                 blocklist: list[str] | None = None):
+                 blocklist: list[str] | None = None,
+                 comp: bool = False):
         self.mode = normalize_output_mode(mode)
         self.redact_types = frozenset(redact_types if redact_types is not None
                                       else DEFAULT_REDACT_TYPES)
         self.blocklist = [t for t in (blocklist or []) if t]
         self._scan = self.mode != "off"
         self._mask = self.mode == "redact"
-        # Buffering is needed to MASK (PII or blocklist); counting alone reads
-        # the finished text once at flush, so 'warn' costs no delay.
-        self._buffer = self._mask or bool(self.blocklist)
+        # The comp guard (see _COMP_FIGURE) is independent of the PII mode: a
+        # private instance runs PII off and still never states a pay figure.
+        self.comp = bool(comp)
+        self._hold = _COMP_HOLD if self.comp else _HOLD
+        self._ctx = ""            # the tail of what was already emitted (original text)
+        self.comp_masked: int | None = 0 if self.comp else None
+        # Buffering is needed to MASK (PII, blocklist or comp); counting alone
+        # reads the finished text once at flush, so 'warn' costs no delay.
+        self._buffer = self._mask or bool(self.blocklist) or self.comp
         self._buf = ""
         self._orig: list[str] = []
         self.redacted = 0
@@ -179,6 +243,14 @@ class OutputFilter:
         for term in self.blocklist:
             for m in re.finditer(re.escape(term), buf, flags=re.IGNORECASE):
                 spans.append((m.start(), m.end(), _BLOCK_MARK))
+        if self.comp:
+            # Matched over the emitted tail + the buffer, so a pay word that
+            # already went out still marks the amount that follows it; only
+            # the amount's part inside the buffer can be masked.
+            off = len(self._ctx)
+            for start, end in comp_figure_spans(self._ctx + buf):
+                if end - off > 0:
+                    spans.append((max(start - off, 0), end - off, _COMP_KIND))
         # Longest span first at a shared start, so an overlap resolves to the
         # bigger match - the one-shot order redact_pii would also reach.
         spans.sort(key=lambda s: (s[0], -s[1]))
@@ -189,7 +261,7 @@ class OutputFilter:
         if final:
             cut = len(buf)
         else:
-            cut = len(buf) - _HOLD
+            cut = len(buf) - self._hold
             while cut > 0 and buf[cut - 1] in _RUN_CHARS:   # rule 2
                 cut -= 1
             if cut <= 0:
@@ -207,6 +279,9 @@ class OutputFilter:
             out.append(buf[pos:start])
             if kind == _BLOCK_MARK:
                 out.append(_BLOCK_MARK)
+            elif kind == _COMP_KIND:
+                out.append(_MARK_OUT.format(_COMP_KIND))
+                self.comp_masked += 1
             else:
                 out.append(_MARK_OUT.format(kind))
                 self.redacted += 1
@@ -215,12 +290,15 @@ class OutputFilter:
                 cut = end                  # a settled span may cross the cut
         if pos < cut:
             out.append(buf[pos:cut])
+        if self.comp:
+            self._ctx = (self._ctx + buf[:cut])[-_COMP_CTX:]
         self._buf = buf[cut:]
         return "".join(out)
 
 
 def redact_output(text: str, mode: str = "redact",
                   redact_types: list[str] | tuple[str, ...] | None = None,
-                  blocklist: list[str] | None = None) -> str:
+                  blocklist: list[str] | None = None,
+                  comp: bool = False) -> str:
     """One-shot form of OutputFilter for callers that hold the whole answer."""
-    return OutputFilter(mode, redact_types, blocklist).apply(text)
+    return OutputFilter(mode, redact_types, blocklist, comp).apply(text)

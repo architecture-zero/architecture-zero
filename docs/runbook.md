@@ -521,8 +521,12 @@ and the admin roster carries the same field per user.
   retrieval), Redis and Ollama (the timer's last pass, reported, non-fatal).
 - GET /api/status (authed) - the posture surface: which fail-open controls
   are actually on (rate limiting, injection scan mode, PII mode at ingest
-  and the output-side PII mode on answers with the types it masks), provider
-  config, agent-tool gates.
+  and the output-side PII mode on answers with the types it masks, and the
+  pay-figure guard, `comp_figure_guard`, on unless COMP_FIGURE_GUARD is
+  exactly `off`), provider config, agent-tool gates. The audit log records
+  what each answer's guard masked (`comp_out_masked`) and which federation
+  pieces reached the prompt (`peer_sources`, "peer: source"; NULL when no
+  peer was asked) - before 2026-11-06 a peer-built answer read as 0 sources.
 - GET /metrics - Prometheus counters. Authenticated: a signed-in request
 holding `view_analytics` (the Owner, or the Admin preset) works, and for a
 scraper set METRICS_TOKEN in the backend environment

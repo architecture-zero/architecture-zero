@@ -849,6 +849,7 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
     # Query enabled peer knowledge bases in parallel - returns raw chunks, no
     # AI call
     peer_chunks: list[dict] = []
+    _peers_asked = False   # the audit row's peer_sources: NULL unless a peer was asked
     # CLEARANCE AT THE FEDERATION SEAM. Peer chunks never pass retrieve(), so
     # the department gate that protects local retrieval never sees them - which
     # made federation the one retrieval surface where clearance was not
@@ -870,6 +871,7 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
         log("peer_query_refused", caller_level=caller_level,
             required=PEER_CONSUME_MIN_LEVEL)
     elif request.use_peers:
+        _peers_asked = True
         all_peers = get_peers()
         enabled_peers = [p for p in all_peers if p.get("enabled")]
         logger.info("Peer query requested - %d peers registered, %d enabled", len(all_peers), len(enabled_peers))
@@ -911,6 +913,16 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
         logger.info("Peer lane: %d sent, %d over the threshold (%.2f), %d after the scan, "
                     "%d kept by the rank", _lane.get("sent", 0), _lane.get("admitted", 0),
                     rag_threshold, _lane.get("scanned", 0), _lane.get("kept", 0))
+
+    # What the audit row says the peers supplied (2026-11-06). `sources` lists
+    # local retrieval only, so an answer built from a peer's documents read as
+    # "0 sources" - federation was invisible in the record. These are the
+    # pieces that SURVIVED the peer lane (what the model actually saw), one
+    # "peer: source" per document, bounded because the names are a peer's.
+    peer_sources: list[str] | None = (
+        list(dict.fromkeys(f"{str(c.get('peer', '?'))[:80]}: {str(c.get('source', '?'))[:200]}"
+                           for c in peer_chunks))[:20]
+        if _peers_asked else None)
 
     # PROMPT ASSEMBLY, ONCE, AFTER BOTH LANES (2026-10-02). It used to happen
     # inside the local block,
@@ -1102,6 +1114,7 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
                         rerank_ms=_rr_stats.get("rerank_ms"),
                         rerank_pool=_rr_stats.get("rerank_pool"),
                         rerank_provider=_rr_stats.get("rerank_provider"),
+                        peer_sources=peer_sources,
                     )
             except Exception as bookkeeping_error:
                 log_error("chat_bookkeeping_error", session_id=request.session_id,
@@ -1363,9 +1376,10 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
                         rerank_ms=_rr_stats.get("rerank_ms"),
                         rerank_pool=_rr_stats.get("rerank_pool"),
                         rerank_provider=_rr_stats.get("rerank_provider"),
-                        # The output-PII receipt, summed over every round's
-                        # filter (retry included).
+                        # The output-filter receipt (PII and comp), summed
+                        # over every round's filter (retry included).
                         **_pii_receipt(*_pii_rounds),
+                        peer_sources=peer_sources,
                     )
                 log("chat_response", session_id=request.session_id,
                     model=request.model, chars=len(response_text), ttft_ms=ttft_ms,

@@ -15,8 +15,8 @@ import requests
 
 from app.config import get_config
 from app.logger import get_logger
-from app.pii import (build_blocklist, OutputFilter, normalize_output_mode,
-                     parse_redact_types)
+from app.pii import (build_blocklist, OutputFilter, normalize_comp_mode,
+                     normalize_output_mode, parse_redact_types)
 # _get_runtime and _ollama_headers are PRIVATE names in app.providers. This
 # module is a second consumer of both, so a rename over there orphans this file
 # rather than failing at its definition site.
@@ -204,22 +204,37 @@ if _unknown_pii_types:
                using=PII_OUTPUT_REDACT_TYPES)
 
 
+# The comp guard (2026-11-06): the code control behind the safety rules' "never
+# state, estimate, or infer a pay figure" - a money amount beside a pay word is
+# masked in every answer, whatever the PII mode. ON unless set to exactly
+# "off"; a typo leaves it on (normalize_comp_mode). See app/pii.py _COMP_FIGURE.
+COMP_FIGURE_GUARD = normalize_comp_mode(os.getenv("COMP_FIGURE_GUARD"))
+if (os.getenv("COMP_FIGURE_GUARD") or "redact").strip().lower() != COMP_FIGURE_GUARD:
+    from app.logger import log_error as _log_error
+    _log_error("comp_figure_guard_invalid", value=os.getenv("COMP_FIGURE_GUARD"),
+               using=COMP_FIGURE_GUARD)
+
+
 def _output_filter() -> OutputFilter:
     """One per answer. Reads the module-level config at call time so a test
     can monkeypatch runtime_config.PII_OUTPUT_MODE like the other knobs."""
-    return OutputFilter(PII_OUTPUT_MODE, PII_OUTPUT_REDACT_TYPES, _BLOCKLIST)
+    return OutputFilter(PII_OUTPUT_MODE, PII_OUTPUT_REDACT_TYPES, _BLOCKLIST,
+                        comp=COMP_FIGURE_GUARD == "redact")
 
 
 def _pii_receipt(*filters: OutputFilter) -> dict:
-    """The audit row's output-PII columns from FLUSHED filters - one per
-    provider round of the answer, summed. NULL-shaped when the mode is off
-    (hits is None on every filter): unknown, never 0."""
+    """The audit row's output-filter columns from FLUSHED filters - one per
+    provider round of the answer, summed. The PII half is NULL-shaped when the
+    mode is off (hits is None on every filter): unknown, never 0. The comp
+    half is NULL when the guard is off on every filter, else the masked count."""
+    comp = [f.comp_masked for f in filters if f.comp_masked is not None]
+    receipt = {"comp_out_masked": sum(comp) if comp else None}
     counted = [f for f in filters if f.hits is not None]
     if not counted:
-        return {"pii_out_hits": None, "pii_out_redacted": None,
+        return {**receipt, "pii_out_hits": None, "pii_out_redacted": None,
                 "pii_out_types": None}
     types = sorted({t for f in counted for t in f.hits})
-    return {"pii_out_hits": sum(sum(f.hits.values()) for f in counted),
+    return {**receipt, "pii_out_hits": sum(sum(f.hits.values()) for f in counted),
             "pii_out_redacted": sum(f.redacted for f in counted),
             "pii_out_types": ",".join(types) or None}
 

@@ -71,6 +71,11 @@ def _run_migrations():
         "ALTER TABLE audit_log ADD COLUMN pii_out_hits INTEGER",
         "ALTER TABLE audit_log ADD COLUMN pii_out_redacted INTEGER",
         "ALTER TABLE audit_log ADD COLUMN pii_out_types VARCHAR(120)",
+        # audit_log.comp_out_masked / peer_sources (2026-11-06): the comp
+        # guard's receipt, and the federation pieces an answer used. Older
+        # rows read NULL - unknown, never 0 or "no peers".
+        "ALTER TABLE audit_log ADD COLUMN comp_out_masked INTEGER",
+        "ALTER TABLE audit_log ADD COLUMN peer_sources TEXT",
         # eval_results.run_setup - the run-setup stamp (2026-11-04,
         # app/run_setup.py). Rows written before it read NULL and band alone.
         "ALTER TABLE eval_results ADD COLUMN run_setup VARCHAR(64)",

@@ -173,6 +173,14 @@ class AuditLog(Base):
     pii_out_hits     = Column(Integer, nullable=True)
     pii_out_redacted = Column(Integer, nullable=True)
     pii_out_types    = Column(String(120), nullable=True)
+    # The comp guard's receipt (2026-11-06): pay figures masked in the answer
+    # (app/pii.py _COMP_FIGURE). NULL when COMP_FIGURE_GUARD is off or the
+    # lane never filtered (the refusal lane); 0 is a real "none".
+    comp_out_masked  = Column(Integer, nullable=True)
+    # Federation pieces that reached the prompt, "peer: source" (JSON list,
+    # 2026-11-06). `sources` is local retrieval only, so an answer built from
+    # a peer read as "0 sources" before this. NULL = no peer asked.
+    peer_sources     = Column(Text, nullable=True)
 
 
 Index("idx_audit_ts",   AuditLog.timestamp)
