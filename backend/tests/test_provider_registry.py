@@ -201,7 +201,7 @@ def test_models_endpoint_lists_keyed_provider_with_fallback(client, admin_header
     groups = {g["provider"]: g for g in r.json()["groups"]}
     assert "gemini" in groups
     values = [x["value"] for x in groups["gemini"]["models"]]
-    assert "gemini-3.6-flash" in values
+    assert "gemini-flash-latest" in values
     assert "mistral" not in groups  # unkeyed providers stay dormant
     m._compat_models_cache.clear()
 

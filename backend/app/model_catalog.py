@@ -40,11 +40,12 @@ FAILURE_CACHE_SECONDS = 300   # an unreadable one is asked for again sooner
 # What an alias resolves to when Anthropic's list cannot be read (no key, an
 # outage) and nothing has resolved since this process started. Read ONLY then:
 # while the live list answers, the newest model it names wins. Update a line
-# when its family's newest model changes.
+# when its family's newest model changes (each line matched a live list read
+# 2026-11-06; haiku had stayed on 4.5 after 5.5 shipped).
 FAMILY_FALLBACK = {
     "opus": "claude-opus-5-5",
     "sonnet": "claude-sonnet-5-5",
-    "haiku": "claude-haiku-4-5-20251001",
+    "haiku": "claude-haiku-5-5",
 }
 
 # Picker order: the three tiers first, any other family the key lists after.
@@ -321,11 +322,14 @@ def listed_window(model_id: str) -> int | None:
 
 # -- Other providers: the newest of each family -------------------------------
 
-# Models a chat cannot use - embeddings, speech, images, moderation, search -
-# dropped from a provider's list by any of these in the id.
+# Models a chat cannot use - embeddings, speech, images, moderation, search,
+# robot control and computer-use agents - dropped from a provider's list by
+# any of these in the id. "banana" is Gemini's image family (nano-banana),
+# whose ids carry no "image"; the last three were in the live Gemini picker
+# until 2026-11-06.
 _NOT_FOR_CHAT = ("embed", "tts", "whisper", "transcri", "audio", "image", "veo",
                  "dall-e", "moderation", "guard", "rerank", "aqa", "realtime",
-                 "search", "live", "ocr")
+                 "search", "live", "ocr", "robotics", "computer-use", "banana")
 _FLAG_WORDS = {"preview", "exp", "experimental", "latest"}
 _SIZE_RE = re.compile(r"^\d+(\.\d+)?[bm]$")              # 70b, 1.5b - part of the family
 _VERSION_RE = re.compile(r"^v?(\d+(?:\.\d+)*)[a-z]?$")   # 3.6, 4o, v4, 2411, 001

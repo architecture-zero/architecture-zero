@@ -129,6 +129,9 @@ def update_settings(body: ProviderSettingsRequest, current_user: dict = Depends(
         val = getattr(body, f"{name}_api_key", None)
         if val is not None and val.strip() not in _MASKED:
             set_config(f"{name}_api_key", encrypt_secret(val.strip()))
+            # A new key gets a fresh list read, not the old key's cached one
+            # (a refused list would otherwise hide the fixed key's models).
+            _compat_models_cache.pop(name, None)
     if body.default_model is not None:
         set_config("default_model", body.default_model.strip())
     if body.rag_similarity_threshold is not None:
@@ -184,28 +187,53 @@ def _fetch_anthropic_models() -> list:
     return model_catalog.anthropic_picker_models(_anthropic_badge)
 
 _OPENAI_MODELS = [
-    {"value": "gpt-4o",      "label": "GPT-4o",      "badge": "Best"},
-    {"value": "gpt-4o-mini", "label": "GPT-4o mini", "badge": "Fast"},
-    {"value": "o3-mini",     "label": "o3-mini",      "badge": "Reason"},
+    {"value": "gpt-6-astra", "label": "GPT-6 Astra", "badge": "Best"},
+    {"value": "gpt-6-luna",  "label": "GPT-6 Luna",  "badge": "Fast"},
 ]
 
 # Static fallbacks for registry providers when their live /models call fails
 # (no network, provider outage) - the picker must never be empty for a keyed
 # provider. The LIVE list from _fetch_compat_models is what users normally
-# see.
+# see. Ids read 2026-11-06: Gemini, Mistral and DeepSeek from each vendor's
+# live list, each answering a one-line call; OpenAI and xAI from the vendor's
+# own models page. The list this replaced offered o3-mini (shut down
+# 2026-10-23), the gpt-4o pair (snapshots shut down 2027-01-14), Gemini 2.5
+# Pro and two ids no longer listed. Gemini's entries are the vendor's own
+# "-latest" aliases, which follow the family by themselves.
 _COMPAT_FALLBACK_MODELS: dict = {
     "openai":   _OPENAI_MODELS,
-    "gemini":   [{"value": "gemini-3.6-flash", "label": "Gemini 3.6 Flash", "badge": "Fast"},
-                 {"value": "gemini-2.5-pro",   "label": "Gemini 2.5 Pro",   "badge": "Best"}],
-    "mistral":  [{"value": "mistral-large-latest", "label": "Mistral Large", "badge": "Best"},
-                 {"value": "mistral-small-latest", "label": "Mistral Small", "badge": "Fast"}],
+    "gemini":   [{"value": "gemini-flash-latest", "label": "Gemini Flash (latest)", "badge": "Fast"},
+                 {"value": "gemini-pro-latest",   "label": "Gemini Pro (latest)",   "badge": "Best"}],
+    "mistral":  [{"value": "mistral-large-4",      "label": "Mistral Large 4", "badge": "Best"},
+                 {"value": "mistral-small-latest", "label": "Mistral Small",   "badge": "Fast"}],
     "groq":     [],  # no unique prefix - live list only (values are namespaced groq:<id>)
-    "xai":      [{"value": "grok-4.5", "label": "Grok 4.5", "badge": "Best"}],
-    "deepseek": [{"value": "deepseek-v4-flash", "label": "DeepSeek V4 Flash", "badge": "Fast"},
-                 {"value": "deepseek-v4-pro",   "label": "DeepSeek V4 Pro",   "badge": "Best"}],
+    "xai":      [{"value": "grok-4.7", "label": "Grok 4.7", "badge": "Best"}],
+    "deepseek": [{"value": "deepseek-flash",  "label": "DeepSeek Flash",  "badge": "Fast"},
+                 {"value": "deepseek-v4-pro", "label": "DeepSeek V4 Pro", "badge": "Best"}],
 }
 
-_compat_models_cache: dict = {}  # provider -> {"ts": float, "models": list}
+_compat_models_cache: dict = {}  # provider -> {"ts", "models", "all"[, "refused", "ttl"]}
+
+# A refused list is asked for again after five minutes, not an hour, so a key
+# fixed outside the Settings tab (which clears the entry itself) shows soon.
+_REFUSED_CACHE_SECONDS = 300
+
+
+def _list_refused(status: int) -> bool:
+    """A 4xx other than a timeout (408) or a rate limit (429): the vendor is
+    refusing this key or this request - deleted, revoked, wrong - and a chat
+    with the same base and key would be refused the same way. (xAI answers a
+    bad key with 400, OpenAI with 401.) The static fallback is for an outage -
+    a 5xx, no network - never for this: offering it here made a key the vendor
+    had deleted read as a working provider, with models that could only fail
+    (found 2026-11-06). Anything but a whole-number status is not a refusal."""
+    return (isinstance(status, int) and not isinstance(status, bool)
+            and 400 <= status < 500 and status not in (408, 429))
+
+
+def compat_list_refused(provider: str) -> bool:
+    """True while the provider's last /models read was refused."""
+    return bool((_compat_models_cache.get(provider) or {}).get("refused"))
 
 
 def _fetch_compat_models(provider: str, all_versions: bool = False) -> list:
@@ -230,13 +258,22 @@ def _fetch_compat_models(provider: str, all_versions: bool = False) -> list:
     now = _time.time()
     key = "all" if all_versions else "models"
     cached = _compat_models_cache.get(provider)
-    if cached is not None and now - cached["ts"] < 3600:
+    if cached is not None and now - cached["ts"] < cached.get("ttl", 3600):
         return cached[key]
     entry = OPENAI_COMPAT[provider]
     everything = None
     try:
         resp = requests.get(f"{_compat_base(provider)}/models",
                             headers=_compat_headers(provider), timeout=5)
+        if _list_refused(resp.status_code):
+            # Refused, not down: no models, and the picker leaves the
+            # provider out (compat_list_refused). Status only - a vendor's
+            # error text can echo the key it refused.
+            log("compat_models_refused", provider=provider, status=resp.status_code)
+            _compat_models_cache[provider] = {"ts": now, "models": [], "all": [],
+                                              "refused": True,
+                                              "ttl": _REFUSED_CACHE_SECONDS}
+            return []
         resp.raise_for_status()
         models, created = [], {}
         for row in resp.json().get("data", []):
@@ -327,15 +364,19 @@ def get_available_models(all_versions: bool = False):
     if "openai" in offered:
         # Live like every registry provider (its static list is the fallback):
         # a hand-kept list only ever shows the models current when it was written.
-        groups.append({"provider": "openai", "label": "OpenAI",
-                       "models": _fetch_compat_models("openai", all_versions)})
+        models = _fetch_compat_models("openai", all_versions)
+        if not compat_list_refused("openai"):
+            groups.append({"provider": "openai", "label": "OpenAI", "models": models})
     # Registry providers appear the moment their key is configured - no
     # enable flag; dormant (unkeyed) providers stay out of the picker
-    # entirely.
+    # entirely, and so does a provider whose key the vendor refused (its
+    # models cannot answer).
     for name, entry in OPENAI_COMPAT.items():
         if name == "openai":  # its own group above (offered_providers: its toggle or a key)
             continue
         if name in offered:
-            groups.append({"provider": name, "label": entry["label"],
-                           "models": _fetch_compat_models(name, all_versions)})
+            models = _fetch_compat_models(name, all_versions)
+            if not compat_list_refused(name):
+                groups.append({"provider": name, "label": entry["label"],
+                               "models": models})
     return {"groups": groups}
