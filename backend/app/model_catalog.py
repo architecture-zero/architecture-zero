@@ -320,6 +320,37 @@ def listed_window(model_id: str) -> int | None:
     return _listed_windows.get(model_id)
 
 
+# -- Listed capabilities (2026-11-06) -----------------------------------------
+
+# What a vendor's own list row says a model cannot do in a chat. Where a row
+# says it, that decides, ahead of the id word list below (the backstop for
+# rows that say nothing - Gemini's, OpenAI's, xAI's and DeepSeek's carry no
+# such field): Mistral's `capabilities.completion_chat` false, or Groq's
+# `output_modalities` without "text" (its Orpheus voice models answer in
+# speech, its Whisper models in transcription - the Orpheus pair reached the
+# chat picker, no "tts" in their ids). Noted where the picker reads the lists
+# (routers/settings.py _fetch_compat_models), keyed by the picker value, like
+# the windows above.
+_listed_not_for_chat: set = set()
+
+
+def note_listed_capability(model_id: str, row: dict) -> None:
+    """Keep whether a vendor's list row declares `model_id` unusable for chat;
+    a later row saying otherwise clears it."""
+    caps = row.get("capabilities")
+    outs = row.get("output_modalities")
+    if ((isinstance(caps, dict) and caps.get("completion_chat") is False)
+            or (isinstance(outs, list) and outs and "text" not in outs)):
+        _listed_not_for_chat.add(model_id)
+    else:
+        _listed_not_for_chat.discard(model_id)
+
+
+def listed_not_for_chat(model_id: str) -> bool:
+    """True when the vendor's own list row said this picker value cannot chat."""
+    return model_id in _listed_not_for_chat
+
+
 # -- Other providers: the newest of each family -------------------------------
 
 # Models a chat cannot use - embeddings, speech, images, moderation, search,
@@ -354,7 +385,8 @@ def _family_version(model_id: str) -> tuple:
 
 
 def trim_to_newest(models: list, created: dict | None = None) -> list:
-    """A provider's picker list without the models a chat cannot use, and
+    """A provider's picker list without the models a chat cannot use (by the
+    vendor's own list row where it says so, else by the id word list), and
     with each family down to one entry: the provider's own "-latest" alias
     when it lists one (it follows the family by itself), else the newest
     stable model - by creation time when the provider gives one for every
@@ -366,7 +398,7 @@ def trim_to_newest(models: list, created: dict | None = None) -> list:
     for m in models:
         value = m["value"]
         mid = value.split(":", 1)[1] if ":" in value else value
-        if any(w in mid.lower() for w in _NOT_FOR_CHAT):
+        if listed_not_for_chat(value) or any(w in mid.lower() for w in _NOT_FOR_CHAT):
             continue
         fam, ver, flags = _family_version(mid)
         families.setdefault(fam, []).append((m, ver, flags, created.get(value)))

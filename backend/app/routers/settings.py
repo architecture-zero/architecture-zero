@@ -292,6 +292,9 @@ def _fetch_compat_models(provider: str, all_versions: bool = False) -> list:
             # The window the vendor declares for the model, where it does
             # (2026-10-29): the chat trims a long history to it.
             model_catalog.note_listed_window(value, row)
+            # And what it says the model cannot do in a chat (2026-11-06):
+            # the picker's trim drops it.
+            model_catalog.note_listed_capability(value, row)
             if isinstance(row.get("created"), (int, float)):
                 created[value] = row["created"]
         everything = models or None
