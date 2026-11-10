@@ -167,6 +167,37 @@ def _collection_name(department: str | None = None) -> str:
     return f"kb_{safe}"
 
 
+# The vector store's own rule for a collection name: 3 to 63 characters,
+# starting and ending with a letter or digit (chromadb's check_index_name).
+_COLLECTION_NAME_MAX = 63
+
+
+def department_name_refusal(department: str | None) -> str | None:
+    """Why a department cannot be written to, or None when it can
+    (2026-11-10): the sentence a write door answers.
+
+    A department is created by its first write, as the collection
+    _collection_name names, and the store refuses a name longer than 63
+    characters or one that does not end in a letter or digit. The write doors
+    passed any name through, so "sales-", "Sales Team!" (its key is
+    "sales_team_") and a 61-character name each reached the store's own
+    ValueError after the body had been read and scanned: a 500 that named
+    neither the department nor the rule.
+
+    Judged on the name the collection would have, so it refuses what the
+    store would and nothing else (tests/test_department_name_shape.py
+    compares the two). "kb_" comes first, so only the length and the last
+    character are a department's to get wrong."""
+    name = _collection_name(department)
+    if len(name) > _COLLECTION_NAME_MAX:
+        return ("Department name is too long: at most "
+                f"{_COLLECTION_NAME_MAX - len('kb_')} characters")
+    if name[-1] in "_-":
+        return ("Department name must end with a letter or a digit (a-z, 0-9): "
+                "a space or a symbol at the end cannot be stored")
+    return None
+
+
 def _existing_collection(department: str | None = None):
     """The department's collection, or None if it does not exist yet.
 

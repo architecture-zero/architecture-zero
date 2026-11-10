@@ -33,7 +33,8 @@ from app.chunking import chunk_plain
 from app.database import (add_document, list_sources, delete_source,
                           list_departments, list_pii_sources, get_source_ids,
                           delete_documents, restamp_reused_chunks,
-                          chunk_metadata, restore_chunk_metadata)
+                          chunk_metadata, restore_chunk_metadata,
+                          department_name_refusal)
 from app.db import get_session
 from app.ingest_sync import (KNOWLEDGE_DIR, _sync_knowledge_dir, _sync_docs,
                              _prune_orphan_docs, _prune_orphan_knowledge,
@@ -342,6 +343,18 @@ def _check_department_write(current_user: dict, department: str,
         raise HTTPException(status_code=403, detail=f"Not permitted to {action} department: {department}")
 
 
+def _refuse_unstorable_department(department: str | None) -> None:
+    """The two doors that CREATE a department - ingest and upload - refuse a
+    name the vector store cannot hold, in a sentence, before the body is read
+    (2026-11-10; database.department_name_refusal has the rule). Asked after
+    the write check, so who may write where is answered first. The source
+    delete and the quarantine review do not ask: they create no collection,
+    and a row held under such a name before this must still be discardable."""
+    refusal = department_name_refusal(department)
+    if refusal:
+        raise HTTPException(status_code=400, detail=refusal)
+
+
 def _ingest_trust(current_user: dict, requested: str | None = None) -> str:
     """Provenance tier for API/upload ingestion (injection gate). Owner-role
     content is the owner's own -> curated (an Owner may explicitly request a
@@ -373,6 +386,7 @@ from app.quarantine import resolve_moot_holds, write_quarantine_row as _write_qu
 def ingest(request: IngestRequest, current_user: dict = Depends(require_permission("manage_kb"))):
     from app.corpus_scan import QuarantinedContent
     _check_department_write(current_user, request.department or "general")
+    _refuse_unstorable_department(request.department)
     # An id a system writer holds is refused at the door (2026-10-29). The
     # knowledge file sync and the system records write content-addressed ids
     # (md5 of department, source and chunk text) and skipped an id already
@@ -597,6 +611,7 @@ async def upload_file(
     current_user: dict = Depends(require_permission("manage_kb")),
 ):
     _check_department_write(current_user, department or "general")
+    _refuse_unstorable_department(department)
     name = file.filename or "upload"
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
     # Read in chunks and stop AT the limit. `await file.read()` pulled the
