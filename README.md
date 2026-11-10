@@ -96,7 +96,9 @@ The embedder is **required whichever provider answers chat.** Only the chat
 model is swappable for a cloud API; embeddings speak the Ollama dialect to
 `EMBED_BASE` and have no provider seam. With nothing reachable there the
 instance still boots, ingestion fails per file, and any question asked with
-retrieval on - the default - returns a 500 rather than an answer. `/api/health`
+retrieval on - the default - gets an outage notice instead of an answer ("I
+could not reach my knowledge base for this question...", with a reference id
+the backend log carries). `/api/health`
 reads only the self-check's last pass against the chat endpoint (it calls nothing
 itself), so it reports healthy throughout. `/api/health/ready` is the check that
 sees it: while the instance has documents to serve (the shipped `knowledge/`

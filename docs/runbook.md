@@ -38,8 +38,10 @@ override was added; the README carries the same note).
    endpoint (`EMBED_BASE`, model `nomic-embed-text`) and it is required no
    matter which provider answers chat. Without it the instance still boots
    and `/api/health` reports healthy, every ingest fails, and a question
-   asked with retrieval on - the default - answers 500 rather than answering
-   ungrounded. `/api/health/ready` is the check that sees it: with documents
+   asked with retrieval on - the default - is not answered ungrounded: the
+   reply is an outage notice ("I could not reach my knowledge base for this
+   question...", with a reference id the backend log carries).
+   `/api/health/ready` is the check that sees it: with documents
    to serve (the shipped `knowledge/` folder counts), its retrieval-lane check
    runs at boot, and readiness answers 503 (`rag: error`) until the embedder
    answers and the store holds the documents - Monitoring, below, has the

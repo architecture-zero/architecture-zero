@@ -146,8 +146,9 @@ jobs:
           # 3.5.0: an HS256 token verified against a DER-encoded PUBLIC key when
           # the decode call leaves its algorithms open (an incomplete fix for
           # CVE-2024-33663). No fixed release exists. Not exercised here: every
-          # jwt.decode pins exactly one algorithm - HS256 with the server's own
-          # SECRET_KEY, or RS256 with a sign-in provider's fetched key - so a forged
+          # jwt.decode pins exactly one algorithm, HS256, with the server's own
+          # SECRET_KEY, and no decode here is handed a public key at all (this
+          # code has no sign-in provider, so it fetches none) - so a forged
           # HS256 token never meets a public key. Pinned by
           # backend/tests/test_jwt_algorithms_pinned.py rather than by this comment;
           # re-triage the day it fails, or when python-jose ships a fixed release.

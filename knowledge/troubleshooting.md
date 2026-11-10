@@ -191,6 +191,24 @@ refusal is the designed behavior for corpus-bound deployments: no
 retrieval, no answer. Ask about corpus content, add the missing documents,
 or lower the threshold.
 
+## "I could not reach my knowledge base for this question"
+
+The retrieval lane is down, and the assistant says so instead of answering.
+The question could not be embedded, or a collection failed and none that
+answered returned anything. That is a fault on the server, not a gap in the
+corpus, so this sentence is sent in place of "not on record" and of the
+RAG-only refusal, and no model is called for the turn. The usual cause is
+the embed service: nothing answering at EMBED_BASE, or EMBED_MODEL missing
+there. The sentence ends with a reference id. The backend log carries the
+same id on its `retrieval_unavailable` line, and its "retrieval unavailable
+for this turn" line names what failed. /api/health/ready shows the fault from
+the lane's next check - 503 with "rag": "error" - and the readiness section
+below lists each reason and its fix. With federation on, a turn that a peer
+sent a passage for is answered from that passage. An instance asked for its
+documents as a peer answers 503, "This instance's knowledge base is
+unavailable right now.", in the same state, so the asking instance records a
+failed peer, not an empty one.
+
 ## Health says "degraded" / Ollama unreachable
 
 /api/health reports the self-check timer's last call to the Ollama base
