@@ -152,45 +152,24 @@ jobs:
           # backend/tests/test_jwt_algorithms_pinned.py rather than by this comment;
           # re-triage the day it fails, or when python-jose ships a fixed release.
           #
-          # ACCEPTED (triaged 2026-10-21) - Pillow 12.3.0, every advisory OSV lists
-          # for it as of 2026-10-21: the 28 CVE ids below, CVE-2026-112390 through
-          # -112902 (decoder and transform faults - TIFF tiles and strips decoded
-          # past their buffers or into uninitialized memory, a TIFF ColorMap
-          # plane-size mismatch on encode, a zero-width image in _imagingmorph, a
-          # GIF seek that keeps a rejected size, an EPS load that lets Ghostscript
-          # render past the decompression-bomb limit, a PDF page tree or trailer
-          # chain that recurses without bound, a double free in Image.transform
-          # when an oversized output runs out of memory). The list is OSV's full
-          # set, not the ids one run showed: the morning's runs reported eight,
-          # the evening's sixteen more, and the advisory feed was still catching
-          # up. Every one is fixed in Pillow 13.0.0, which cannot be installed:
-          # fastembed (0.8.0 pinned here; 0.9.0 the same) requires pillow<13, and
-          # pip refuses the pair. Not exercised here: no module of this app
-          # imports Pillow - it is in the image only because fastembed imports it
-          # for image-embedding models this app never loads - so no upload,
-          # connector or crawl reaches a Pillow decoder. Pinned by
-          # backend/tests/test_pillow_unreached.py rather than by this comment;
-          # re-triage the day it fails, when a Pillow id outside this list appears
-          # (a new advisory, or 13.0.0 itself in the affected range), or when
-          # fastembed lets Pillow 13 in (its PR #830) - then bump fastembed and
-          # drop these ids.
-          # Re-triaged 2026-10-22, the day the template's CI found a Pillow id outside
-          # the list: OSV's set for 12.3.0 grew from 28 to 39 - the eleven below are
-          # the same class (decompression-bomb bypasses on a multi-frame seek and in
-          # SpiderImagePlugin, a BMP RLE memory amplification and a TarIO spin, a PDF
-          # page-tree DAG, a quadratic PNG eXIf parse, stale multi-frame storage, a
-          # WMF/EMF over-read, a JPEG comment overflow, undefined native integer
-          # behavior; and GHSA-78g4-xqwv-q3g8, the libopenjp2 bundled in every wheel
-          # since 11.1.0), every one fixed only in 13.0.0; fastembed 0.9.0 (released
-          # 2026-10-07, the newest) still requires pillow<13; test_pillow_unreached
-          # still passes. The same re-open conditions stand.
-          # Re-triaged 2026-10-23 on two more ids outside the list (OSV published
-          # them 2026-10-19 and 2026-10-21): CVE-2026-112398, a heap overflow in
-          # the FlashPix JPEG decoder, and CVE-2026-114501, stale heap memory in
-          # the Arrow export when PILLOW_ALIGNMENT > 1 - the same class, fixed
-          # only in 13.0.0; fastembed 0.9.0 is still the newest and still
-          # requires pillow<13; test_pillow_unreached still passes. The same
-          # re-open conditions stand.
+          # CLOSED 2026-11-10 - the Pillow 12.3.0 acceptance (triaged 2026-10-21,
+          # re-triaged 2026-10-22 and 2026-10-23; 41 ids when it closed, every
+          # advisory OSV lists for 12.3.0). It stood on fastembed requiring
+          # pillow<13 while every fix was in Pillow 13.0.0, and it named its own
+          # exit: the day fastembed lets Pillow 13 in. fastembed 0.9.1 (released
+          # 2026-10-24) requires pillow<14, so backend/requirements.txt pins it,
+          # Pillow resolves to 13.0.0 (no advisory on OSV as of 2026-11-10), and
+          # the 41 ids are out of the list below - a Pillow advisory fails this
+          # job again, like any other. Checked before the bump: the wheel matches
+          # its release tag file for file, and under both versions the reranker
+          # loads the same model files from the same cache with no download and
+          # scores the same query-document pairs to the last digit.
+          # backend/tests/test_pillow_unreached.py stays. It still pins that no
+          # app module hands Pillow bytes - the ground a new Pillow advisory would
+          # be triaged on - and now also fails if the fastembed pin drops below
+          # 0.9.1 or one of the 41 ids comes back here. (Pillow has a second
+          # parent the acceptance did not name: qrcode[pil], which draws the MFA
+          # setup QR code - an encode of this app's own string, not a decode.)
           ignore-vulns: |
             CVE-2026-45830
             CVE-2026-45831
@@ -204,47 +183,6 @@ jobs:
             CVE-2026-54282
             CVE-2026-54283
             PYSEC-2026-161
-            CVE-2026-112390
-            CVE-2026-112391
-            CVE-2026-112392
-            CVE-2026-112393
-            CVE-2026-112394
-            CVE-2026-112395
-            CVE-2026-112396
-            CVE-2026-112397
-            CVE-2026-112399
-            CVE-2026-112400
-            CVE-2026-112401
-            CVE-2026-112402
-            CVE-2026-112403
-            CVE-2026-112404
-            CVE-2026-112405
-            CVE-2026-112406
-            CVE-2026-112891
-            CVE-2026-112892
-            CVE-2026-112893
-            CVE-2026-112894
-            CVE-2026-112895
-            CVE-2026-112896
-            CVE-2026-112897
-            CVE-2026-112898
-            CVE-2026-112899
-            CVE-2026-112900
-            CVE-2026-112901
-            CVE-2026-112902
-            CVE-2026-96636
-            CVE-2026-96637
-            CVE-2026-96638
-            CVE-2026-96639
-            CVE-2026-96640
-            CVE-2026-96641
-            CVE-2026-96642
-            CVE-2026-96643
-            CVE-2026-96644
-            CVE-2026-96778
-            GHSA-78g4-xqwv-q3g8
-            CVE-2026-112398
-            CVE-2026-114501
 
   # SAST over this repository's own Python rather than its dependencies:
   # injection shapes, unsafe deserialization, weak crypto, credentials in
