@@ -50,6 +50,50 @@ def set_config(key: str, value: str):
             db.add(Config(key=key, value=value))
 
 
+# The product's own name: what an instance nobody named goes by.
+DEFAULT_INSTANCE_NAME = "Architecture Zero"
+# The longest saved name the status body, an authenticator's label and an
+# alert's subject are handed (the page shows the setting as stored).
+INSTANCE_NAME_MAX_CHARS = 64
+
+
+def instance_name() -> str:
+    """The name this instance goes by in /api/status, in the issuer label an
+    authenticator shows after MFA enrollment and in the subject of every
+    self-check alert: VITE_INSTANCE_NAME where the host's environment sets
+    it to a name of its own, else the `instance_name` setting, else the
+    product's name.
+
+    ONE reader (2026-11-10). Each of the three read the variable itself, with
+    the product's name as the fallback, while the page and /api/config read
+    the setting - so an instance named in its settings, on a backend whose
+    environment does not name it, announced itself as the product in all
+    three. A variable that holds the product's name names nothing: that is
+    the line .env.example ships, carried along by whoever copied the file.
+    Any other value still comes first, as it did when the variable was the
+    only thing read: a deployment that names itself there sees nothing move.
+
+    The setting is free text an account with manage_system can write, and
+    through this reader it reaches a mail header (an alert's subject, which
+    refuses a line break outright - the mail would not be sent) and a QR
+    code (which has a size). So a saved name comes back as ONE line of at
+    most INSTANCE_NAME_MAX_CHARS characters: anything unprintable reads as a
+    space, a run of spaces as one. The stored setting is not rewritten.
+
+    Never raises: an alert about a failing disk is still sent when the
+    config table cannot be read."""
+    named = os.getenv("VITE_INSTANCE_NAME", "")
+    if named.strip() and named.strip() != DEFAULT_INSTANCE_NAME:
+        return named
+    try:
+        saved = get_config("instance_name", "")
+    except Exception:
+        saved = ""
+    printable = "".join(ch if ch.isprintable() else " " for ch in str(saved or ""))
+    return (" ".join(printable.split())[:INSTANCE_NAME_MAX_CHARS].strip()
+            or DEFAULT_INSTANCE_NAME)
+
+
 def get_all_config() -> dict:
     """EVERY config row, secrets included. Callers that answer a request must
     use get_all_config_masked() instead - see the note there."""

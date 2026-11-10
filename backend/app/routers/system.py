@@ -20,7 +20,7 @@ import datetime as _dt
 from fastapi import APIRouter, Depends, Request, Response
 
 from app.database import count_documents
-from app.config import get_config
+from app.config import get_config, instance_name
 from app.jwt_auth import get_current_user, oauth2_scheme, require_owner, require_permission
 from app.agent import get_tool_config
 from app.providers import OPENAI_COMPAT, get_provider_config, offered_providers
@@ -174,7 +174,10 @@ def status():
         # re-derives the flag can disagree with enforcement.
         "auth_enabled": __import__("app.auth", fromlist=["ENABLE_AUTH"]).ENABLE_AUTH,
         "rag_only_mode": RAG_ONLY_MODE,
-        "instance_name": os.getenv("VITE_INSTANCE_NAME", "Architecture Zero"),
+        # The one reader the MFA issuer and the alert subjects use. This was
+        # the environment variable alone, so an instance named in its
+        # settings reported the product's name here.
+        "instance_name": instance_name(),
         "redis": redis_status(),
         "agent_tools": get_tool_config(),
         "security": get_security_config(),

@@ -28,6 +28,7 @@ import os
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from app.config import instance_name
 from app.jwt_auth import (authenticate_user, create_access_token,
                           create_refresh_token, hash_token, hash_password,
                           verify_password, get_current_user, validate_password,
@@ -348,10 +349,11 @@ def mfa_setup(request: MFASetupRequest | None = None,
     # again (2026-10-02): the confirm takes a session alone, so a pending seed
     # that waited forever was a door that stayed open forever.
     mark_mfa_pending(current_user["id"])
-    instance_name = os.getenv("VITE_INSTANCE_NAME", "Architecture Zero")
+    # The issuer is what an authenticator app shows beside the account: this
+    # instance's name, through the one reader (config.instance_name).
     uri = pyotp.totp.TOTP(secret).provisioning_uri(
         name=current_user["username"],
-        issuer_name=instance_name,
+        issuer_name=instance_name(),
     )
     img = qrcode.make(uri)
     buf = BytesIO()

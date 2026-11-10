@@ -97,7 +97,25 @@ SELF_CHECK_INTERVAL_SECONDS = int(os.getenv("SELF_CHECK_INTERVAL_SECONDS", "300"
 # How soon a failing boot pass of the lane is tried again (R-AZ-01).
 BOOT_RETRY_SECONDS = 15
 SELF_CHECK_BACKUP = os.getenv("SELF_CHECK_BACKUP", "true").lower() == "true"
-_INSTANCE_NAME = os.getenv("VITE_INSTANCE_NAME", "Architecture Zero")
+
+
+def _instance_name() -> str:
+    """The name on an alert's subject: this instance's, through the one
+    reader /api/status and MFA enrollment use (config.instance_name - the
+    environment's VITE_INSTANCE_NAME where it is a name of its own, else the
+    name saved in settings, else the product's). Until 2026-11-10 it was the
+    variable alone, read once when this module was imported, so an instance
+    named in its settings alerted under the product's name. Read when an
+    alert is composed, never cached: a rename holds from the next alert.
+
+    This file is one text on every surface that carries it, and a surface
+    may take it before its config has that reader. There the name is what it
+    was - the variable, else the product's - so the file copies as it is."""
+    try:
+        from app.config import instance_name
+    except ImportError:
+        return os.getenv("VITE_INSTANCE_NAME", "Architecture Zero")
+    return instance_name()
 
 
 def ollama_enabled() -> bool:
@@ -212,7 +230,7 @@ def probe_disk(data_dir: str) -> dict:
               "total_gb": round(usage.total / 1e9, 2),
               "pct": pct, "ok": pct < DISK_ALERT_THRESHOLD_PCT}
     if not result["ok"]:
-        fire_alert("disk_high", f"Disk usage high - {_INSTANCE_NAME}",
+        fire_alert("disk_high", f"Disk usage high - {_instance_name()}",
                    f"Disk at {pct}% ({result['used_gb']} GB used)")
     return result
 
@@ -237,10 +255,10 @@ def probe_ollama(ollama_get) -> dict:
         r = None
         result = {"name": "ollama", "ok": False, "latency_ms": None}
     if r is None:
-        fire_alert("ollama_down", f"Ollama unreachable - {_INSTANCE_NAME}",
+        fire_alert("ollama_down", f"Ollama unreachable - {_instance_name()}",
                    "Ollama did not respond within 3s. Chat will fail for Ollama models.")
     elif not result["ok"]:
-        fire_alert("ollama_down", f"Ollama unreachable - {_INSTANCE_NAME}",
+        fire_alert("ollama_down", f"Ollama unreachable - {_instance_name()}",
                    f"Ollama's URL answered HTTP {r.status_code} without a model "
                    "list. Chat will fail for Ollama models.")
     with _record_lock:
@@ -283,7 +301,7 @@ def probe_backups(backup_state, kinds=("backup", "drill")) -> dict:
     for kind, st in states.items():
         if not st.get("ok"):
             age = st.get("age_hours")
-            fire_alert(f"backup_{kind}", f"Backup alarm: {kind} not ok - {_INSTANCE_NAME}",
+            fire_alert(f"backup_{kind}", f"Backup alarm: {kind} not ok - {_instance_name()}",
                        f"{kind}: {st.get('reason', 'unknown')}"
                        + (f" (age {age}h)" if age is not None else "")
                        + ". The host job writes its status into the data directory;"
@@ -341,7 +359,7 @@ def probe_rag(rag_probe, alert: bool = True) -> dict:
         # or slip past the alert (the R-AZ-01 read's Info).
         state, reason = "error", "probe_unknown_state"
     if state == "error" and alert:
-        fire_alert("rag_down", f"Retrieval lane failing - {_INSTANCE_NAME}",
+        fire_alert("rag_down", f"Retrieval lane failing - {_instance_name()}",
                    f"The retrieval lane failed its check ({reason}). Answers that "
                    "need the knowledge base will fail until it recovers - the "
                    "runbook's Monitoring section.")
