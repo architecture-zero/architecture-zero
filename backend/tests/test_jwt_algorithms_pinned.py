@@ -1,6 +1,6 @@
 """The python-jose acceptances in the security workflow rest on this test.
 
-CVE-2026-85394 (python-jose through 3.5.0, no fixed release): an HS256 token
+CVE-2026-85394 / GHSA-3qf3-8w2g-rqmx (python-jose through 3.5.0, no fixed release): an HS256 token
 can pass verification against a DER-encoded PUBLIC key when the decode call
 leaves its algorithms open. Not exercised here, because every jwt.decode in
 app/ pins exactly one algorithm: HS256 with the server's own SECRET_KEY, or

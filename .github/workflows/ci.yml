@@ -142,7 +142,7 @@ jobs:
           # proxy in front of this. The rest are denial-of-service shapes on
           # the same surface.
           #
-          # ACCEPTED (triaged 2026-10-05) - CVE-2026-85394, python-jose through
+          # ACCEPTED (triaged 2026-10-05) - CVE-2026-85394 / GHSA-3qf3-8w2g-rqmx, python-jose through
           # 3.5.0: an HS256 token verified against a DER-encoded PUBLIC key when
           # the decode call leaves its algorithms open (an incomplete fix for
           # CVE-2024-33663). No fixed release exists. Not exercised here: every
