@@ -14,9 +14,21 @@ interface User {
   is_active: number
   created_at: string
   mfa_enabled: number
+  // True when the stored seed cannot be decrypted (the server's users list).
+  mfa_secret_unreadable?: boolean
   failed_attempts: number
   locked_until: string | null
 }
+
+// A second factor that is enrolled and cannot be read (2026-11-10): the seed
+// is stored encrypted under the instance's JWT_SECRET_KEY, and after a
+// restore under another secret or a rotation without the re-key the server
+// refuses every sign-in by the account. Both halves, as the server judges it
+// (mfa_seed_stranded): an unreadable seed on an account that never finished
+// enrolling was never a factor. The list has reported the field since the
+// refusal shipped; a server that does not send it reads as readable.
+const mfaStranded = (u: { mfa_enabled: number; mfa_secret_unreadable?: boolean }) =>
+  Boolean(u.mfa_enabled) && u.mfa_secret_unreadable === true
 
 interface PermissionMeta {
   scopes: string[]
@@ -333,7 +345,14 @@ export function UsersTab({ api, headers, currentUser }: {
               <div>
                 <p className="text-sm text-white font-medium flex items-center gap-1.5">
                   {u.username}
-                  {u.mfa_enabled ? (
+                  {mfaStranded(u) ? (
+                    <span
+                      className="text-xs px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/30"
+                      title="Two-factor is on, and its stored seed cannot be read"
+                    >
+                      MFA unreadable
+                    </span>
+                  ) : u.mfa_enabled ? (
                     <span className="text-xs px-1.5 py-0.5 rounded bg-green-500/15 text-green-400 border border-green-500/30">MFA</span>
                   ) : null}
                   {u.locked_until ? (
@@ -341,6 +360,14 @@ export function UsersTab({ api, headers, currentUser }: {
                   ) : null}
                 </p>
                 <p className="text-xs text-gray-500">{u.created_at.slice(0, 10)} · {u.department}</p>
+                {mfaStranded(u) ? (
+                  <p className="text-xs text-red-400 mt-1 max-w-xl">
+                    Two-factor is on for this account, but its stored seed cannot be read
+                    with this instance's JWT_SECRET_KEY, so every sign-in by it is refused.
+                    Reset MFA to let it enroll again, or re-key the stored seeds if the
+                    secret changed (backend/scripts/rekey_at_rest.py).
+                  </p>
+                ) : null}
               </div>
               <div className="flex items-center gap-2">
                 {isOwner && (
