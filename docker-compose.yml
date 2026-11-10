@@ -1,3 +1,21 @@
+# Container log rotation (2026-11-10). Docker's default json-file log driver
+# keeps a container's whole output unless it is capped, and a host has no cap
+# unless someone set one (/etc/docker/daemon.json): a service that logs every
+# request grows its log file until the disk is full. Each service that names
+# this block keeps at most 5 files of 20 MB, the oldest dropped first.
+# Docker reads the setting when it CREATES a container, so a running one
+# picks it up at its next recreate - `docker compose up -d` does that by
+# itself for a service whose definition here has changed.
+# Every service below names the block. There is no database or cache service
+# in this file; if you add one (mysql, redis, postgres), decide for it on its
+# own, because naming the block on a datastore that is already running
+# recreates it - a restart - at the next `up`.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   backend:
     build:
@@ -53,6 +71,7 @@ services:
     # through both - that is the vector-loss class. Keep this at 45s.
     stop_grace_period: 45s
     restart: unless-stopped
+    logging: *default-logging
 
   frontend:
     build:
@@ -73,6 +92,7 @@ services:
     # Set VITE_API_URL only when the API is served from somewhere else, and
     # then set CORS_ORIGIN to this frontend's origin to match.
     restart: unless-stopped
+    logging: *default-logging
 
   # The file reader's locked box: every PDF and Word file is parsed here,
   # never in the backend (extractor/server.py). Each setting below is one
@@ -112,6 +132,7 @@ services:
       timeout: 5s
       retries: 3
     restart: unless-stopped
+    logging: *default-logging
 
 volumes:
   extractor_socket:
