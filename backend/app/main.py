@@ -1,7 +1,7 @@
 """Application assembly.
 
 After the router split this file builds the app and nothing else: middleware,
-the ten include_router calls, the boot-time side effects, and the five lifecycle
+the ten include_router calls, the boot-time side effects, and the six lifecycle
 hooks. No routes, no models, no handlers, no business logic.
 
 Direction is one-way and enforced by tests/test_module_hygiene.py: main imports
@@ -91,6 +91,12 @@ app.add_middleware(
 # `from app.main import app` and expects a populated route table the moment that
 # import returns. An include_router inside @app.on_event leaves the TestClient
 # short a router with no error message to say so.
+#
+# And AHEAD of the schema step below. The auth router refuses at import on a
+# value of its two-factor switch that is neither of the switch's two words
+# (routers/auth.py, _require_mfa_from_env), and a boot that is going to refuse
+# must refuse before it has created or seeded anything.
+# tests/test_require_mfa_flag.py pins that the refusal finds no table made.
 from app.routers import (  # noqa: E402  (app must exist first)
     system as system_router,
     settings as settings_router,
@@ -210,6 +216,31 @@ async def _claim_code_on_startup():
         # setup still refuses every caller; it just means nobody was handed the
         # code and the operator needs SETUP_CLAIM_CODE.
         log_error("setup_claim_gate_crashed", error=f"{type(e).__name__}: {e}"[:300])
+
+
+@app.on_event("startup")
+async def _require_mfa_on_startup():
+    """One line per boot saying whether a password sign-in requires an
+    enrolled authenticator: `require_mfa`, state on or off.
+
+    The switch is a host environment variable the auth router reads once, at
+    import, and a value that is neither of its two words stops that import -
+    so this hook only runs on a boot whose value was recognised, and the line
+    says which way it was read. An operator who sets the variable and restarts
+    has one line to look for, and it is there when the switch is off too: a
+    guard that is silent when healthy cannot be told apart from a guard that
+    is not running.
+
+    A log line and nothing else. The routes a caller reaches with no session
+    (/api/auth/config, the health and trust reads) do not report this, and the
+    claim route is ordered so an anonymous caller cannot read it there either.
+    """
+    try:
+        auth_router.log_require_mfa()
+    except Exception as e:
+        # Never take the boot down over a log line. The switch itself is read
+        # at import and enforced in the routes; this only says its state.
+        log_error("require_mfa_line_crashed", error=f"{type(e).__name__}: {e}"[:300])
 
 
 @app.on_event("startup")

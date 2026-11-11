@@ -117,12 +117,22 @@ The account enrolls from a session that is still signed in, or the operator
 sets REQUIRE_MFA=false, restarts, lets it sign in and enroll, and turns the
 flag back on.
 
+REQUIRE_MFA takes one of two words. Only true turns enforcement on, and only
+false - or a variable left unset or empty - leaves it off, in any letter
+case. Any other value, such as 1, yes or on, stops the backend at start
+instead of being read as off: the log names the variable and the two words
+it takes, and nothing is served until the value is one of them. A backend
+that does start says which way it read the switch, once per start, in a log
+line named require_mfa with state on or off.
+
 On an UNCLAIMED deployment there is no signed-in session to enroll from, so
 claiming is refused outright while REQUIRE_MFA is set. Claiming does not
 enroll a factor, enrolling needs a signed-in session, and signing in is what
 enforcement refuses - a deployment claimed under the flag would have an Owner
-who can never sign in, a spent claim code, and no way back short of editing
-the database. Claim with the flag off, enroll, then turn it on and restart.
+who cannot sign in while the flag is on, and a spent claim code. Turning the
+flag off and restarting would let that Owner in, and the refusal asks for
+that same restart before the claim instead of after it. Claim with the flag
+off, enroll, then turn it on and restart.
 
 ## Connecting a model provider
 

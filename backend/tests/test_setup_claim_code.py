@@ -240,13 +240,14 @@ def test_a_failed_claim_does_not_burn_the_code(client, unclaimed):
     assert r.status_code == 200, r.text
 
 
-# -- REQUIRE_MFA is a one-way door on an unclaimed deployment -----------------
+# -- REQUIRE_MFA: an unclaimed deployment cannot be claimed while it is on ----
 #
 # Claiming does not enrol a factor; the login route refuses any account that has
 # none; and both enrolment routes need the session that login is what grants. So
-# claiming a REQUIRE_MFA deployment burns the code, creates an Owner who can
-# never sign in, and closes the claim endpoint behind them. Nothing recovers it
-# short of editing the database.
+# claiming a REQUIRE_MFA deployment would burn the code, create an Owner who
+# cannot sign in while the flag is on, and close the claim endpoint behind them.
+# Turning the flag off and restarting is the way back, and it is the restart
+# the refusal asks for before anything is written.
 #
 # These pin the refusal AND its position. The refusal is only worth having if it
 # lands before anything is written, and it is only safe to have if it sits below

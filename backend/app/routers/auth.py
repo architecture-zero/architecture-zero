@@ -18,7 +18,9 @@ A router-level dependency would be worse: it would protect the six bootstrap
 routes, so nobody could log in on a fresh deployment at all.
 
 REQUIRE_MFA below has exactly one reader - this router - so it lives here
-rather than in runtime_config, which is for names main AND routers share. The
+rather than in runtime_config, which is for names main AND routers share. Main
+reads nothing of it: its startup hook calls log_require_mfa, below, for the
+boot's one line on it. The
 two lockout constants moved to jwt_auth (2026-09-09): the password step-up
 counts its failures against the same account lock, so the knob is read once
 and re-bound here for the login and MFA paths (and the tests that patch it).
@@ -56,7 +58,55 @@ from app.users import (owner_exists, store_refresh_token,
 
 router = APIRouter()
 
-REQUIRE_MFA              = os.getenv("REQUIRE_MFA", "false").lower() == "true"
+
+def _require_mfa_from_env() -> bool:
+    """REQUIRE_MFA as the host wrote it: on, off, or a refusal to start.
+
+    Only the word true turns it on, and only the word false - or a variable
+    left unset or empty - leaves it off, in any letter case. Those read as
+    they always have. Every OTHER value used to read as off without a word:
+    an operator wrote REQUIRE_MFA=1, restarted, and believed two-factor was
+    required while accounts with no authenticator went on signing in with a
+    password alone. A control that reads as configured and performs nothing
+    is worse than an absent one, so since 2026-11-11 such a value stops the
+    import, and with it the boot.
+
+    Not solved by accepting 1, yes or on: that would switch enforcement ON at
+    an update, on a host whose accounts never enrolled, and lock every one of
+    them out with a change nobody made. Not solved by reading it as off and
+    logging a warning: that is the old gap plus a line nobody reads. A padded
+    value is refused like any other, never trimmed into a word.
+
+    The message names the variable and the two words and never the value:
+    an env file is not something a boot log should quote from.
+    """
+    word = os.getenv("REQUIRE_MFA", "").lower()
+    if word == "true":
+        return True
+    if word in ("", "false"):
+        return False
+    raise RuntimeError(
+        "SECURITY: REQUIRE_MFA is set to a value that is neither true nor "
+        "false. Refusing to start rather than guess whether two-factor is "
+        "required: set REQUIRE_MFA=true or REQUIRE_MFA=false (unset or empty "
+        "is off), with nothing else in the value, and restart.")
+
+
+REQUIRE_MFA = _require_mfa_from_env()
+
+
+def log_require_mfa() -> None:
+    """The boot's one line on this switch: require_mfa, state on or off.
+
+    Called by main's startup hook. A value that is neither word never gets
+    this far - the read above stopped the import - so the line also says the
+    value the host wrote was recognised, and which way. Logged when it is off
+    too: a guard that is silent when healthy cannot be told apart from one
+    that is not running. A log line only. No route answers with this state to
+    a caller who has proved neither a password nor the claim code (the claim
+    route's refusal sits below its code check for the same reason).
+    """
+    log("require_mfa", state="on" if REQUIRE_MFA else "off")
 
 
 class LoginRequest(BaseModel):
@@ -688,18 +738,23 @@ def setup_admin(request: ClaimDeploymentRequest, req: Request):
     if owner_exists():
         raise HTTPException(status_code=403, detail="Owner already exists")
     verify_setup_claim_code(request.claim_code)
-    # REQUIRE_MFA + an unclaimed deployment is a one-way door, so it is refused
-    # here rather than walked into. Claiming does not enroll a factor, and the
-    # login below refuses any account without one - while both enrolment routes
-    # need a session that login is what grants. So the claim would succeed, burn
-    # the code, and leave an Owner who can never sign in, a claim endpoint that
-    # now 403s, and no recovery short of editing the database.
+    # REQUIRE_MFA + an unclaimed deployment is a door that locks behind the
+    # claimant, so it is refused here rather than walked into. Claiming does
+    # not enroll a factor, and the login route refuses any account without one
+    # - while both enrolment routes need a session that login is what grants.
+    # So the claim would succeed, burn the code, and leave an Owner who cannot
+    # sign in while the flag is on, a claim endpoint that now 403s, and a
+    # sign-in refusal that says to enroll from a session nobody holds. The way
+    # back is the one this refusal names - the flag off and a restart - but
+    # the operator would have to work it out from a first account that is
+    # locked out.
     #
     # This was documented rather than enforced ("ORDER MATTERS: enroll accounts
     # first, flip this second"), and prose is the wrong guard for a step whose
-    # failure is unrecoverable and whose natural operator instinct - harden the
-    # config before first boot - is exactly what triggers it. Refusing costs a
-    # restart with one env var changed; the alternative costs the deployment.
+    # failure reads as a deployment lost on its first day and whose natural
+    # operator instinct - harden the config before first boot - is exactly
+    # what triggers it. Refusing costs a restart with one env var changed, and
+    # says so; walking in costs the same restart, found the hard way.
     #
     # Deliberately NOT solved by exempting the first Owner from the login
     # refusal: that would mint a session with no factor on an instance whose

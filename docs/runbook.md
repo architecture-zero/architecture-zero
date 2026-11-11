@@ -95,6 +95,19 @@ the startup sync re-ingests the shipped files the update changed and leaves
 your own documents alone (content-addressed deltas), and the eval question
 set reconciles from the seed file. Nothing else is needed.
 
+One setting is read more strictly than it was, so look at its line in `.env`
+before the pull: `REQUIRE_MFA`. It takes the word `true` or the word `false`,
+in any letter case; unset or empty is off. Until 2026-11-11 any other value -
+`1`, `yes`, `on` - was read as off and nothing said so, so a deployment
+carrying such a line has not been requiring two-factor at all. From that date
+the backend does not start on one, and the log names the variable and the two
+words it takes. Set such a line to `false` for the update: that is how it has
+been read all along. Then have every account that signs in with a password
+enroll, and only after that set it to `true` and restart
+(`knowledge/onboarding.md` has the order and why). A backend that starts says
+which way it read the switch in a log line named `require_mfa`, with `state`
+on or off.
+
 `git pull && docker compose up -d --build` on a RUNNING instance also works -
 it is the line this section used to give, and the one the 2026-09-29 upgrade
 rehearsal ran - but it takes no copy, and while the new image builds the
@@ -506,7 +519,10 @@ an account whose seed is truly lost, an Owner can reset its MFA
 (POST /api/admin/users/{id}/mfa-reset) and the person enrolls again. On a
 deployment with `REQUIRE_MFA=true` that reset account cannot sign in to
 re-enroll (login refuses accounts with no TOTP), so use the re-key, or set
-`REQUIRE_MFA=false` for the re-enrollment. The same reset is the path for a
+`REQUIRE_MFA=false` for the re-enrollment. Write the word exactly, both
+ways: only `true` turns the requirement on, and any value but `true` or
+`false` stops the backend at start ("Updating", above, has the detail).
+The same reset is the path for a
 person who lost a working authenticator: since 2026-10-02 the self-service
 re-key (POST /api/auth/mfa/setup with `rekey: true`) also takes a current
 code from the authenticator being replaced, so without the device it cannot
