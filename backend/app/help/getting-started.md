@@ -11,6 +11,12 @@ Open the assistant's address in your browser.
 
 There is no password-reset link. If you cannot sign in, ask your administrator. Once signed in, you can change your own username and password by clicking your name at the top of the page.
 
+## Two-factor sign-in
+
+You can add a second step to your own sign-in: a six-digit code from an authenticator app on your phone. Click your name at the top of the page, then the Two-factor tab. Type your password and click Start setup, scan the QR code with the app (or type the key shown under it), then type the app's six-digit code and click Turn on. From then on, signing in asks for a code after your password.
+
+To move to a new phone or app, use Replace authenticator on the same tab. It asks for your password and a code from the authenticator you have now, and two-factor is off for your account until you confirm a code from the new one. There is no off switch on that tab. If you lose the authenticator, ask your administrator to reset two-factor for your account, then set it up again.
+
 ## Asking a question
 
 Type in the box at the bottom and press Ctrl+Enter, or click the send button. Ask one thing at a time and be specific: "What is the notice period in the vendor onboarding policy?" works better than "tell me about policies". While an answer is streaming, the send button becomes Stop.

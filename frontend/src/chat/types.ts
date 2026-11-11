@@ -92,6 +92,10 @@ export interface AuthUser {
   username: string
   role: string
   permissions: string[]
+  // Whether two-factor is on, as GET /api/auth/me reports it. A sign-in
+  // answer does not carry it, so absent means unknown, not off. The account
+  // screen's Two-factor tab reads it fresh and writes it back here.
+  mfa_enabled?: boolean
 }
 
 export type View = 'loading' | 'login' | 'chat' | 'admin'

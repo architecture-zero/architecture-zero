@@ -514,6 +514,15 @@ be done from the account itself.
 GET /api/auth/me reports `mfa_secret_unreadable` for the signed-in account,
 and the admin roster carries the same field per user.
 
+Enrolling and re-keying have a screen in the web client: Account Settings
+(click your name at the top of the page), the Two-factor tab. Start setup
+enrolls, Replace authenticator re-keys, and each asks for what its API call
+asks for. An account whose stored seed cannot be read is told so on that
+tab, in place of a factor shown as healthy. The API calls are the same doors
+for a script: POST /api/auth/mfa/setup, then POST /api/auth/mfa/enable. The
+getting-started guide (knowledge/onboarding.md, "Setting up two-factor
+authentication") has both ways step by step.
+
 ## Monitoring
 
 - GET /api/health - liveness; its Ollama word is the self-check timer's

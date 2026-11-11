@@ -76,17 +76,30 @@ being refused, see the lockout entry in the troubleshooting guide.
 
 ## Setting up two-factor authentication (MFA)
 
-Order matters: enroll first, enforce second. From a signed-in session, call
-MFA setup (POST /api/auth/mfa/setup, with your current password in the body
-as `current_password` - a session alone may not replace an authentication
-factor) to get a QR code, scan it with any TOTP authenticator app, then
-confirm one code (POST /api/auth/mfa/enable) to activate. Re-enrolling an
-account that already has MFA takes the same password plus `rekey: true` and a
-current code from the authenticator being replaced (`mfa_code`) - a session
-and a password alone may not swap in a new authenticator. Someone who has
-lost their authenticator cannot re-key it themselves: an admin resets it
-(POST /api/admin/users/{id}/mfa-reset, with the admin's own password; an
-admin may reset their own), and they enroll fresh. Code attempts are capped
+Order matters: enroll first, enforce second. In the web client, click your
+name at the top of the page to open Account Settings, then the Two-factor
+tab. Type your current password and click Start setup (a session alone may
+not replace an authentication factor), scan the QR code with any TOTP
+authenticator app or type the key shown under it, then type the app's
+6-digit code and click Turn on. The tab then reads "Two-factor is ON".
+Replace authenticator, on the same tab, moves an account that already has
+MFA to a new authenticator. It takes the same password and a current code
+from the authenticator being replaced, because a session and a password
+alone may not swap in a new one, and two-factor is off for the account until
+a code from the new authenticator is confirmed.
+
+The same steps by API, for a script or a client of your own: POST
+/api/auth/mfa/setup with your current password in the body as
+`current_password` returns the QR code and the key, and POST
+/api/auth/mfa/enable with one code from the authenticator activates it.
+Re-enrolling an account that already has MFA takes the same password plus
+`rekey: true` and a current code from the authenticator being replaced
+(`mfa_code`).
+
+Someone who has lost their authenticator cannot re-key it themselves: an
+admin resets it (Reset MFA on the admin panel's Users tab, or POST
+/api/admin/users/{id}/mfa-reset, with the admin's own password; an admin
+may reset their own), and they enroll fresh. Code attempts are capped
 per account (five per fifteen minutes by default, TOTP_MAX_FAILURES and
 TOTP_FAILURE_WINDOW), and only a right code or an admin's MFA reset clears
 the count - a correct password does not. Confirm a new authenticator within 30 minutes of its
