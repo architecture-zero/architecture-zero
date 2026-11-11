@@ -81,8 +81,12 @@ RERANK_HOSTED_MODEL   = os.getenv("RERANK_HOSTED_MODEL", "")           # blank =
 # HARD PRIVACY LATCH, host-set only (never a DB config key): hosted-api ships
 # every candidate chunk to a third party. A config-key flip alone must never
 # be able to start that egress - this host env is the deliberate per-instance
-# opt-in, so an instance whose candidate pool can contain private content
-# simply never sets it.
+# opt-in. Opened, it still sends only a pool read wholly from the global
+# ("general") collection (the tier rule, rerank._score_hosted, 2026-11-10):
+# a department's text, a help page or a peer's piece never leaves, and that
+# turn ranks locally. So what a deployer weighs is the global collection
+# alone: a deployment whose global collection holds content no vendor may
+# read never sets it.
 RERANK_HOSTED_ALLOWED = os.getenv("RERANK_HOSTED_ALLOWED", "").lower() == "true"
 
 # --- Recency weighting ---

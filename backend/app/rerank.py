@@ -19,7 +19,10 @@ per-instance production choice are the same mechanism:
   hosted-api   a commodity rerank API (Cohere/Voyage). Ships every candidate
                 chunk to the vendor, so it is LATCHED behind the
                 RERANK_HOSTED_ALLOWED host env: a DB config flip alone can
-                never start that egress.
+                never start that egress. PUBLIC COLLECTION ONLY (2026-11-10):
+                a pool holding one candidate that was not read from the
+                global collection is never sent; the local model scores
+                that turn (the tier rule, at _score_hosted).
 The provider is read PER CALL from config (rerank_provider), same contract as
 rerank_enabled / rerank_model, so an A/B arm is a config flip, not a
 redeploy.
@@ -114,7 +117,10 @@ def rerank_provider() -> str:
 # input order. None = provider UNAVAILABLE (unloaded model, missing url/key,
 # latch closed) - the caller falls back to retriever order. Runtime errors
 # raise; the caller catches, logs the provider name loudly, and falls back the
-# same way. rerank never breaks chat.
+# same way. rerank never breaks chat. The hosted scorer also takes each text's
+# tier and raises HostedTierRefused for a pool that is not all public (the
+# tier rule, above _score_hosted): the caller falls back the same way and
+# says why.
 
 def _score_local(query: str, texts: list[str]) -> list[float] | None:
     enc = _get_encoder()
@@ -184,11 +190,107 @@ def _hosted_unavailable() -> str | None:
     return None
 
 
-def _score_hosted(query: str, texts: list[str]) -> list[float] | None:
+# -- the tier rule (2026-11-10) -------------------------------------------------
+# Corpus text from a NON-PUBLIC tier never goes to a third-party vendor. It
+# stays on this box (the local model).
+#
+# A tier here is the ACCESS axis, the collection a candidate was read from,
+# not its trust tier (provenance, the `trust` field). The public tier is the
+# global collection (database.GLOBAL_COLLECTION): the shared floor every rung
+# reads, a guest included. Every other collection is not: a department's
+# kb_<name> (restricted, history, any department an operator adds) and the
+# help lane's kb_help alike, and a peer's piece is never one of this
+# instance's collections at all. retrieve() hands rerank() the caller's whole
+# pool (the global collection plus the caller's department, any routed
+# department and the floor departments the caller is cleared for), and the
+# peer lane hands it what the peers sent. So until this rule, once a deployer
+# opened the latch, any turn that retrieved past the global collection sent
+# department chunks to the vendor, and any turn that asked a peer sent the
+# peer's pieces: the latch opened the vendor to every collection at once.
+#
+# The rule sits in _score_hosted, the one function that makes the vendor call,
+# so a caller written later inherits it. It FAILS CLOSED: the call needs one
+# tier per text and every tier must be the global collection. A candidate with
+# no stamp, a caller that passes no tiers, a list of the wrong length, a
+# public tier that cannot be read: each is a refusal, never a send.
+
+class HostedTierRefused(RuntimeError):
+    """These texts may not go to a third-party vendor: not every one is proven
+    to come from the public collection. The message is the reason in plain
+    words (counts and collection names), never a candidate's text or source."""
+
+
+# What a peer's piece reads as: never one of this instance's collections.
+_PEER_PIECE = "a peer's piece"
+
+
+def _public_tier() -> str | None:
+    """The public tier's name: the global collection, the shared floor every
+    rung reads (query_similar searches it on every read but the help lane's).
+    Imported at call time, as retrieve() imports the database. None when it
+    cannot be read, and no tier equals None."""
+    try:
+        from app.database import GLOBAL_COLLECTION
+    except Exception:
+        return None
+    return GLOBAL_COLLECTION if isinstance(GLOBAL_COLLECTION, str) and GLOBAL_COLLECTION else None
+
+
+def _tier_of(candidate) -> str | None:
+    """The collection a candidate was READ from (the stamp query_similar puts
+    on each one, `collection`), or None when it carries none.
+
+    A peer's piece is never one of this instance's collections, whatever it
+    says about itself: query_peer_kb returns the peer's raw JSON, so a
+    `collection` key on it is the peer's claim (the rule format_peer_context
+    applies to `trust`), and which of the peer's collections it came from is
+    the peer's to know. query_peer_kb stamps `peer` on every piece it
+    returns."""
+    if not isinstance(candidate, dict):
+        return None
+    if "peer" in candidate:
+        return _PEER_PIECE
+    col = candidate.get("collection")
+    return col if isinstance(col, str) and col else None
+
+
+def _tier_refusal(texts: list[str], tiers) -> str | None:
+    """Why these texts may not go to a vendor, or None when every one of them
+    is proven public. Counts and collection names only, bounded."""
+    n = len(texts)
+    rule = "text from a non-public tier never goes to a third-party vendor"
+    public = _public_tier()
+    if not public:
+        return (f"the public tier could not be read, so none of {n} candidate(s) "
+                f"is proven public: {rule}")
+    if not isinstance(tiers, (list, tuple)) or len(tiers) != n:
+        return f"no tier information for {n} candidate(s): {rule}"
+    off = [t for t in tiers if t != public]
+    if not off:
+        return None
+    named = sorted({t for t in off if isinstance(t, str) and t})
+    unknown = sum(1 for t in off if not (isinstance(t, str) and t))
+    parts = [t[:40] for t in named[:3]]
+    if len(named) > 3:
+        parts.append(f"{len(named) - 3} more")
+    if unknown:
+        parts.append(f"{unknown} with no tier information")
+    return (f"{len(off)} of {n} candidate(s) not from the public collection "
+            f"({'; '.join(parts)}): {rule}")
+
+
+def _score_hosted(query: str, texts: list[str],
+                  tiers: list | None = None) -> list[float] | None:
     reason = _hosted_unavailable()
     if reason:
         log.warning("hosted rerank unavailable: %s", reason)
         return None
+    # THE TIER RULE (above), in the one function that makes the vendor call and
+    # before any of the request is built: a refused pool builds no request and
+    # opens no connection.
+    refused = _tier_refusal(texts, tiers)
+    if refused:
+        raise HostedTierRefused(refused)
     vendor = hosted_vendor()
     spec = _HOSTED[vendor]
     model = _cfg("rerank_hosted_model", RERANK_HOSTED_MODEL_DEFAULT).strip() or spec["default_model"]
@@ -209,11 +311,12 @@ def _score_hosted(query: str, texts: list[str]) -> list[float] | None:
     return scores
 
 
-def _score(provider: str, query: str, texts: list[str]) -> list[float] | None:
+def _score(provider: str, query: str, texts: list[str],
+           tiers: list | None = None) -> list[float] | None:
     if provider == "remote-http":
         return _score_remote(query, texts)
     if provider == "hosted-api":
-        return _score_hosted(query, texts)
+        return _score_hosted(query, texts, tiers)
     return _score_local(query, texts)
 
 
@@ -336,7 +439,9 @@ def status() -> dict:
         q = "how do I reset my password"
         docs = ["Passwords are reset from the account settings page.",
                 "The quarterly report covers revenue and headcount."]
-        scores = _score(provider, q, docs)
+        # The two documents are literals in this module, not corpus text, so
+        # they go as the public tier (the tier rule, at _score_hosted).
+        scores = _score(provider, q, docs, tiers=[_public_tier()] * len(docs))
         if scores is None:
             info["error"] = "provider became unavailable during the self-test"
             return info
@@ -356,21 +461,34 @@ def rerank(query: str, candidates: list[dict], top_k: int | None = None,
     (truncated) if rerank is disabled, the provider is unavailable, or scoring
     fails - rerank never breaks chat.
 
+    A pool that is not all public tier is never sent to the hosted provider
+    (the tier rule, at _score_hosted): that turn takes the same fallback, and
+    both the log and `stats` say why.
+
     `stats` (optional out-param): when the scoring path runs, filled with
     rerank_ms (wall time, fallback attempts included) and rerank_provider
     (who actually SERVED: the configured provider, 'local-fallback' when the
     chain engaged, 'none' when it exhausted). Left untouched when scoring
     never runs (disabled / no candidates) - absent keys mean not-applicable,
-    never 0."""
+    never 0. Only when the tier rule kept the pool off the vendor does it
+    also hold rerank_hosted_skipped: the reason in plain words (counts and
+    collection names, never a candidate's text)."""
     k = top_k or RERANK_TOP_K
     if not rerank_enabled() or not candidates:
         return candidates[:k]
     texts = [c.get("text", "") for c in candidates]
+    tiers = [_tier_of(c) for c in candidates]
     provider = rerank_provider()
     served = provider
+    tier_refusal = None     # why the tier rule kept this pool off the vendor, when it did
     _t0 = time.perf_counter()
     try:
-        scores = _score(provider, query, texts)
+        scores = _score(provider, query, texts, tiers)
+    except HostedTierRefused as e:
+        # Not a failure: the rule doing its work, said in its own words.
+        tier_refusal = str(e)
+        log.warning("hosted rerank NOT called: %s", tier_refusal)
+        scores = None
     except Exception as e:
         log.warning("rerank (%s) failed: %s", provider, f"{type(e).__name__}: {e}"[:300])
         scores = None
@@ -379,7 +497,8 @@ def rerank(query: str, candidates: list[dict], top_k: int | None = None,
     # box costs slow answers, not recall. Local's own failure still lands on
     # retriever order.
     if scores is None and provider != "local":
-        log.warning("falling back to LOCAL rerank (provider %s unavailable)", provider)
+        log.warning("falling back to LOCAL rerank (provider %s %s)", provider,
+                    "held back by the tier rule" if tier_refusal else "unavailable")
         served = "local-fallback"
         try:
             scores = _score_local(query, texts)
@@ -391,6 +510,8 @@ def rerank(query: str, candidates: list[dict], top_k: int | None = None,
     if stats is not None:
         stats["rerank_ms"] = int((time.perf_counter() - _t0) * 1000)
         stats["rerank_provider"] = served
+        if tier_refusal:
+            stats["rerank_hosted_skipped"] = tier_refusal
     if scores is None:
         return candidates[:k]
     ranked = sorted(zip(candidates, scores), key=lambda cs: cs[1], reverse=True)

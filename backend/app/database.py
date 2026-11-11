@@ -524,11 +524,19 @@ def _recency_multiplier(meta: dict) -> float:
     return max(RECENCY_FLOOR, 0.5 ** (age_days / RECENCY_HALF_LIFE_DAYS))
 
 
-def _hybrid_rank(docs: list, distances: list, metadatas: list, query: str, n_results: int) -> list[dict]:
+def _hybrid_rank(docs: list, distances: list, metadatas: list, query: str, n_results: int,
+                 collections: list | None = None) -> list[dict]:
     """Apply BM25 reranking to a combined result set and return top n_results.
     Recency-weighted: the ORDER (which candidates survive into the reranker's
     pool) decays with entry_date age; the returned similarity score does not,
-    so the rag threshold keeps its meaning."""
+    so the rag threshold keeps its meaning.
+
+    `collections` (2026-11-10): the collection each doc was READ from, one
+    name per doc. It rides through the ghost filter and the sort below, so
+    every candidate leaves stamped with the collection it was read from
+    (`collection`), the field the hosted-rerank tier rule reads
+    (rerank._score_hosted). Left out, or not one name per doc, nothing is
+    stamped: a candidate with no stamp is never public to that rule."""
     # A GHOST is an id the index returned and the store no longer holds: no
     # text, no metadata. A serving process answers with ghosts after a SECOND
     # process deleted pieces under it (a re-seed or a re-ingest run beside the
@@ -538,9 +546,12 @@ def _hybrid_rank(docs: list, distances: list, metadatas: list, query: str, n_res
     # question near a ghost. Dropped here (2026-10-02), so the window costs a
     # thinner answer and not an error; a live piece whose metadata is missing
     # reads as having none.
-    rows = list(zip(docs, distances, metadatas))
-    live = [(d, dist, m if isinstance(m, dict) else {})
-            for d, dist, m in rows if isinstance(d, str) and d]
+    cols = list(collections) if collections is not None else []
+    if len(cols) != len(docs):
+        cols = [None] * len(docs)
+    rows = list(zip(docs, distances, metadatas, cols))
+    live = [(d, dist, m if isinstance(m, dict) else {}, col)
+            for d, dist, m, col in rows if isinstance(d, str) and d]
     if len(live) != len(rows):
         log.warning("retrieval dropped %d result(s) with no document - the index "
                     "holds ids the store does not; restart to reload it",
@@ -548,6 +559,7 @@ def _hybrid_rank(docs: list, distances: list, metadatas: list, query: str, n_res
     docs = [x[0] for x in live]
     distances = [x[1] for x in live]
     metadatas = [x[2] for x in live]
+    cols = [x[3] for x in live]
     if not docs:
         return []
 
@@ -562,7 +574,8 @@ def _hybrid_rank(docs: list, distances: list, metadatas: list, query: str, n_res
     combined = sorted(
         zip(docs, metadatas, vector_scores,
             [(VECTOR_WEIGHT * v + BM25_WEIGHT * b) * _recency_multiplier(m)
-             for v, b, m in zip(norm_vector, norm_bm25, metadatas)]),
+             for v, b, m in zip(norm_vector, norm_bm25, metadatas)],
+            cols),
         key=lambda x: x[3],
         reverse=True
     )
@@ -578,8 +591,12 @@ def _hybrid_rank(docs: list, distances: list, metadatas: list, query: str, n_res
          # labels and orders the context by it; the prompt's
          # data-not-instructions rules enforce it at answer time.
          "trust": derive_trust(meta),
-         "injection_flagged": (meta or {}).get("injection_flagged") == "true"}
-        for doc, meta, vs, _ in combined[:n_results]
+         "injection_flagged": (meta or {}).get("injection_flagged") == "true",
+         # The collection stamp (2026-11-10; the docstring says who reads it):
+         # the NAME of the collection the query read this text from, never a
+         # metadata field (an ingest writes those).
+         **({"collection": col} if isinstance(col, str) and col else {})}
+        for doc, meta, vs, _, col in combined[:n_results]
     ]
 
 
@@ -1068,6 +1085,9 @@ def query_similar(query: str, n_results: int = 5,
     all_docs: list[str] = []
     all_distances: list[float] = []
     all_metas: list[dict] = []
+    # The collection each doc is read from, one name per entry of all_docs,
+    # from BOTH legs below: the collection stamp (_hybrid_rank's docstring).
+    all_cols: list = []
     failed_collections: list[str] = []
 
     departments = [department] if isinstance(department, str) else list(department or [])
@@ -1094,9 +1114,15 @@ def query_similar(query: str, n_results: int = 5,
             results = _knn(col, embedding, min(fetch_k, count),
                            ["documents", "distances", "metadatas"], "query_similar")
             vector_ids = results["ids"][0] if results.get("ids") else []
-            all_docs.extend(results["documents"][0] if results["documents"] else [])
-            all_distances.extend(results["distances"][0] if results["distances"] else [])
-            all_metas.extend(results["metadatas"][0] if results["metadatas"] else [])
+            # Read whole before any of it is kept, so a malformed answer adds
+            # no row and the stamps stay aligned with the texts they name.
+            _docs = results["documents"][0] if results["documents"] else []
+            _dists = results["distances"][0] if results["distances"] else []
+            _metas = results["metadatas"][0] if results["metadatas"] else []
+            all_docs.extend(_docs)
+            all_distances.extend(_dists)
+            all_metas.extend(_metas)
+            all_cols.extend([getattr(col, "name", None)] * len(_docs))
         except Exception as e:
             # Don't hide infrastructure failures behind an empty result - a
             # down/corrupt Chroma otherwise reads as "no knowledge found" in
@@ -1129,9 +1155,13 @@ def query_similar(query: str, n_results: int = 5,
             for doc, meta, emb in zip(got.get("documents") or [],
                                       got.get("metadatas") or [],
                                       got.get("embeddings") if got.get("embeddings") is not None else []):
+                # The distance first: a raise here keeps the whole row out,
+                # never a text without its distance or its stamp.
+                dist = _cosine_distance(embedding, emb)
                 all_docs.append(doc)
-                all_distances.append(_cosine_distance(embedding, emb))
+                all_distances.append(dist)
                 all_metas.append(meta)
+                all_cols.append(getattr(col, "name", None))
         except Exception as e:
             log.warning("query_similar: BM25 leg failed on collection %s: %s",
                         getattr(col, "name", "?"), f"{type(e).__name__}: {e}"[:300])
@@ -1149,7 +1179,8 @@ def query_similar(query: str, n_results: int = 5,
             % (len(failed_collections), len(collections_to_query),
                ", ".join(failed_collections)))
 
-    return _hybrid_rank(all_docs, all_distances, all_metas, query, n_results)
+    return _hybrid_rank(all_docs, all_distances, all_metas, query, n_results,
+                        collections=all_cols)
 
 
 def list_sources(department: str | None = None) -> list[dict]:

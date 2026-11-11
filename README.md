@@ -32,7 +32,10 @@ aspirational.
   per-source diversity, then a cross-encoder reranker. The reranker is a
   provider seam: in-process ONNX (baked into the image), a remote scoring
   endpoint for a GPU box, or a hosted API - selected per call by config,
-  with a fallback chain that degrades to slower, never dumber.
+  with a fallback chain that degrades to slower, never dumber. The hosted
+  API sits behind a host-level latch and only ever receives passages from
+  the "general" department; a question that draws on any other department
+  or a peer is ranked locally.
 - **Departments and tiers** - corpus partitions with clearance floors,
   enforced identically at retrieval, at the file tools, at the answer
   layer, and on both sides of the federation seam. Unlisted departments

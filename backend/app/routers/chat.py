@@ -286,7 +286,14 @@ def query_kb_for_peer(req: Request, q: str, n: int = Query(8, ge=1, le=20)):
     # operator most wants to filter by severity. Found by running it.
     log("peer_kb_served", scope=scope, scope_level=level,
         departments=len(departments), results=len(results))
-    return {"results": results}
+    # The collection stamp query_similar puts on each candidate (`collection`,
+    # for the hosted-rerank tier rule in rerank.py, 2026-11-10) is this
+    # instance's own bookkeeping and does not cross this door: the answer
+    # keeps the fields it always had, and which collection a piece came from
+    # (a department's name, for any piece read past the global collection) is
+    # not a peer's to read.
+    return {"results": [{k: v for k, v in r.items() if k != "collection"}
+                        if isinstance(r, dict) else r for r in results]}
 
 
 # The history routes ask for the scope the taxonomy names for them (AZ-03,

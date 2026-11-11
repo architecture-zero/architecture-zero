@@ -221,7 +221,8 @@ def test_only_department_reads_the_named_collection_alone(monkeypatch):
     monkeypatch.setattr(database, "_existing_collection",
                         lambda dept=None: (seen.append(dept), fake._cols[0])[1])
     monkeypatch.setattr(database, "_embed", lambda q, retries=2: [0.0])
-    monkeypatch.setattr(database, "_hybrid_rank", lambda docs, dists, metas, q, n: [])
+    monkeypatch.setattr(database, "_hybrid_rank",
+                        lambda docs, dists, metas, q, n, collections=None: [])
     monkeypatch.setattr(database, "_lexical_top_ids", lambda *a, **k: [])
     database.query_similar("how do I sign in", department="help", only_department=True)
     assert seen == ["help"] and fake.created == []

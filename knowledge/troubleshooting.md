@@ -135,7 +135,12 @@ RERANK_HOSTED_ALLOWED host latch, since it sends chunk text to the
 vendor); or disable reranking (rerank_enabled=false) and accept
 retriever-order results. All of these are live config flips via PATCH
 /api/admin/config - no restart needed; only the hosted latch itself is
-host-env-only by design.
+host-env-only by design. The hosted-api provider ranks only the questions
+whose passages all come from the "general" department: a question that also
+draws on another department, the help pages or a peer is ranked by the
+local model, so on those turns the hosted option buys no speed. The audit
+row records local-fallback as the provider that served such a turn, and
+the server log names the reason.
 
 ## Rerank status reports an error, or answers serve without reranking
 

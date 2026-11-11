@@ -122,3 +122,8 @@ vector store on the host you deploy. The only egress is what you configure:
 calls to a cloud model provider you keyed, peers you registered, and - only
 if the operator explicitly sets the host-level latch - a hosted reranking
 API. No latch, no third-party rerank egress, regardless of any config flip.
+Even with the latch set, the hosted reranker only ever receives text from
+the "general" department (the shared floor). When the passages for a
+question include any other department's documents, a help page or a peer's
+answer, none of that question's passages is sent: it is ranked on the
+instance's own reranking model instead.

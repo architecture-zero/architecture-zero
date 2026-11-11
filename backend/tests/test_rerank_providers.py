@@ -8,8 +8,17 @@ candidate pool can contain private content simply never sets the latch).
 import app.rag_config as rc
 import app.rerank as rr
 from app.config import set_config
+from app.database import GLOBAL_COLLECTION
 
-CANDS = [{"text": "short"}, {"text": "the longest text of them all"}, {"text": "mid text"}]
+# Every candidate carries the stamp query_similar puts on it: the collection it
+# was read from. Since 2026-11-10 the hosted arm takes a pool only when every
+# candidate was read from the global collection (the tier rule,
+# tests/test_rerank_tier_rule.py), so the hosted cases below say which
+# collection their pool is; unstamped, they would rank locally and never test
+# the vendor call.
+CANDS = [{"text": "short", "collection": GLOBAL_COLLECTION},
+         {"text": "the longest text of them all", "collection": GLOBAL_COLLECTION},
+         {"text": "mid text", "collection": GLOBAL_COLLECTION}]
 
 
 def _clear_cfg():
