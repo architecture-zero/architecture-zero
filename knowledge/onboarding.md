@@ -99,7 +99,10 @@ Re-enrolling an account that already has MFA takes the same password plus
 Someone who has lost their authenticator cannot re-key it themselves: an
 admin resets it (Reset MFA on the admin panel's Users tab, or POST
 /api/admin/users/{id}/mfa-reset, with the admin's own password; an admin
-may reset their own), and they enroll fresh. Code attempts are capped
+may reset their own), and they enroll fresh. With REQUIRE_MFA=true a reset
+account cannot sign in to do that, because login refuses an account with no
+authenticator: it enrolls from a session that is still signed in, or the
+operator sets REQUIRE_MFA=false for the re-enrollment. Code attempts are capped
 per account (five per fifteen minutes by default, TOTP_MAX_FAILURES and
 TOTP_FAILURE_WINDOW), and only a right code or an admin's MFA reset clears
 the count - a correct password does not. Confirm a new authenticator within 30 minutes of its
@@ -107,10 +110,14 @@ setup (MFA_PENDING_TTL); after that, start the setup again. Only AFTER
 every account that needs password login has
 enrolled should the operator set REQUIRE_MFA=true in the host environment
 and restart. With enforcement on, a password login for an account with no
-enrolled authenticator is refused outright - so flipping the flag before
-enrolling locks that account out until an admin resets its MFA.
+enrolled authenticator is refused outright, so flipping the flag before
+enrolling locks that account out. An admin's MFA reset is not a way back in:
+a reset account has no authenticator either, and is refused the same way.
+The account enrolls from a session that is still signed in, or the operator
+sets REQUIRE_MFA=false, restarts, lets it sign in and enroll, and turns the
+flag back on.
 
-On an UNCLAIMED deployment there is no admin to do that resetting, so
+On an UNCLAIMED deployment there is no signed-in session to enroll from, so
 claiming is refused outright while REQUIRE_MFA is set. Claiming does not
 enroll a factor, enrolling needs a signed-in session, and signing in is what
 enforcement refuses - a deployment claimed under the flag would have an Owner

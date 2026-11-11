@@ -98,9 +98,14 @@ release.
 
 ## "MFA is required on this instance and this account has no TOTP enrolled"
 
-The operator set REQUIRE_MFA=true but this account never enrolled an
-authenticator. From another signed-in session (or after an admin resets
-the account's MFA), enroll via MFA setup and retry. Operators: always have
+The operator set REQUIRE_MFA=true and this account has no authenticator
+enrolled: it never enrolled one, an admin reset its MFA, or it began
+replacing its authenticator and never confirmed the new one. A reset is not
+a way back in, because a reset account has no authenticator either and is
+refused the same way. From a session that is still signed in, enroll
+(Account Settings, the Two-factor tab, or the MFA setup API) and retry. With
+no such session, the operator sets REQUIRE_MFA=false, restarts, the account
+signs in and enrolls, and the flag goes back on. Operators: always have
 every password account enroll BEFORE flipping REQUIRE_MFA.
 
 ## "Invalid username or password" when the password is definitely right

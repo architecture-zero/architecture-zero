@@ -13,9 +13,13 @@ There is no password-reset link. If you cannot sign in, ask your administrator. 
 
 ## Two-factor sign-in
 
-You can add a second step to your own sign-in: a six-digit code from an authenticator app on your phone. Click your name at the top of the page, then the Two-factor tab. Type your password and click Start setup, scan the QR code with the app (or type the key shown under it), then type the app's six-digit code and click Turn on. From then on, signing in asks for a code after your password.
+You can add a second step to your own sign-in: a six-digit code from an authenticator app on your phone. Click your name at the top of the page, then the Two-factor tab. Type your password and click Start setup, scan the QR code with the app (or type the key shown under it), then type the app's six-digit code and click Turn on. From then on, signing in asks for a code after your password. There is no off switch on that tab.
 
-To move to a new phone or app, use Replace authenticator on the same tab. It asks for your password and a code from the authenticator you have now, and two-factor is off for your account until you confirm a code from the new one. There is no off switch on that tab. If you lose the authenticator, ask your administrator to reset two-factor for your account, then set it up again.
+## A new or lost authenticator
+
+To move to a new phone or app, use Replace authenticator on the Two-factor tab. It asks for your password and a code from the authenticator you have now. Two-factor is off for your account from that moment until you confirm a code from the new one, so stay signed in until you have. Closing the screen before that asks you first.
+
+If you lose the authenticator, ask your administrator to reset two-factor for your account, then set it up again. Where two-factor is required to sign in, an account that was reset cannot sign in until it is set up again: set it up from a session that is still signed in, or ask the person who runs the server to switch the requirement off while you do.
 
 ## Asking a question
 
