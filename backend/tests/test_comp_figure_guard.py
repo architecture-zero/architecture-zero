@@ -16,6 +16,7 @@ both.
 """
 import json
 import random
+import re
 import uuid
 from unittest.mock import patch
 
@@ -135,6 +136,18 @@ def _tokens(r):
             if l.startswith("data: ") and '"token"' in l]
 
 
+def _without_error_id(body: str) -> str:
+    """The response body with a failed turn's reference id taken out.
+
+    That id is twelve random hex characters, and a check that a figure
+    appears NOWHERE in the body reads it too: about one id in four hundred
+    spells "150", which is how the check below once failed with nothing
+    leaked. Only the id's own characters are removed - a figure anywhere
+    else in the body is still found (the control after that test).
+    """
+    return re.sub(r'("error_id":\s*")[0-9a-f]{12}(")', r"\1\2", body)
+
+
 def _pay_stream(messages, model, tools=None, system_prompt="", max_tokens=1024):
     for piece in ("For the quarter: Contractor labor (n", "et): ~$6", "4K, give or take."):
         yield {"type": "text", "text": piece}
@@ -197,8 +210,22 @@ def test_fix_a_failed_turn_still_shows_the_held_tail_masked(client, monkeypatch)
         r = client.post("/api/chat", json={"prompt": "Hi", "model": "test-model",
                                            "session_id": f"comp-err-{uuid.uuid4().hex[:8]}"})
     assert "".join(_tokens(r)) == "Half an answer: your rate was [REDACTED:comp]/hr, then"
-    assert "150" not in r.text
+    assert "150" not in _without_error_id(r.text)
     assert "failed to complete" in r.text
+
+
+def test_the_figure_check_reads_the_whole_body_but_not_the_reference_id():
+    # CONTROL for the check above. A failed turn's body ends in an error
+    # event that carries a random reference id. An id that happens to spell
+    # the figure must not fail the check; a figure anywhere else still must.
+    event = "data: " + json.dumps({"error": "The response failed to complete.",
+                                   "error_id": "ef27a1504fcc"}) + "\n\n"
+    assert "150" in event                             # the id spells it
+    assert "150" not in _without_error_id(event)      # ... and is not read
+    leak = "data: " + json.dumps({"token": "your rate was $150/hr"}) + "\n\n" + event
+    assert "150" in _without_error_id(leak)           # a real leak still is
+    other = "data: " + json.dumps({"note": "150", "error_id": "0015015015ab"}) + "\n\n"
+    assert _without_error_id(other).count("150") == 1   # only the id is removed
 
 
 # -- 2. peer sources -----------------------------------------------------------
