@@ -109,13 +109,14 @@ the count - a correct password does not. Confirm a new authenticator within 30 m
 setup (MFA_PENDING_TTL); after that, start the setup again. Only AFTER
 every account that needs password login has
 enrolled should the operator set REQUIRE_MFA=true in the host environment
-and restart. With enforcement on, a password login for an account with no
+and recreate the backend (`docker compose up -d`; a plain `docker compose
+restart` keeps the value the container was created with). With enforcement on, a password login for an account with no
 enrolled authenticator is refused outright, so flipping the flag before
 enrolling locks that account out. An admin's MFA reset is not a way back in:
 a reset account has no authenticator either, and is refused the same way.
 The account enrolls from a session that is still signed in, or the operator
-sets REQUIRE_MFA=false, restarts, lets it sign in and enroll, and turns the
-flag back on.
+sets REQUIRE_MFA=false, recreates the backend the same way, lets it sign in
+and enroll, and turns the flag back on.
 
 REQUIRE_MFA takes one of two words. Only true turns enforcement on, and only
 false - or a variable left unset or empty - leaves it off, in any letter
@@ -130,9 +131,9 @@ claiming is refused outright while REQUIRE_MFA is set. Claiming does not
 enroll a factor, enrolling needs a signed-in session, and signing in is what
 enforcement refuses - a deployment claimed under the flag would have an Owner
 who cannot sign in while the flag is on, and a spent claim code. Turning the
-flag off and restarting would let that Owner in, and the refusal asks for
-that same restart before the claim instead of after it. Claim with the flag
-off, enroll, then turn it on and restart.
+flag off and recreating the backend would let that Owner in, and the refusal
+asks for that same step before the claim instead of after it. Claim with the
+flag off, enroll, then turn it on and recreate the backend.
 
 ## Connecting a model provider
 

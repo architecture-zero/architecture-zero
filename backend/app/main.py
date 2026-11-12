@@ -95,7 +95,9 @@ app.add_middleware(
 # And AHEAD of the schema step below. The auth router refuses at import on a
 # value of its two-factor switch that is neither of the switch's two words
 # (routers/auth.py, _require_mfa_from_env), and a boot that is going to refuse
-# must refuse before it has created or seeded anything.
+# must refuse before the schema step has created or seeded anything (the
+# vector store's client is opened by an import above this one: an open and
+# no write).
 # tests/test_require_mfa_flag.py pins that the refusal finds no table made.
 from app.routers import (  # noqa: E402  (app must exist first)
     system as system_router,

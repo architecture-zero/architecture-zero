@@ -89,7 +89,9 @@ def _require_mfa_from_env() -> bool:
         "SECURITY: REQUIRE_MFA is set to a value that is neither true nor "
         "false. Refusing to start rather than guess whether two-factor is "
         "required: set REQUIRE_MFA=true or REQUIRE_MFA=false (unset or empty "
-        "is off), with nothing else in the value, and restart.")
+        "is off), with nothing else in the value, and start the backend again. "
+        "Under Docker Compose that is `docker compose up -d`: a plain restart "
+        "keeps the value the container was created with.")
 
 
 REQUIRE_MFA = _require_mfa_from_env()

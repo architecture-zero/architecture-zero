@@ -103,8 +103,9 @@ carrying such a line has not been requiring two-factor at all. From that date
 the backend does not start on one, and the log names the variable and the two
 words it takes. Set such a line to `false` for the update: that is how it has
 been read all along. Then have every account that signs in with a password
-enroll, and only after that set it to `true` and restart
-(`knowledge/onboarding.md` has the order and why). A backend that starts says
+enroll, and only after that set it to `true` and run `docker compose up -d`
+(a plain `docker compose restart` keeps the value the container was created
+with; `knowledge/onboarding.md` has the order and why). A backend that starts says
 which way it read the switch in a log line named `require_mfa`, with `state`
 on or off.
 
