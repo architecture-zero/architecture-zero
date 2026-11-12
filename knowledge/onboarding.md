@@ -68,7 +68,11 @@ short-lived access token and a refresh token; clients refresh silently via
 POST /api/auth/refresh. If your session expires you get "Session expired -
 sign in again" - just sign in again. After too many wrong passwords the
 account locks temporarily and unlocks itself after the lockout window, or an
-admin can unlock it immediately (POST /api/admin/users/{id}/unlock). The lock
+admin can unlock it immediately (POST /api/admin/users/{id}/unlock). Wrong
+passwords count wherever the account's own password is asked for, not only at
+sign-in: changing your password or your username, setting up two-factor, and
+the confirmations the admin panel asks for all count toward the same lock,
+and while it holds they answer that the account is locked. The lock
 is silent by design: while it holds, sign-in answers "Invalid username or
 password" rather than naming the lock, because an answer that named it would
 tell an anonymous caller which usernames are real. If a correct password is

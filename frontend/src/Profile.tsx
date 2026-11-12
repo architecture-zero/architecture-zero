@@ -187,6 +187,7 @@ export default function Profile({ api, headers, user, onClose, onUsernameChange,
                 <label className="text-xs text-gray-400 block mb-1.5">Current password</label>
                 <input
                   type="password"
+                  autoComplete="current-password"
                   value={currentPassword}
                   onChange={e => setCurrentPassword(e.target.value)}
                   autoFocus
@@ -197,6 +198,7 @@ export default function Profile({ api, headers, user, onClose, onUsernameChange,
                 <label className="text-xs text-gray-400 block mb-1.5">New password</label>
                 <input
                   type="password"
+                  autoComplete="new-password"
                   value={newPassword}
                   onChange={e => setNewPassword(e.target.value)}
                   className="w-full bg-gray-800 border border-gray-700 focus:border-blue-500/60 rounded-xl px-4 py-2.5 text-sm text-white outline-none transition-colors"
@@ -206,6 +208,7 @@ export default function Profile({ api, headers, user, onClose, onUsernameChange,
                 <label className="text-xs text-gray-400 block mb-1.5">Confirm new password</label>
                 <input
                   type="password"
+                  autoComplete="new-password"
                   value={confirmPassword}
                   onChange={e => setConfirmPassword(e.target.value)}
                   className="w-full bg-gray-800 border border-gray-700 focus:border-blue-500/60 rounded-xl px-4 py-2.5 text-sm text-white outline-none transition-colors"

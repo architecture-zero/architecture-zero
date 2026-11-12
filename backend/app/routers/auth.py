@@ -33,7 +33,7 @@ from pydantic import BaseModel
 from app.config import instance_name
 from app.jwt_auth import (authenticate_user, create_access_token,
                           create_refresh_token, hash_token, hash_password,
-                          verify_password, get_current_user, validate_password,
+                          get_current_user, validate_password,
                           create_mfa_challenge_token, decode_mfa_challenge_token,
                           refuse_if_mfa_seed_stranded, require_step_up,
                           require_totp_step_up,
@@ -594,14 +594,40 @@ def me(current_user: dict = Depends(get_current_user)):
 
 
 class ChangePasswordRequest(BaseModel):
-    current_password: str
     new_password: str
+    # Optional at the schema, like the field at every other step-up door: a
+    # missing or empty value is the helper's string 400, not the 422 a
+    # required field answers, whose list-shaped detail a client that renders
+    # `detail` raw cannot show. (An explicit null, or a value that is not a
+    # string, is still the schema's 422: refused before this handler runs,
+    # so nothing is read and nothing is counted.)
+    current_password: str = ""
 
 
 @router.patch("/api/auth/me/password")
 def change_password(request: ChangePasswordRequest, current_user: dict = Depends(get_current_user)):
-    if not verify_password(request.current_password, current_user["password_hash"]):
-        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    # STEP-UP FIRST, through the one helper every other door that takes the
+    # caller's own password uses. This route used to check the current
+    # password with a bare verify_password: a wrong one answered 400 and
+    # nothing else happened, so a session alone could test guesses for it
+    # here with no bound - the second, unthrottled oracle the helper exists
+    # to close, for the very password that is the proof at every door to
+    # durable authority. Now a wrong one counts against the same
+    # failed_attempts / locked_until the sign-in uses, the miss that reaches
+    # MAX_LOGIN_ATTEMPTS locks the account (429), a locked account is
+    # refused (429) even with the right password, and a right one clears the
+    # count. An empty one, and an account with no usable password, get the
+    # helper's own 400s. What a plain wrong password answers has not changed:
+    # 400 "Current password is incorrect" - never a 401, which would sign the
+    # person out for a typo. It runs before the new password is validated, so
+    # a wrong current password learns nothing about the policy.
+    #
+    # The cost, accepted here as at every other step-up door: a session can
+    # lock its own account for the lockout window by sending wrong passwords
+    # to this route. The session itself stays usable; the sign-in and every
+    # step-up are refused until the window ends or an admin unlocks the
+    # account.
+    require_step_up(current_user, request.current_password, "change your password")
     errors = validate_password(request.new_password)
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))

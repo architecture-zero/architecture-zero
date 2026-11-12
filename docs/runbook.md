@@ -206,6 +206,15 @@ Since v0.1.x, for a script or a client of your own:
   `manage_users` or `manage_system`, provider settings, registering or
   changing a peer, enrolling a second factor, changing a username, and an
   administrator resetting someone's second factor.
+- Changing your own password (`PATCH /api/auth/me/password`) has always
+  taken `current_password`, and now takes it under the same rule as those
+  routes. A wrong one still answers 400 "Current password is incorrect", and
+  it now counts against the account's lock the way a failed sign-in does: the
+  attempt that reaches the limit answers 429, and so does every further one,
+  right or wrong, until the lock ends or an administrator unlocks the account
+  (`POST /api/admin/users/{id}/unlock`). A request that leaves
+  `current_password` out answers 400 with a plain reason; it used to answer
+  422.
 - Sign-in attempts are bounded per address (429), a request over the input
   bound is refused before it is scanned, stored or billed (413), and a second
   message on a conversation that is still answering is refused (409).

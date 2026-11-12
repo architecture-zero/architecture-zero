@@ -117,7 +117,17 @@ code only, within 30 minutes of its setup, and will not test a code against
 an enrolled account's live seed. A wrong password answers 400 with a plain
 reason, never a 401 that would log the operator out, and it counts against
 the same lockout as a failed login, so the step-up is not a second guessing
-surface. An account
+surface. Changing your own password (`PATCH /api/auth/me/password`) goes
+through the same helper: the route has always asked for the current
+password, but it used to check it on its own, where a wrong one was not
+counted and a locked account was not refused - an unbounded place to guess
+the very password every door above asks for. A wrong current password there
+now counts toward the lock like any other, the miss that reaches the limit
+and every attempt while the account is locked answer 429, and a right one
+clears the count. The sign-in and that helper are the only two places a
+password is checked, and both count. The cost is the same at each of these
+doors and is accepted: a session can lock its own account for the lockout
+window by sending wrong passwords; the session itself stays usable. An account
 with no usable password (the `!` sentinel hash) cannot be handed those
 scopes until an Owner sets one.
 

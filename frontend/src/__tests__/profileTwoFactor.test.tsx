@@ -961,6 +961,33 @@ describe('Account Settings: the Username and Password tabs, as they were', () =>
     expect(await screen.findByText('Current password is incorrect')).toBeInTheDocument()
     expect(onPasswordChange).not.toHaveBeenCalled()
   })
+
+  // A wrong current password counts toward the account's lock, like a failed
+  // sign-in, and the lock answers 429. The page has no branch on the status:
+  // it shows whatever the server said and leaves the session alone.
+  it("a locked account's refusal shows the server's words too, and signs nobody out", async () => {
+    serve(() => json({ detail: 'Account locked. Try again in 15 minute(s).' }, 429))
+    const { onPasswordChange } = mount()
+    fireEvent.click(tab('Password'))
+    const [current, next, again] = passwordFields()
+    type(current, 'pw-old')
+    type(next, 'pw-new-1')
+    type(again, 'pw-new-1')
+    fireEvent.click(screen.getByRole('button', { name: 'Change password' }))
+    expect(await screen.findByText('Account locked. Try again in 15 minute(s).')).toBeInTheDocument()
+    expect(onPasswordChange).not.toHaveBeenCalled()
+  })
+
+  // Each miss counts, so a password manager must not guess which field is
+  // which: a stale saved password filled into "Current password" would be a
+  // counted miss on every submit.
+  it('Password: each field tells a password manager which password it holds', () => {
+    serve(() => json({}))
+    mount()
+    fireEvent.click(tab('Password'))
+    expect(passwordFields().map(f => f.getAttribute('autocomplete')))
+      .toEqual(['current-password', 'new-password', 'new-password'])
+  })
 })
 
 describe('the shell and the account screen', () => {

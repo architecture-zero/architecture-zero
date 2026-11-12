@@ -123,10 +123,17 @@ though the caller is not told. Look for `auth_login_refused_locked` in the
 application log (it carries the username and the minutes remaining), and for
 a `login_locked` row in the security events if your deployment stores them.
 
+The attempts that filled the count need not have been sign-ins. A wrong
+current password typed while signed in counts too, wherever the account's own
+password is asked for - changing a password or a username, setting up
+two-factor, a confirmation in the admin panel - and each one leaves an
+`auth_step_up_failed` line in the application log that names the action.
+
 The remedy is the same as before: wait out the window, or an admin can unlock
-immediately (POST /api/admin/users/{id}/unlock). If the real user was not
-failing sign-ins, treat the lock as someone guessing at that account's
-password and review the audit log.
+immediately (POST /api/admin/users/{id}/unlock). If the real user was neither
+failing sign-ins nor mistyping their current password inside the app, treat
+the lock as someone guessing at that account's password and review the audit
+log.
 
 ## Answers are slow
 
