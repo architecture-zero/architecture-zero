@@ -35,10 +35,19 @@ FIX (each fails on the helper as it was):
   - a lock stored after the session was read is seen, and so is one stored
     while the right password was being checked
   - two misses that overlap are both counted
+  - a password that cannot be encoded is a miss like any other, never a
+    server error
   - only an Owner unlocks an Owner's account
   - a missing new password, or new username, is a string 400
   - an account with no usable password is told so in words that fit every
     action phrase, with no remedy named that does not exist
+PINS (they held on the first version of the count too; nothing else here
+failed when a copy of the helper broke one of them):
+  - the window is fixed: a later attempt, counted or refused, does not
+    move its end
+  - a right authenticator code does not clear the count
+  - with a lock stored after the session was read, nothing is hashed - for
+    a wrong password as for a right one
 CONTROL (true before and after, by design):
   - one wrong password at a time: the same answers as before
   - a right password clears the count; the next miss counts from one
@@ -56,6 +65,7 @@ measured by timing.
 """
 import ast
 import itertools
+import json
 import re
 import threading
 import time
@@ -139,7 +149,7 @@ def _in_30_minutes():
     return (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
 
 
-_THE_BOUND = re.compile(r"Too many wrong passwords on this account\. Try again in (\d+) "
+_THE_BOUND = re.compile(r"Too many password attempts on this account\. Try again in (\d+) "
                         r"minute\(s\)\. An unlock does not shorten this wait\.")
 
 
@@ -461,8 +471,13 @@ def test_a_right_password_past_the_limit_is_refused_at_every_door(client, accoun
 def test_a_lock_stored_after_the_session_was_read_is_seen(client, member, monkeypatch):
     """The row a route hands the helper was read by the session's dependency
     before the handler ran. A lock stored after that read used to be missed:
-    the right password went through, and cleared the lock."""
+    the right password went through, and cleared the lock. The lock is read
+    from the stored row, so nothing is hashed at all - a wrong password is
+    refused by the lock like a right one. (A helper that read the session's
+    copy would still refuse the right one, in the statement that clears the
+    count; it would have hashed both.)"""
     before = _row(member)["password_hash"]
+    checks = _Checks(monkeypatch)
     real = jwt_auth.user_from_token
 
     def read_then_a_lock_lands(token):
@@ -471,11 +486,14 @@ def test_a_lock_stored_after_the_session_was_read_is_seen(client, member, monkey
         return user
 
     monkeypatch.setattr(jwt_auth, "user_from_token", read_then_a_lock_lands)
-    r = _change(client, member, PW)
-    assert r.status_code == 429, r.text
-    assert r.json()["detail"].startswith("Account locked. Try again in "), r.text
+    for password in (NOT_IT, PW):
+        r = _change(client, member, password)
+        assert r.status_code == 429, (password, r.text)
+        assert r.json()["detail"].startswith("Account locked. Try again in "), r.text
+        assert checks.seen == [], "a password was hashed for a locked account"
     assert _row(member)["password_hash"] == before
     assert _row(member)["locked_until"], "the refused request cleared the lock"
+    assert _row(member)["failed_attempts"] == 0, "a refused request was counted as a miss"
 
 
 def test_a_lock_stored_while_the_right_password_was_being_checked_is_kept(client, member, monkeypatch):
@@ -496,6 +514,86 @@ def test_a_lock_stored_while_the_right_password_was_being_checked_is_kept(client
     assert r.json()["detail"].startswith("Account locked. Try again in "), r.text
     assert _row(member)["password_hash"] == before
     assert _row(member)["locked_until"], "a right password cleared a lock stored during its check"
+
+
+# -- FIX: a password that cannot be encoded is a miss -------------------------
+
+def test_a_password_that_cannot_be_encoded_is_a_miss_not_a_server_error(client, member,
+                                                                      monkeypatch):
+    """JSON can carry text that is not valid Unicode (half of a surrogate
+    pair), and such text cannot be encoded for the hash. It was counted and
+    then raised: a server error, with no miss recorded. It can never match a
+    stored password, so it is a miss like any other - the same answer, the
+    same count against the lock, and nothing handed to the hash."""
+    cannot_be_encoded = "not" + chr(0xD800) + "it"
+    body = json.dumps({"current_password": cannot_be_encoded, "new_password": NEW_PW})
+    checks = _Checks(monkeypatch)
+    answers = []
+    for _ in range(LIMIT):
+        try:
+            r = client.patch(ROUTE, content=body, headers={
+                **member["headers"], "Content-Type": "application/json"})
+            answers.append((r.status_code, r.json().get("detail")))
+        except Exception as exc:          # the route raised: a server error
+            answers.append(("error", type(exc).__name__))
+    assert answers == [(400, WRONG)] * (LIMIT - 1) + [(429, LOCKED_NOW)], answers
+    assert checks.seen == [], "text that cannot be encoded was handed to the hash"
+    row = _row(member)
+    assert row["failed_attempts"] == LIMIT and row["locked_until"]
+    assert verify_password(PW, row["password_hash"])
+
+
+# -- PINS: the window, and what does not clear the count ----------------------
+
+def _count_row(account):
+    """The count's stored row: (when it expires, its document), or None."""
+    from app.db import get_session
+    from app.models import SecurityState
+    with get_session() as db:
+        row = db.get(SecurityState, f"pw_fail:{account['id']}")
+        return None if row is None else (row.expires_at, json.loads(row.value))
+
+
+def test_the_window_is_fixed_a_later_attempt_does_not_move_its_end(client, member):
+    """The window runs from the FIRST password and ends by itself. If an
+    attempt moved its end, a session could keep an account's step-up doors
+    shut for as long as it kept sending - and the wait the refusal names
+    would never arrive."""
+    assert _change(client, member, NOT_IT).status_code == 400
+    ends, first = _count_row(member)
+    assert first["n"] == 1
+    for _ in range(LIMIT - 1):
+        _change(client, member, NOT_IT)
+    unlock_user(member["id"])
+    assert _count_row(member) == (ends, {**first, "n": LIMIT}), "a counted attempt moved the window"
+    for _ in range(2):
+        # 429 with no lock stored: the count's refusal, whatever its words.
+        assert _change(client, member, NOT_IT).status_code == 429
+        assert not _row(member)["locked_until"]
+    assert _count_row(member) == (ends, {**first, "n": LIMIT + 2}), "a refused attempt moved the window"
+
+
+def test_a_right_authenticator_code_does_not_clear_the_count(client, member):
+    """A code is not proof of the password. With the count full, a right
+    code at the code step-up clears the lock's count, as it always has, and
+    leaves this one: the right password is still refused."""
+    import pyotp
+    from app.db import get_session
+    from app.models import User
+    seed = pyotp.random_base32()
+    with get_session() as db:
+        db.query(User).filter(User.id == member["id"]).update(
+            {"mfa_enabled": True, "mfa_secret": seed})
+    for _ in range(LIMIT):
+        _change(client, member, NOT_IT)
+    unlock_user(member["id"])
+    full = _count_row(member)
+    assert full is not None and full[1]["n"] == LIMIT
+    jwt_auth.require_totp_step_up(_row(member), pyotp.TOTP(seed).now(), "re-key your authenticator")
+    assert _count_row(member) == full, "a right code cleared the count of passwords"
+    # Still refused, right password and all: 429 with no lock stored.
+    assert _change(client, member, PW).status_code == 429
+    assert not _row(member)["locked_until"]
 
 
 # -- FIX: misses that overlap are each counted --------------------------------

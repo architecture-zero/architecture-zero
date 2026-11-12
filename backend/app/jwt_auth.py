@@ -214,7 +214,16 @@ def require_step_up(current_user: dict, current_password: str, action: str) -> N
         raise HTTPException(status_code=400,
                             detail=f"Your current password is required to {action}")
     count_password_attempt(stored["id"])
-    if not verify_password(current_password, stored["password_hash"]):
+    # Text that cannot be encoded can never match a stored password -
+    # hash_password encodes the same way - so it is a miss like any other:
+    # counted against the lock, logged, answered 400, and never handed to
+    # the hash, where the encode would raise.
+    try:
+        current_password.encode()
+        encodable = True
+    except UnicodeEncodeError:
+        encodable = False
+    if not encodable or not verify_password(current_password, stored["password_hash"]):
         _count_step_up_failure(stored, action, "password")
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     if not clear_failed_attempts_unless_locked(stored["id"]):

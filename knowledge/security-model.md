@@ -139,8 +139,11 @@ Each password is counted in one write BEFORE it is hashed, and past
 the first of them) the answer is 429 with the minutes to wait and nothing is
 hashed - for a right password as for a wrong one. So the guarantee holds
 for one request at a time and for any number sent together: no more than
-that limit are checked per account per window. Only a right password at one
-of those doors clears the count. An unlock does not - it takes no password,
+that limit are checked per account per window. A password that cannot be
+encoded (text that is not valid Unicode) can match nothing stored, so it is
+a miss like any other: counted, logged, answered 400, never hashed. The
+window is fixed - no attempt, counted or refused, moves its end. Only a
+right password at one of those doors clears the count. An unlock does not - it takes no password,
 so a session holding `manage_users` could otherwise clear its own count -
 and neither does a right authenticator code. The lock itself is read from
 the stored row when the password arrives, not from the copy the session

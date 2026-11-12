@@ -481,7 +481,9 @@ def count_password_attempt(user_id: int) -> None:
         remaining = max(1, int(-(-left // 60)))
         raise HTTPException(
             status_code=429,
-            detail=(f"Too many wrong passwords on this account. Try again in "
+            # "attempts", not "wrong passwords": what was counted may have been
+            # right passwords sent together, or another session's.
+            detail=(f"Too many password attempts on this account. Try again in "
                     f"{remaining} minute(s). An unlock does not shorten this wait."))
 
 

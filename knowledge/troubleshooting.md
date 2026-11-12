@@ -136,7 +136,7 @@ user was neither failing sign-ins nor mistyping their current password inside
 the app, treat the lock as someone guessing at that account's password and
 review the audit log.
 
-## "Too many wrong passwords on this account" when the password is right
+## "Too many password attempts on this account" when the password is right
 
 That is not the lock. It is the count of passwords checked wherever the app
 asks a signed-in person for their own password - changing a password or a
@@ -144,7 +144,9 @@ username, setting up two-factor, a confirmation in the admin panel. No more
 than `MAX_LOGIN_ATTEMPTS` are checked for one account in one lockout window,
 which starts at the first of them, and past that every one is refused
 without being checked, the right one included. The answer names the minutes
-left.
+left. It says "attempts" because what was counted need not have been wrong:
+the same account's other sessions count too, and so do right passwords sent
+at the same moment.
 
 An unlock does not shorten the wait, by design: an unlock takes no password,
 so a session that could unlock itself could otherwise keep guessing. Signing

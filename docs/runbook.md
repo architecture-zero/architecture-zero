@@ -219,9 +219,11 @@ Since v0.1.x, for a script or a client of your own:
   `MAX_LOGIN_ATTEMPTS` passwords are checked for one account in one lockout
   window (`LOCKOUT_DURATION_MINUTES`, from the first of them), sent one at a
   time or all together: each is counted before it is checked. Past that the
-  answer is 429 "Too many wrong passwords on this account. Try again in N
+  answer is 429 "Too many password attempts on this account. Try again in N
   minute(s). An unlock does not shorten this wait." - for a right password
-  as for a wrong one. An administrator's unlock
+  as for a wrong one. A `current_password` that is not valid text (it cannot
+  be encoded) is a wrong one: 400, counted like any other. An
+  administrator's unlock
   (`POST /api/admin/users/{id}/unlock`) ends the lock, so the person can sign
   in again at once; it does not end that wait, which only a right password
   inside the limit or the end of the window does. A script should send

@@ -78,8 +78,8 @@ confirmations also keep a count of their own, which an unlock does not
 clear: once as many passwords have been tried there as it takes to lock the
 account, they stay refused - the right password included - until the
 lockout window that began with the first of them ends. After an unlock the
-answer there reads "Too many wrong passwords on this account. Try again in
-N minute(s)". An unlock lets you sign in again at once; it does not shorten
+answer there reads "Too many password attempts on this account. Try again
+in N minute(s)". An unlock lets you sign in again at once; it does not shorten
 that wait. The lock
 is silent by design: while it holds, sign-in answers "Invalid username or
 password" rather than naming the lock, because an answer that named it would
