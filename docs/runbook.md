@@ -77,6 +77,7 @@ override was added; the README carries the same note).
     sudo cp -a backend/data ../data-before-update-$(date +%Y%m%d-%H%M%S)
     git pull
     docker compose up -d --build
+    bash backend/scripts/wait_backend_healthy.sh az_backend
 
 (`sudo` on a Linux host: the container wrote those files as root. The time in
 the name is not decoration: `cp -a` into a directory that already exists puts
@@ -89,6 +90,24 @@ application database runs in WAL mode (its newest commits sit in the -wal file
 until a checkpoint), the vector store's database does not, and the vector
 index flushes its tail on a graceful stop. Keep `JWT_SECRET_KEY` as it is in `.env`; it is also the key the secrets
 in the database are encrypted under.
+
+The last line asks the new backend whether it came up, and the update is not
+done until it says so. `docker compose up -d` returns as soon as the
+containers are started, and the backend is restarted whenever it exits
+(`restart: unless-stopped`), so one that cannot boot - a setting it refuses, a
+database change that fails - comes back from `up` looking like success and
+then restarts in a loop. The script waits for `az_backend` to answer
+`/api/health` from inside its own container, for up to five minutes
+(`WAIT_BACKEND_DEADLINE`, in seconds), and returns the moment it does. If the
+backend never answers it exits 1 and prints the container's state - status,
+restart count, exit code - and nothing from its log or its environment, since
+a backend that refuses a setting can quote the value it refused. It changes
+nothing. `docker compose logs --tail 50 backend` says why. Run it after any
+`docker compose up`, and make it the last step of whatever updates this stack
+for you: a script or a pipeline that stops at `up` reports success for a
+backend that never answered. If you build with `GIT_SHA` set (Monitoring,
+"Crash loops"), give the script the same value as `EXPECT_GIT_SHA` and it
+also fails when the container that answers is still the previous build.
 
 On its first boot the new version brings the database up to its own shape,
 the startup sync re-ingests the shipped files the update changed and leaves
