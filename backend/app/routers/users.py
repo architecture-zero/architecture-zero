@@ -295,7 +295,26 @@ def admin_mfa_reset(user_id: int, body: MfaResetRequest | None = Body(None),
 
 @router.post("/api/admin/users/{user_id}/unlock")
 def admin_unlock_user(user_id: int, current_user: dict = Depends(require_permission("manage_users"))):
-    """Admin: unlock a locked account."""
+    """Admin: unlock a locked account.
+
+    What it clears is the sign-in's lock and its count of misses, so the
+    person can sign in again. It takes no password, so it clears neither of
+    the two counts a session could otherwise refund for itself with it: the
+    passwords checked at the step-up doors (security.count_password_attempt)
+    and the authenticator codes (security.count_totp_attempt). Those end with
+    their window, or with a right password or code.
+
+    Owner targets are Owner-only - the ceiling the MFA reset above carries,
+    for its reason. The lock is part of the Owner's authentication boundary:
+    an Admin who can clear it can hand back the guesses it stopped, as often
+    as the lock lands. An Owner whose account is locked waits for the lock to
+    end, unlocks it from a session of their own, or asks another Owner.
+    """
+    from app.permissions import is_owner
+    target = get_user_by_id(user_id)
+    if target and target.get("role") == "owner" and not is_owner(current_user):
+        raise HTTPException(status_code=403,
+                            detail="Only an Owner can unlock an Owner's account")
     unlock_user(user_id)
     log("admin_unlock_user", admin_id=current_user["id"], target_user_id=user_id)
     return {"status": "unlocked"}

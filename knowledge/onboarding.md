@@ -68,11 +68,19 @@ short-lived access token and a refresh token; clients refresh silently via
 POST /api/auth/refresh. If your session expires you get "Session expired -
 sign in again" - just sign in again. After too many wrong passwords the
 account locks temporarily and unlocks itself after the lockout window, or an
-admin can unlock it immediately (POST /api/admin/users/{id}/unlock). Wrong
+admin can unlock it immediately (POST /api/admin/users/{id}/unlock; an
+Owner's account is unlocked by an Owner). Wrong
 passwords count wherever the account's own password is asked for, not only at
 sign-in: changing your password or your username, setting up two-factor, and
 the confirmations the admin panel asks for all count toward the same lock,
-and while it holds they answer that the account is locked. The lock
+and while it holds they answer that the account is locked. Those in-app
+confirmations also keep a count of their own, which an unlock does not
+clear: once as many passwords have been tried there as it takes to lock the
+account, they stay refused - the right password included - until the
+lockout window that began with the first of them ends. After an unlock the
+answer there reads "Too many wrong passwords on this account. Try again in
+N minute(s)". An unlock lets you sign in again at once; it does not shorten
+that wait. The lock
 is silent by design: while it holds, sign-in answers "Invalid username or
 password" rather than naming the lock, because an answer that named it would
 tell an anonymous caller which usernames are real. If a correct password is
@@ -184,7 +192,9 @@ through the same users API. Creating an account, changing a role, and a
 permissions write that adds manage_users or manage_system each carry the
 caller's own password as `current_password` in the request body (the admin
 panel asks for it); a missing or wrong one answers 400 with a plain reason,
-and repeated wrong ones count against the same lockout as failed logins.
+and repeated wrong ones count against the same lockout as failed logins -
+and no more of them are checked in one lockout window than it takes to lock
+the account, however they are sent.
 Registering or changing a federation peer works the same way, because a
 registered peer receives this instance's peer key.
 

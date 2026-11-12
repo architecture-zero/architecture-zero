@@ -37,10 +37,12 @@ REFRESH_EXPIRE_DAYS = int(os.getenv("JWT_REFRESH_EXPIRE_DAYS", "7"))
 # get_current_user below, which raises on missing credentials itself.
 oauth2_scheme = HTTPBearer(auto_error=False)
 
-# The per-account lockout knob. ONE env read for the three readers - login,
-# mfa/complete (both in routers/auth.py, which re-exports these names) and the
-# step-up below - because two lockout rules on one account is how one of them
-# ends up being the weaker one nobody remembers. Tests monkeypatch
+# The per-account lockout knob. ONE env read for its readers - login,
+# mfa/complete (both in routers/auth.py, which re-exports these names), the
+# step-up below, and the count of passwords checked at the step-up doors
+# (security.count_password_attempt, which reads these two names from this
+# module when it is called) - because two lockout rules on one account is how
+# one of them ends up being the weaker one nobody remembers. Tests monkeypatch
 # routers/auth.py's binding for the login path.
 MAX_LOGIN_ATTEMPTS       = int(os.getenv("MAX_LOGIN_ATTEMPTS", "5"))
 LOCKOUT_DURATION_MINUTES = int(os.getenv("LOCKOUT_DURATION_MINUTES", "15"))
@@ -55,6 +57,14 @@ LOCKOUT_DURATION_MINUTES = int(os.getenv("LOCKOUT_DURATION_MINUTES", "15"))
 # refuse to hand such an account manage_users or manage_system. This surface
 # has no SSO today; the rule rides here so a port inherits it.
 UNUSABLE_PASSWORD_PREFIX = "!"
+
+# What an account with no usable password is told about getting one. This
+# surface has no route that sets a password for such an account - the
+# password change takes the current one, which is the thing it lacks - so the
+# sentence says that and names no remedy that does not exist. A port that
+# creates such accounts (single sign-on) and adds the route that sets a
+# password for one changes this sentence to name it.
+NO_PASSWORD_REMEDY = "Nothing on this instance sets a password for an account that has none."
 
 
 def hash_password(password: str) -> str:
@@ -97,7 +107,7 @@ def password_required_for_authority(target: dict | None, scopes) -> str | None:
         return None
     return (f"This account has no usable password, so it cannot hold {wanted}: it "
             f"could never pass the password step-up those scopes require. "
-            f"An Owner must set one first.")
+            f"{NO_PASSWORD_REMEDY}")
 
 
 # -- The step-up (ruled upstream 2026-09-06, applied fleet-wide 2026-09-09) --
@@ -119,6 +129,28 @@ def password_required_for_authority(target: dict | None, scopes) -> str | None:
 # so the step-up is not a second, unthrottled oracle for the password held
 # behind the first one. A lock blocks further step-ups (and login) for the
 # lockout window; the session itself stays usable, the way it always has.
+#
+# The lock is not the bound on its own. It is looked at before the hash and
+# counted after it, and an unlock clears it without a password. So the
+# password helper also counts each password in security.count_password_attempt
+# BEFORE it is hashed: however many requests arrive together, no more than
+# MAX_LOGIN_ATTEMPTS passwords are checked for one account per lockout window,
+# and only a right password ends that count early - an unlock does not. The
+# lock itself is read from the stored row, not from the copy the session's
+# dependency loaded before the handler ran, and is looked at once more in the
+# statement that clears the count after a right password.
+
+def _stored_row(user: dict) -> dict:
+    """The account's row as the database holds it NOW. The dict a route hands
+    the step-up was read by the session's dependency before the handler ran,
+    so a lock or a password stored since is not in it."""
+    row = get_user_by_id(user["id"])
+    if row is None:
+        # Deactivated since the session was read: the answer the session's
+        # own dependency gives on the next request.
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    return row
+
 
 def _lockout_check(user: dict) -> None:
     from app.users import unlock_user
@@ -157,23 +189,42 @@ def require_step_up(current_user: dict, current_password: str, action: str) -> N
     """The caller's OWN password, verified against their stored hash, or 400.
 
     `action` is a verb phrase ("create an account") - it lands in the refusal
-    the operator reads and in the log line."""
+    the operator reads and in the log line. The refusals address the caller
+    ("you cannot ..."), so they read right for every phrase a door passes in,
+    "change your password" included.
+
+    The order is the control. The two refusals that read no password come
+    first (no usable password, an empty one), with the lock between them, read
+    from the stored row. Then the attempt is COUNTED, in one write, and only
+    then is the password hashed: past the limit the answer is 429 and nothing
+    is hashed, for a right password as for a wrong one. A right password
+    clears that count and the lock's count; an unlock clears the lock's count
+    alone."""
     from app.logger import log
-    from app.users import reset_failed_attempts
+    from app.security import clear_password_attempts, count_password_attempt
+    from app.users import clear_failed_attempts_unless_locked, reset_failed_attempts
     if not has_usable_password(current_user):
         raise HTTPException(
             status_code=400,
-            detail=f"This account has no usable password, so it cannot {action}. "
-                   f"An Owner must set one first.")
-    _lockout_check(current_user)
+            detail=f"Your account has no usable password, so you cannot {action}. "
+                   f"{NO_PASSWORD_REMEDY}")
+    stored = _stored_row(current_user)
+    _lockout_check(stored)
     if not (current_password or "").strip():
         raise HTTPException(status_code=400,
                             detail=f"Your current password is required to {action}")
-    if not verify_password(current_password, current_user["password_hash"]):
-        _count_step_up_failure(current_user, action, "password")
+    count_password_attempt(stored["id"])
+    if not verify_password(current_password, stored["password_hash"]):
+        _count_step_up_failure(stored, action, "password")
         raise HTTPException(status_code=400, detail="Current password is incorrect")
-    reset_failed_attempts(current_user["id"])
-    log("auth_step_up", user_id=current_user["id"], action=action, how="password")
+    if not clear_failed_attempts_unless_locked(stored["id"]):
+        # A lock was stored while this password was being checked. The lock
+        # refuses a right password too, so this one is refused, with the
+        # lock's own answer; the count of passwords checked stays.
+        _lockout_check(_stored_row(stored))
+        reset_failed_attempts(stored["id"])   # reached only if that lock has already ended
+    clear_password_attempts(stored["id"])
+    log("auth_step_up", user_id=stored["id"], action=action, how="password")
 
 
 def require_totp_step_up(current_user: dict, code: str, action: str) -> None:
@@ -208,7 +259,9 @@ def require_totp_step_up(current_user: dict, code: str, action: str) -> None:
             detail="Two-factor is enabled on this account but its stored seed cannot "
                    "be read with this instance's JWT_SECRET_KEY, so the code cannot be "
                    "checked. Re-key the seed column (rekey_at_rest.py) first.")
-    _lockout_check(current_user)
+    # The stored row, as at the password door: a lock stored since the
+    # session's dependency read the account is seen here too.
+    _lockout_check(_stored_row(current_user))
     if not (code or "").strip():
         raise HTTPException(status_code=400,
                             detail=f"A current authenticator code is required to {action}")

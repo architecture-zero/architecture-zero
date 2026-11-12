@@ -130,10 +130,31 @@ two-factor, a confirmation in the admin panel - and each one leaves an
 `auth_step_up_failed` line in the application log that names the action.
 
 The remedy is the same as before: wait out the window, or an admin can unlock
-immediately (POST /api/admin/users/{id}/unlock). If the real user was neither
-failing sign-ins nor mistyping their current password inside the app, treat
-the lock as someone guessing at that account's password and review the audit
-log.
+immediately (POST /api/admin/users/{id}/unlock; an Owner's account is
+unlocked by an Owner, or from a session that Owner still has). If the real
+user was neither failing sign-ins nor mistyping their current password inside
+the app, treat the lock as someone guessing at that account's password and
+review the audit log.
+
+## "Too many wrong passwords on this account" when the password is right
+
+That is not the lock. It is the count of passwords checked wherever the app
+asks a signed-in person for their own password - changing a password or a
+username, setting up two-factor, a confirmation in the admin panel. No more
+than `MAX_LOGIN_ATTEMPTS` are checked for one account in one lockout window,
+which starts at the first of them, and past that every one is refused
+without being checked, the right one included. The answer names the minutes
+left.
+
+An unlock does not shorten the wait, by design: an unlock takes no password,
+so a session that could unlock itself could otherwise keep guessing. Signing
+in is not affected - after an unlock the person can sign in at once - and
+the confirmations answer again when the window ends. The first refusal in a
+window leaves an `auth_password_cap_reached` line in the application log;
+the wrong passwords before it each left an `auth_step_up_failed` line that
+names the action. If the person was not mistyping, treat it as someone with
+their session guessing at their password: have them sign out everywhere and
+review the audit log.
 
 ## Answers are slow
 

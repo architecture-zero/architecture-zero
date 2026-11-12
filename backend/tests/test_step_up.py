@@ -218,7 +218,15 @@ def test_an_actor_without_a_usable_password_is_told_the_remedy():
              "password_hash": unusable_password_hash(), "locked_until": None}
     with pytest.raises(HTTPException) as exc:
         require_step_up(actor, "whatever", "create an account")
-    assert exc.value.status_code == 400 and "Owner" in exc.value.detail
+    # Re-pointed: this asserted that the refusal said "An Owner must set one
+    # first". No route on this surface sets a password for an account that
+    # has none, so that remedy did not exist and the sentence no longer names
+    # it. What is pinned now is what the caller is told instead: the reason,
+    # in words that fit the action phrase, and the truth about the remedy.
+    assert exc.value.status_code == 400
+    assert exc.value.detail == (
+        "Your account has no usable password, so you cannot create an account. "
+        "Nothing on this instance sets a password for an account that has none.")
 
 
 # -- The two self-service credential doors (2026-09-16 outside review) --------

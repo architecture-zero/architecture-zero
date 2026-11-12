@@ -225,17 +225,38 @@ def disable_mfa(user_id: int):
 # ── Account lockout ──────────────────────────────────────────────────────────
 
 def increment_failed_attempts(user_id: int) -> int:
+    """Add one miss to the account's count; the new count.
+
+    ONE statement adds it (SET failed_attempts = failed_attempts + 1) and
+    the new count is read back inside the same transaction, so misses that
+    land together are each counted and each caller is handed a different
+    number - one of them the lock's threshold. Reading the row, adding one in
+    Python and writing it back lets two callers read the same count and both
+    write that count plus one. The same shape as rotate_refresh_token below:
+    the database decides."""
+    from sqlalchemy import update
     with get_session() as db:
-        user = db.query(User).filter(User.id == user_id).one()
-        user.failed_attempts += 1
-        db.flush()
-        return user.failed_attempts
+        db.execute(update(User).where(User.id == user_id)
+                   .values(failed_attempts=User.failed_attempts + 1))
+        return db.query(User.failed_attempts).filter(User.id == user_id).one()[0]
 
 
 def reset_failed_attempts(user_id: int):
     with get_session() as db:
         db.query(User).filter(User.id == user_id).update(
             {"failed_attempts": 0, "locked_until": None})
+
+
+def clear_failed_attempts_unless_locked(user_id: int) -> bool:
+    """A right password at a step-up door clears the count - unless a lock is
+    stored. One statement, so the lock is looked at in the write that would
+    clear it: a lock that landed while the password was being checked is kept,
+    and the caller is told False (so is a caller whose row is gone)."""
+    from sqlalchemy import update
+    with get_session() as db:
+        return db.execute(
+            update(User).where(User.id == user_id, User.locked_until.is_(None))
+            .values(failed_attempts=0)).rowcount == 1
 
 
 def lock_user(user_id: int, until_iso: str):

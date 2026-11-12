@@ -211,10 +211,24 @@ Since v0.1.x, for a script or a client of your own:
   routes. A wrong one still answers 400 "Current password is incorrect", and
   it now counts against the account's lock the way a failed sign-in does: the
   attempt that reaches the limit answers 429, and so does every further one,
-  right or wrong, until the lock ends or an administrator unlocks the account
-  (`POST /api/admin/users/{id}/unlock`). A request that leaves
-  `current_password` out answers 400 with a plain reason; it used to answer
-  422.
+  right or wrong, until the lock ends. A request that leaves
+  `current_password` or `new_password` out answers 400 with a plain reason,
+  and so does a username change that leaves `new_username` out; each used to
+  answer 422.
+- At every route that takes `current_password`, no more than
+  `MAX_LOGIN_ATTEMPTS` passwords are checked for one account in one lockout
+  window (`LOCKOUT_DURATION_MINUTES`, from the first of them), sent one at a
+  time or all together: each is counted before it is checked. Past that the
+  answer is 429 "Too many wrong passwords on this account. Try again in N
+  minute(s). An unlock does not shorten this wait." - for a right password
+  as for a wrong one. An administrator's unlock
+  (`POST /api/admin/users/{id}/unlock`) ends the lock, so the person can sign
+  in again at once; it does not end that wait, which only a right password
+  inside the limit or the end of the window does. A script should send
+  these requests for one account one after another: sent at the same
+  moment they are all counted before any is checked, so the ones past the
+  limit are refused whatever password they carry. Unlocking an Owner's
+  account takes an Owner (403 otherwise).
 - Sign-in attempts are bounded per address (429), a request over the input
   bound is refused before it is scanned, stored or billed (413), and a second
   message on a conversation that is still answering is refused (409).

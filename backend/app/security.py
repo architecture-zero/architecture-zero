@@ -417,6 +417,82 @@ def clear_mfa_pending(user_id: int) -> None:
     state_store.delete(_pending_key(user_id))
 
 
+# -- Password attempts at the step-up doors, per ACCOUNT ----------------------
+# Every door that takes the caller's own password goes through
+# jwt_auth.require_step_up, and that helper counts the attempt here before the
+# password is hashed. The account lock (failed_attempts/locked_until) cannot
+# be this bound on its own, for the two reasons the code bound above has:
+#
+#   - the lock is looked at before the hash and counted after it, so requests
+#     that arrive together would each pass the look before any was counted;
+#   - an unlock clears the lock and takes no password, so a session that
+#     holds manage_users could clear its own count between rounds.
+#
+# So, the same shape as the code bound: ONE versioned write before the
+# password is read (state_store.update), a fixed window from the first
+# attempt, and past the limit a 429 that says when to try again - for a right
+# password as for a wrong one, since nothing is hashed. Only a RIGHT password
+# at a step-up door clears the count. An unlock never does, and neither does
+# a right authenticator code: a code is not proof of the password. The window
+# ends by itself, so nobody is stranded.
+#
+# The limit and the window are the account lock's own knobs (jwt_auth's
+# MAX_LOGIN_ATTEMPTS per LOCKOUT_DURATION_MINUTES), read when called - not a
+# second pair. With one pair the two counts read together: wrong passwords
+# sent one at a time from a clean count meet the lock first, as they did
+# before this count existed (the miss that reaches the limit locks the
+# account, and that lock outlasts this window). This count is what holds when
+# the lock does not: a burst, or anything that cleared the lock's count in
+# between without a right password at one of these doors - an unlock, a
+# sign-in, a right authenticator code.
+#
+# The sign-in is NOT counted here and is not refused by this count: a burst
+# at the sign-in is bounded per address by check_auth_rate_limit above,
+# before any credential work, and an administrator's unlock must still let a
+# person sign in.
+
+def _password_key(user_id: int) -> str:
+    return f"pw_fail:{user_id}"
+
+
+def count_password_attempt(user_id: int) -> None:
+    """Count one password check against the account, then refuse it past the
+    limit - before the password is hashed, so the refusal holds against a
+    right password and against a burst alike. A right password then calls
+    clear_password_attempts; a wrong one leaves the count. The first refusal
+    in a window is logged."""
+    from app import jwt_auth
+    # At least one: a zero in the env locks on the first miss, as it always
+    # has, and must not shut these doors to the right password as well.
+    limit = max(1, jwt_auth.MAX_LOGIN_ATTEMPTS)
+    window = jwt_auth.LOCKOUT_DURATION_MINUTES * 60
+    doc = state_store.update(_password_key(user_id),
+                             lambda d: d.__setitem__("n", int(d.get("n", 0)) + 1),
+                             window,
+                             default={"n": 0, "since": time.time()})
+    if doc["n"] > limit:
+        if doc["n"] == limit + 1:
+            from app.logger import log
+            log("auth_password_cap_reached", user_id=user_id,
+                attempts=limit, window_seconds=window)
+        # Whole minutes left in the window, rounded up: never more than the
+        # window itself, never less than one.
+        left = doc.get("since", 0) + window - time.time()
+        remaining = max(1, int(-(-left // 60)))
+        raise HTTPException(
+            status_code=429,
+            detail=(f"Too many wrong passwords on this account. Try again in "
+                    f"{remaining} minute(s). An unlock does not shorten this wait."))
+
+
+def clear_password_attempts(user_id: int) -> None:
+    """A right password at a step-up door: the one thing that refunds password
+    guesses before the window ends. Never an unlock - that takes no password,
+    so a session alone could refund its own guesses - and never a right
+    authenticator code."""
+    state_store.delete(_password_key(user_id))
+
+
 
 # ── Daily global guest budget (public-demo wallet backstop) ───────────────────
 # Per-IP rate limits don't stop distributed traffic / a busy day; this caps total guest

@@ -594,13 +594,14 @@ def me(current_user: dict = Depends(get_current_user)):
 
 
 class ChangePasswordRequest(BaseModel):
-    new_password: str
-    # Optional at the schema, like the field at every other step-up door: a
-    # missing or empty value is the helper's string 400, not the 422 a
-    # required field answers, whose list-shaped detail a client that renders
-    # `detail` raw cannot show. (An explicit null, or a value that is not a
-    # string, is still the schema's 422: refused before this handler runs,
-    # so nothing is read and nothing is counted.)
+    # Both optional at the schema, like the field at every other step-up
+    # door: a missing or empty value is a string 400 - the helper's for the
+    # current password, the route's for the new one - not the 422 a required
+    # field answers, whose list-shaped detail a client that renders `detail`
+    # raw cannot show. (An explicit null, or a value that is not a string, is
+    # still the schema's 422: refused before this handler runs, so nothing is
+    # read and nothing is counted.)
+    new_password: str = ""
     current_password: str = ""
 
 
@@ -622,12 +623,20 @@ def change_password(request: ChangePasswordRequest, current_user: dict = Depends
     # person out for a typo. It runs before the new password is validated, so
     # a wrong current password learns nothing about the policy.
     #
+    # And the helper counts every password it is handed before it hashes
+    # it, in a count an unlock does not clear (security.count_password_attempt):
+    # no more than MAX_LOGIN_ATTEMPTS are checked for one account per lockout
+    # window, sent one at a time or all together.
+    #
     # The cost, accepted here as at every other step-up door: a session can
     # lock its own account for the lockout window by sending wrong passwords
-    # to this route. The session itself stays usable; the sign-in and every
-    # step-up are refused until the window ends or an admin unlocks the
-    # account.
+    # to this route. The session itself stays usable; the sign-in is refused
+    # until the lock ends or an admin unlocks the account, and the step-up
+    # doors until the lock AND that count's window have ended - an unlock
+    # brings the sign-in back, not the step-up.
     require_step_up(current_user, request.current_password, "change your password")
+    if not request.new_password:
+        raise HTTPException(status_code=400, detail="A new password is required")
     errors = validate_password(request.new_password)
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))
@@ -638,7 +647,9 @@ def change_password(request: ChangePasswordRequest, current_user: dict = Depends
 
 
 class ChangeUsernameRequest(BaseModel):
-    new_username: str
+    # Optional at the schema, like the password change's two fields: a
+    # missing name is the route's string 400 below, not a 422.
+    new_username: str = ""
     current_password: str = ""
 
 

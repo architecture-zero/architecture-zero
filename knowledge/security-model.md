@@ -129,7 +129,33 @@ password is checked, and both count. The cost is the same at each of these
 doors and is accepted: a session can lock its own account for the lockout
 window by sending wrong passwords; the session itself stays usable. An account
 with no usable password (the `!` sentinel hash) cannot be handed those
-scopes until an Owner sets one.
+scopes, and nothing on this surface sets a password for such an account; a
+port that creates them adds the route that does.
+
+The lock alone does not bound the passwords checked at those doors, so the
+helper keeps a second count that does (`security.count_password_attempt`).
+Each password is counted in one write BEFORE it is hashed, and past
+`MAX_LOGIN_ATTEMPTS` in one lockout window (`LOCKOUT_DURATION_MINUTES`, from
+the first of them) the answer is 429 with the minutes to wait and nothing is
+hashed - for a right password as for a wrong one. So the guarantee holds
+for one request at a time and for any number sent together: no more than
+that limit are checked per account per window. Only a right password at one
+of those doors clears the count. An unlock does not - it takes no password,
+so a session holding `manage_users` could otherwise clear its own count -
+and neither does a right authenticator code. The lock itself is read from
+the stored row when the password arrives, not from the copy the session
+loaded, and is looked at again in the statement that clears the count after
+a right password, so a lock that lands while a right password is being
+checked still refuses it; and the lock's count is raised by one statement,
+so misses that land together are each counted. What an unlock
+(`POST /api/admin/users/{id}/unlock`) does clear is the sign-in's lock: the
+person can sign in again at once, and the step-up doors answer again when
+that window ends. Unlocking an Owner's account is Owner-only, the ceiling
+the MFA reset below carries: the lock is part of the Owner's authentication
+boundary. At the sign-in the lock is read before the password is checked,
+so there a burst is bounded per address instead (`AUTH_MAX_ATTEMPTS` per
+`AUTH_WINDOW`, counted before any password is checked), and an
+administrator's unlock always lets the person sign in.
 
 The administrative MFA reset (`POST /api/admin/users/{id}/mfa-reset`)
 requires the manage_users scope, refuses Admin-on-Owner, and since
