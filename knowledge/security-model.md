@@ -255,7 +255,12 @@ record is kept per seed, not per account, and nothing clears it: a new seed
 record of its own from its first code, and a request that matched a code
 against the seed it read before a re-key replaced it still meets that
 seed's record, so the code cannot be accepted there a second time. An old
-seed's record expires by itself after a few minutes. The record's key holds
+seed's record expires by itself after a few minutes. A code is also
+judged against the seed the account holds when the code is accepted, not
+only the one it held when the request began: a sign-in begun before a
+re-key, a confirm begun before a second setup, or a re-key begun before
+another, carrying a code for the seed that has since been replaced, is
+refused as a wrong code. The record's key holds
 a short digest of the seed, which cannot be turned back into it; no answer
 or log line carries the key - not even when a statement on it fails: the
 database engine leaves the values bound into a statement out of its errors,

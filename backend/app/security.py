@@ -518,7 +518,26 @@ def totp_code_refusal(user_id: int, seed: str, code: str) -> str | None:
 
     state_store.update(_used_code_key(user_id, seed), take, _USED_CODE_TTL,
                        default={"step": -1}, keep_expiry=False)
-    return None if accepted else CODE_USED
+    if not accepted:
+        return CODE_USED
+    # The seed this code was matched against was read when the request
+    # began. A re-key, or a new setup, may have stored another since: a code
+    # from the replaced authenticator must not open a door after the
+    # replacement - a sign-in begun before a re-key, carrying a fresh code
+    # from the authenticator the re-key was meant to retire, was accepted.
+    # So the stored seed is read again, after the record's write, and a code
+    # for a seed that is no longer stored is a wrong code.
+    if not _still_stored(user_id, seed):
+        return CODE_WRONG
+    return None
+
+
+def _still_stored(user_id: int, seed: str) -> bool:
+    """True when the account's stored seed is `seed` now."""
+    from app.users import get_user_by_id
+    row = get_user_by_id(user_id)
+    stored = (row or {}).get("mfa_secret") or ""
+    return bool(stored) and secrets.compare_digest(stored.encode(), seed.encode())
 
 
 # -- Password attempts at the step-up doors, per ACCOUNT ----------------------

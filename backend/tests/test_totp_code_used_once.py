@@ -39,6 +39,9 @@ FIX (each fails on the doors as they were):
   - neither a failed statement on the record nor a write the store
     cannot settle puts the seed's digest, or the key's account and
     digest, into the error or a log line
+  - a code for a seed that has since been replaced is a wrong code: a
+    sign-in, a re-key or a confirm held across a re-key or a new setup,
+    carrying a fresh code for the replaced seed, is refused
   - no door checks a code any other way (read from the source): not by
     .verify(), and not by .now(), .at(), .generate_otp() or .timecode()
     on a one-time-password object built anywhere but the helper
@@ -744,3 +747,70 @@ def test_no_seed_derived_value_reaches_an_error_or_a_log_line(accounts, monkeypa
     for where, body in (("the error", text), ("the log", logged + out.out + out.err)):
         for what in (digest, id_part, someone["seed"]):
             assert what not in body, f"{where} carries a seed-derived value"
+
+
+# -- FIX: a code for a seed that has since been replaced is a wrong code -------
+# Each request matches its code against the seed it read when it began. A
+# re-key (or a new setup) that stored another seed meanwhile used to leave
+# that request free to finish with a fresh code from the replaced
+# authenticator - the one the re-key was meant to retire. The stored seed is
+# read again once the code is accepted. Each case holds a request after its
+# match, runs the replacement to the end, then lets it go.
+
+def test_a_sign_in_held_across_a_rekey_with_a_fresh_old_seed_code_is_refused(
+        client, accounts, monkeypatch):
+    someone = accounts()
+    old_seed = someone["seed"]
+    r = client.post("/api/auth/login", json={"username": someone["name"], "password": PW})
+    assert r.status_code == 200 and r.json().get("mfa_required"), r.text
+    token = r.json()["mfa_token"]
+    matched, release = _hold_the_first_match(monkeypatch)
+    held, box = _in_the_background(lambda: client.post(
+        "/api/auth/mfa/complete", json={"mfa_token": token, "code": _code(old_seed, 1)}))
+    assert matched.wait(20), "the sign-in never matched its code"
+    rekey = _rekey(client, someone, _code(old_seed, 0))
+    release.set()
+    held.join(30)
+    assert rekey.status_code == 200 and rekey.json().get("secret"), rekey.text
+    sign_in = box["answer"]
+    assert sign_in.status_code == 401 and sign_in.json() == {"detail": WRONG}, \
+        f"a code from the replaced authenticator signed in: {sign_in.status_code} {sign_in.text}"
+
+
+def test_a_rekey_held_across_a_rekey_with_another_old_seed_code_is_refused(
+        client, accounts, monkeypatch):
+    someone = accounts()
+    old_seed = someone["seed"]
+    matched, release = _hold_the_first_match(monkeypatch)
+    held, box = _in_the_background(lambda: _rekey(client, someone, _code(old_seed, 1)))
+    assert matched.wait(20), "the first re-key never matched its code"
+    second = _rekey(client, someone, _code(old_seed, 0))
+    release.set()
+    held.join(30)
+    assert second.status_code == 200 and second.json().get("secret"), second.text
+    first = box["answer"]
+    assert first.status_code == 400 and first.json() == {"detail": WRONG}, \
+        f"a code from the replaced authenticator re-keyed: {first.status_code} {first.text}"
+
+
+def test_a_confirm_held_across_a_new_setup_does_not_turn_the_new_seed_on(
+        client, accounts, monkeypatch):
+    """A confirm proves the seed it read; a second setup stored another
+    meanwhile. Turning two-factor on then would enable a seed nobody proved."""
+    someone = accounts(mfa=False)
+    r = client.post("/api/auth/mfa/setup", headers=someone["headers"], json={"current_password": PW})
+    assert r.status_code == 200, r.text
+    first_seed = r.json()["secret"]
+    matched, release = _hold_the_first_match(monkeypatch)
+    held, box = _in_the_background(lambda: client.post(
+        "/api/auth/mfa/enable", headers=someone["headers"], json={"code": _code(first_seed)}))
+    assert matched.wait(20), "the confirm never matched its code"
+    again = client.post("/api/auth/mfa/setup", headers=someone["headers"],
+                        json={"current_password": PW})
+    release.set()
+    held.join(30)
+    assert again.status_code == 200, again.text
+    confirm = box["answer"]
+    assert confirm.status_code == 400 and confirm.json() == {"detail": WRONG}, \
+        f"a seed nobody proved was turned on: {confirm.status_code} {confirm.text}"
+    assert not _row(someone)["mfa_enabled"]
