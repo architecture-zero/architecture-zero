@@ -229,8 +229,25 @@ Since v0.1.x, for a script or a client of your own:
   inside the limit or the end of the window does. A script should send
   these requests for one account one after another: sent at the same
   moment they are all counted before any is checked, so the ones past the
-  limit are refused whatever password they carry. Unlocking an Owner's
-  account takes an Owner (403 otherwise).
+  limit are refused whatever password they carry.
+- Unlocking an account (`POST /api/admin/users/{id}/unlock`) takes proof in
+  a JSON body; a request with no body, which used to unlock, answers 400.
+  For someone else's account send `current_password`, the caller's own
+  password, under the same rule as the routes above: 400 with a plain reason
+  when it is missing or wrong, and a wrong one counts against the caller's
+  own lock. For the caller's own account send `mfa_code`, a current
+  authenticator code, counted like every other code (a wrong one answers
+  400 "Invalid authenticator code"); the password is not accepted there. An
+  account with no authenticator enrolled cannot unlock itself: the 400 says
+  how many minutes the lock has left and to ask another Owner (for an
+  Owner's account) or another administrator. A caller whose own account is
+  locked cannot unlock anyone else with its password: 429, naming its own
+  lock and the minutes left. Unlocking an Owner's account takes an Owner
+  (403 otherwise), as before.
+- At the sign-in, a password that is not valid text (it cannot be encoded)
+  is a wrong password: 401, counted as one miss. A new password that is not
+  valid text is refused with a plain 400 wherever a password is set. Both
+  used to answer 500.
 - Sign-in attempts are bounded per address (429), a request over the input
   bound is refused before it is scanned, stored or billed (413), and a second
   message on a conversation that is still answering is refused (409).

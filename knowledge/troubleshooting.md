@@ -130,8 +130,12 @@ two-factor, a confirmation in the admin panel - and each one leaves an
 `auth_step_up_failed` line in the application log that names the action.
 
 The remedy is the same as before: wait out the window, or an admin can unlock
-immediately (POST /api/admin/users/{id}/unlock; an Owner's account is
-unlocked by an Owner, or from a session that Owner still has). If the real
+immediately from the Users tab, confirming with their own password (POST
+/api/admin/users/{id}/unlock with current_password; an Owner's account is
+unlocked by an Owner). Someone who still has a session and holds
+manage_users can unlock their own account there with a current code from
+their authenticator app (mfa_code); see the entry on unlocking your own
+account below. If the real
 user was neither failing sign-ins nor mistyping their current password inside
 the app, treat the lock as someone guessing at that account's password and
 review the audit log.
@@ -148,8 +152,9 @@ left. It says "attempts" because what was counted need not have been wrong:
 the same account's other sessions count too, and so do right passwords sent
 at the same moment.
 
-An unlock does not shorten the wait, by design: an unlock takes no password,
-so a session that could unlock itself could otherwise keep guessing. Signing
+An unlock does not shorten the wait, by design: an unlock is confirmed with
+an administrator's own password, or with an authenticator code for your own
+account - never with the password this count protects. Signing
 in is not affected - after an unlock the person can sign in at once - and
 the confirmations answer again when the window ends. The first refusal in a
 window leaves an `auth_password_cap_reached` line in the application log;
@@ -157,6 +162,20 @@ the wrong passwords before it each left an `auth_step_up_failed` line that
 names the action. If the person was not mistyping, treat it as someone with
 their session guessing at their password: have them sign out everywhere and
 review the audit log.
+
+## "Unlocking your own account takes a current authenticator code"
+
+Unlocking an account clears the lock that stops password guessing at the
+sign-in, so it asks for proof. For someone else's account the Users tab asks
+for your own password. For your own account it asks for a current code from
+your authenticator app instead: a locked account's password is not accepted
+anywhere, and a session alone proves nothing about who is holding it. If
+your account has no authenticator enrolled there is no code to give, so you
+cannot unlock it yourself: wait for the lock to end - the answer says how
+many minutes are left - or ask another administrator (for an Owner's
+account, another Owner). "Your own account is locked, so your password is
+not accepted to unlock another account" is the same rule from the other
+side: unlock your own account first, or wait.
 
 ## Answers are slow
 

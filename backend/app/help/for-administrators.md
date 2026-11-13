@@ -34,6 +34,10 @@ Per-account permissions can widen or narrow a role under Users.
 
 Users, then create the account with a username, a password, a role and a department. There is no invitation email: give the person their username and password, and ask them to change the password under their account menu (their name at the top of the page). Creating an account asks for your own password first.
 
+## Unlocking an account
+
+After too many wrong passwords an account locks for a while and then unlocks itself. To unlock it sooner: Users, then Unlock on the locked account. It asks for your own password. Unlocking your own account asks for a code from your authenticator app instead; if you have no authenticator set up, wait for the lock to end or ask another administrator.
+
 ## Adding documents
 
 - The server folder: files placed there are ingested automatically, subfolders included, and a file deleted while the assistant is running is removed. A restart picks up files that changed while the assistant was stopped, and removes files deleted while it was stopped; more than ten at once waits for the owner (the runbook says how).

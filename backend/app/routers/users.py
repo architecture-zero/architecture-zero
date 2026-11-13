@@ -16,7 +16,8 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.jwt_auth import (require_permission, hash_password, validate_password,
-                          require_step_up, password_required_for_authority)
+                          require_step_up, password_required_for_authority,
+                          require_code_to_unlock_yourself, lock_minutes_left)
 from app.logger import log
 from app.permissions import PERMISSION_SCOPES, ROLE_PERMISSIONS
 from app.users import (create_user, list_users, deactivate_user, update_user_role,
@@ -283,8 +284,9 @@ def admin_mfa_reset(user_id: int, body: MfaResetRequest | None = Body(None),
     disable_mfa(user_id)
     # The seed the code count and any pending setup belonged to is gone, so
     # they go too (2026-10-02) - or the person enrolling again would meet a
-    # cap their old seed filled. This door takes the caller's password; an
-    # unlock, which takes none, never clears the count.
+    # cap their old seed filled. This door removes the seed the count was
+    # against; an unlock leaves the seed where it is, so it never clears the
+    # count.
     from app.security import clear_totp_attempts, clear_mfa_pending
     clear_totp_attempts(user_id)
     clear_mfa_pending(user_id)
@@ -293,30 +295,82 @@ def admin_mfa_reset(user_id: int, body: MfaResetRequest | None = Body(None),
     return {"status": "MFA disabled"}
 
 
+class UnlockRequest(BaseModel):
+    # The proof, and which one is read depends on whose account it is: the
+    # caller's OWN password to unlock someone else's account, a current
+    # authenticator code to unlock the caller's own. Both optional at the
+    # schema, like the field at every other step-up door, so a missing one is
+    # the route's string 400, never a 422.
+    current_password: str = ""
+    mfa_code: str = ""
+
+
 @router.post("/api/admin/users/{user_id}/unlock")
-def admin_unlock_user(user_id: int, current_user: dict = Depends(require_permission("manage_users"))):
+def admin_unlock_user(user_id: int, body: UnlockRequest | None = Body(None),
+                      current_user: dict = Depends(require_permission("manage_users"))):
     """Admin: unlock a locked account.
 
     What it clears is the sign-in's lock and its count of misses, so the
-    person can sign in again. It takes no password, so it clears neither of
-    the two counts a session could otherwise refund for itself with it: the
+    person can sign in again at once. The lock is what bounds password
+    guesses at the sign-in for one account, so clearing it takes proof of
+    the person, not a session alone - a session alone could otherwise hand
+    back the guesses a lock had stopped, for any account it may unlock.
+
+    PROOF FIRST, before the ceiling below, as at every other step-up door:
+
+    - Someone else's account: the caller's OWN password, through the one
+      step-up helper - a missing or wrong one is a string 400, a wrong one
+      counts against the caller's own lock and in the count of passwords
+      checked. A caller whose own account is locked is refused here in
+      words that say whose lock it is; the helper would refuse it anyway.
+    - The caller's own account: a current authenticator code
+      (jwt_auth.require_code_to_unlock_yourself), counted like every other
+      code. Not the password: the lock on this account is the count of wrong
+      passwords for it, and a locked account's password is not accepted
+      anywhere. Not a refusal either: an Owner who is the only Owner, and
+      whose sign-in someone else keeps locking, has no other account that
+      may unlock theirs. An account with no authenticator enrolled waits
+      for the lock to end or asks another administrator of its tier, and
+      the refusal says so, with the minutes.
+
+    Neither proof clears the two counts that outlast an unlock: the
     passwords checked at the step-up doors (security.count_password_attempt)
-    and the authenticator codes (security.count_totp_attempt). Those end with
-    their window, or with a right password or code.
+    end with their window or with the account's own right password there,
+    and an administrator's password is not that. The authenticator codes
+    (security.count_totp_attempt) end with their window or a right code -
+    which the unlock of your own account is.
 
     Owner targets are Owner-only - the ceiling the MFA reset above carries,
     for its reason. The lock is part of the Owner's authentication boundary:
     an Admin who can clear it can hand back the guesses it stopped, as often
     as the lock lands. An Owner whose account is locked waits for the lock to
-    end, unlocks it from a session of their own, or asks another Owner.
+    end, unlocks it from a session of their own with a current code, or asks
+    another Owner.
     """
     from app.permissions import is_owner
+    if user_id == current_user["id"]:
+        require_code_to_unlock_yourself(
+            current_user, body.mfa_code if body else "",
+            "another Owner" if is_owner(current_user) else "another administrator")
+    else:
+        minutes = lock_minutes_left(current_user)
+        if minutes:
+            own_way = (" You can unlock your own account first, with a current "
+                       "authenticator code." if current_user.get("mfa_enabled") else "")
+            raise HTTPException(
+                status_code=429,
+                detail=f"Your own account is locked, so your password is not accepted "
+                       f"to unlock another account. Try again in {minutes} "
+                       f"minute(s).{own_way}")
+        require_step_up(current_user, body.current_password if body else "",
+                        "unlock an account")
     target = get_user_by_id(user_id)
     if target and target.get("role") == "owner" and not is_owner(current_user):
         raise HTTPException(status_code=403,
                             detail="Only an Owner can unlock an Owner's account")
     unlock_user(user_id)
-    log("admin_unlock_user", admin_id=current_user["id"], target_user_id=user_id)
+    log("admin_unlock_user", admin_id=current_user["id"], target_user_id=user_id,
+        self_target=(user_id == current_user["id"]))
     return {"status": "unlocked"}
 
 

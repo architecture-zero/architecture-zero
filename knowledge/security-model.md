@@ -143,8 +143,8 @@ that limit are checked per account per window. A password that cannot be
 encoded (text that is not valid Unicode) can match nothing stored, so it is
 a miss like any other: counted, logged, answered 400, never hashed. The
 window is fixed - no attempt, counted or refused, moves its end. Only a
-right password at one of those doors clears the count. An unlock does not - it takes no password,
-so a session holding `manage_users` could otherwise clear its own count -
+right password at one of those doors clears the count. An unlock does not -
+the proof an unlock takes is never this account's password (below) -
 and neither does a right authenticator code. The lock itself is read from
 the stored row when the password arrives, not from the copy the session
 loaded, and is looked at again in the statement that clears the count after
@@ -159,6 +159,24 @@ boundary. At the sign-in the lock is read before the password is checked,
 so there a burst is bounded per address instead (`AUTH_MAX_ATTEMPTS` per
 `AUTH_WINDOW`, counted before any password is checked), and an
 administrator's unlock always lets the person sign in.
+
+Per account, the lock is the sign-in's bound, so clearing it takes proof of
+a person, never a session alone. Unlocking someone else's account takes the
+caller's own password, through the same step-up helper: a missing or wrong
+one is a 400, a wrong one counts against the caller, and a caller whose own
+account is locked is refused (429, naming its own lock). Unlocking your own
+account takes a current authenticator code, counted before it is read in
+the bound every code door shares; the lock does not refuse that one door,
+because the lock is what a right code clears, and a wrong code while the
+lock stands leaves the lock exactly as it is. The password is not accepted
+for your own account - a locked account's password is not accepted
+anywhere - and the caller's own id is not simply refused, because a sole
+Owner whose sign-in someone else keeps locking has no other account that
+may unlock theirs. An account with no authenticator enrolled cannot unlock
+itself: it waits for the lock to end, or asks another Owner (an Owner's
+account) or another administrator, and the refusal says so with the minutes
+left. A password that cannot be encoded is a wrong password at the sign-in
+as well: the same 401, counted as one miss.
 
 The administrative MFA reset (`POST /api/admin/users/{id}/mfa-reset`)
 requires the manage_users scope, refuses Admin-on-Owner, and since

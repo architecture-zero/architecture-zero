@@ -303,14 +303,18 @@ def test_the_bound_holds_against_a_burst(probe):
 def test_an_mfa_reset_clears_the_bound_and_an_unlock_does_not(client, probe,
                                                               admin_headers, monkeypatch):
     """The reset takes the operator's password and removes the seed the count
-    was against, so it clears the count; an unlock takes no password, so a
-    session alone could use it to refund its own guesses - it leaves the count."""
+    was against, so it clears the count; an administrator's unlock proves the
+    administrator's password, not the person's code, and leaves the seed
+    where it is - it leaves the count. (Re-pointed in place: the unlock takes
+    the caller's own password now - test_unlock_takes_proof.py - so it is
+    sent.)"""
     from app import state_store
     monkeypatch.setattr(security, "TOTP_MAX_FAILURES", 3)
     seed = probe["secret"]
     for _ in range(3):
         assert _sign_in(client, _wrong_code(seed)).status_code == 401
-    r = client.post(f"/api/admin/users/{probe['id']}/unlock", headers=admin_headers)
+    r = client.post(f"/api/admin/users/{probe['id']}/unlock", headers=admin_headers,
+                    json={"current_password": "AdminPass1"})
     assert r.status_code == 200, r.text
     assert _sign_in(client, pyotp.TOTP(seed).now()).status_code == 429
     r = client.post(f"/api/admin/users/{probe['id']}/mfa-reset", headers=admin_headers,

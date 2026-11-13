@@ -323,15 +323,27 @@ def test_a_right_password_after_the_limit_and_an_unlock_is_still_refused(client,
 def test_a_session_that_unlocks_itself_between_rounds_is_stopped_at_the_limit(client, accounts, monkeypatch):
     """An Admin holds manage_users, and the unlock route accepts the caller's
     own id. Rounds of wrong passwords with a self-unlock between them never
-    reach the lock's threshold - and are stopped by the count all the same."""
+    reach the lock's threshold - and are stopped by the count all the same.
+
+    Re-pointed in place: unlocking your own account takes a current
+    authenticator code (test_unlock_takes_proof.py), so the Admin here has
+    an authenticator enrolled and sends a right code each round. What this
+    case pins has not moved: an unlock, on whatever proof, does not clear
+    the count of passwords checked."""
+    import pyotp
+    from app.users import enable_mfa, set_mfa_secret
     admin = accounts("admin")
+    seed = pyotp.random_base32()
+    set_mfa_secret(admin["id"], seed)
+    enable_mfa(admin["id"])
     before = _row(admin)["password_hash"]
     checks = _Checks(monkeypatch)
     answers = []
     for _ in range(3):
         for _ in range(LIMIT - 1):
             answers.append(_change(client, admin, NOT_IT))
-        r = client.post(f"/api/admin/users/{admin['id']}/unlock", headers=admin["headers"])
+        r = client.post(f"/api/admin/users/{admin['id']}/unlock", headers=admin["headers"],
+                        json={"mfa_code": pyotp.TOTP(seed).now()})
         assert r.status_code == 200, r.text
     assert checks.count() == LIMIT, \
         f"{checks.count()} wrong passwords were checked across the rounds; the limit is {LIMIT}"
@@ -377,6 +389,8 @@ def _doors(other_id):
             {"permissions": ["chat", "manage_users"], "current_password": pw}),
         ("routers/users.py", "admin_mfa_reset"): lambda pw: (
             "POST", f"/api/admin/users/{other_id}/mfa-reset", {"current_password": pw}),
+        ("routers/users.py", "admin_unlock_user"): lambda pw: (
+            "POST", f"/api/admin/users/{other_id}/unlock", {"current_password": pw}),
     }
 
 
@@ -626,14 +640,20 @@ def test_two_misses_that_overlap_are_both_counted(member):
 
 def test_only_an_owner_unlocks_an_owners_account(client, accounts, admin_headers):
     """The ceiling the MFA reset carries: an Admin who could clear an Owner's
-    lock could hand back the guesses it stopped."""
+    lock could hand back the guesses it stopped.
+
+    Re-pointed in place: the unlock asks for the caller's own password
+    before it looks at the ceiling (test_unlock_takes_proof.py), so each
+    caller here sends theirs. The ceiling's answers are the same."""
     owner, admin = accounts("owner"), accounts("admin")
     lock_user(owner["id"], _in_30_minutes())
-    r = client.post(f"/api/admin/users/{owner['id']}/unlock", headers=admin["headers"])
+    r = client.post(f"/api/admin/users/{owner['id']}/unlock", headers=admin["headers"],
+                    json={"current_password": PW})
     assert r.status_code == 403, r.text
     assert r.json() == {"detail": "Only an Owner can unlock an Owner's account"}
     assert _row(owner)["locked_until"], "a refused unlock cleared the lock"
-    r = client.post(f"/api/admin/users/{owner['id']}/unlock", headers=admin_headers)
+    r = client.post(f"/api/admin/users/{owner['id']}/unlock", headers=admin_headers,
+                    json={"current_password": "AdminPass1"})
     assert r.status_code == 200 and r.json() == {"status": "unlocked"}, r.text
     assert not _row(owner)["locked_until"]
 
@@ -735,11 +755,14 @@ def test_control_the_sign_in_answers_and_locks_as_before(client, member):
 
 
 def test_control_an_administrators_unlock_still_lets_the_person_sign_in(client, member, admin_headers):
+    # Re-pointed in place, here and in the case below: the unlock takes the
+    # caller's own password (test_unlock_takes_proof.py), so it is sent.
     for _ in range(LIMIT):
         _change(client, member, NOT_IT)
     assert _row(member)["locked_until"]
     assert _sign_in(client, member, PW).status_code == 401
-    r = client.post(f"/api/admin/users/{member['id']}/unlock", headers=admin_headers)
+    r = client.post(f"/api/admin/users/{member['id']}/unlock", headers=admin_headers,
+                    json={"current_password": "AdminPass1"})
     assert r.status_code == 200 and r.json() == {"status": "unlocked"}, r.text
     assert _sign_in(client, member, PW).status_code == 200
 
@@ -747,6 +770,7 @@ def test_control_an_administrators_unlock_still_lets_the_person_sign_in(client, 
 def test_control_an_admin_still_unlocks_a_members_account(client, accounts, member):
     admin = accounts("admin")
     lock_user(member["id"], _in_30_minutes())
-    r = client.post(f"/api/admin/users/{member['id']}/unlock", headers=admin["headers"])
+    r = client.post(f"/api/admin/users/{member['id']}/unlock", headers=admin["headers"],
+                    json={"current_password": PW})
     assert r.status_code == 200 and r.json() == {"status": "unlocked"}, r.text
     assert not _row(member)["locked_until"]

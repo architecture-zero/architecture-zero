@@ -81,7 +81,9 @@ function DepartmentField({ value, onCommit }: {
 export function UsersTab({ api, headers, currentUser }: {
   api: string
   headers: () => Record<string, string>
-  currentUser: { role: string } | null
+  // `id` tells the operator's own row from everyone else's: the unlock
+  // asks for a different proof there. Absent, every row is someone else's.
+  currentUser: { role: string; id?: number } | null
 }) {
   // Moving an account between departments is the Owner's alone on the server
   // (2026-10-31), so below the Owner the rows show the department as text and
@@ -186,9 +188,30 @@ export function UsersTab({ api, headers, currentUser }: {
     mutate(fetch(`${api}/api/users/${id}`, { method: 'DELETE', headers: headers() }),
            'Deactivating user')
 
-  const unlockUser = (id: number) =>
-    mutate(fetch(`${api}/api/admin/users/${id}/unlock`, { method: 'POST', headers: headers() }),
-           'Unlocking account')
+  // An unlock takes proof, and the server decides which by whose account it
+  // is. Someone else's: the operator's own password, asked for like every
+  // other confirmed write on this tab. The operator's own: a current
+  // authenticator code - asked for only when this account has an
+  // authenticator, because without one there is no proof to give and the
+  // server's refusal says what to do instead (how long the lock has left,
+  // and whom to ask). Cancel sends nothing.
+  const unlockUser = async (u: User) => {
+    let proof: Record<string, string> = {}
+    if (currentUser?.id !== u.id) {
+      const pw = await stepUp.ask(`unlock ${u.username}`)
+      if (pw === null) return
+      proof = { current_password: pw }
+    } else if (u.mfa_enabled) {
+      const code = await stepUp.ask('unlock your own account', 'code')
+      if (code === null) return
+      proof = { mfa_code: code }
+    }
+    await mutate(fetch(`${api}/api/admin/users/${u.id}/unlock`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers() },
+      body: JSON.stringify(proof),
+    }), 'Unlocking account')
+  }
 
   const resetMFA = async (id: number) => {
     if (!confirm('Disable MFA for this user? They will need to re-enroll.')) return
@@ -391,7 +414,7 @@ export function UsersTab({ api, headers, currentUser }: {
                 </button>
                 {u.locked_until && (
                   <button
-                    onClick={() => unlockUser(u.id)}
+                    onClick={() => unlockUser(u)}
                     className="text-xs text-yellow-500 hover:text-yellow-400 transition-colors"
                   >
                     Unlock

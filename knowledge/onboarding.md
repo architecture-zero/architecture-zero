@@ -68,8 +68,13 @@ short-lived access token and a refresh token; clients refresh silently via
 POST /api/auth/refresh. If your session expires you get "Session expired -
 sign in again" - just sign in again. After too many wrong passwords the
 account locks temporarily and unlocks itself after the lockout window, or an
-admin can unlock it immediately (POST /api/admin/users/{id}/unlock; an
-Owner's account is unlocked by an Owner). Wrong
+admin can unlock it immediately from the Users tab, confirming with their
+own password (POST /api/admin/users/{id}/unlock with current_password; an
+Owner's account is unlocked by an Owner). An admin whose own account is
+locked can unlock it from a session they still have, with a current code
+from their authenticator app (mfa_code) - not with the password, and not at
+all without an authenticator enrolled: then they wait, or ask another admin
+(an Owner asks another Owner). Wrong
 passwords count wherever the account's own password is asked for, not only at
 sign-in: changing your password or your username, setting up two-factor, and
 the confirmations the admin panel asks for all count toward the same lock,

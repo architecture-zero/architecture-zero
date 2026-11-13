@@ -90,10 +90,22 @@ def verify_password(plain: str, hashed: str) -> bool:
     # sign-in-only account against a full bcrypt round for every other
     # username told a caller which accounts have no password - the same
     # oracle the login equalizer below closes for unknown usernames.
-    if not has_usable_password(hashed):
-        bcrypt.checkpw(plain.encode(), _DUMMY_PASSWORD_HASH.encode())
+    #
+    # Text that cannot be encoded (JSON can carry half of a surrogate pair)
+    # is a wrong password, not an error: it can never match a stored one,
+    # since hash_password encodes the same way. The round is paid for it too,
+    # so the answer costs what any wrong password costs, and the caller
+    # counts the miss. Raising here made the sign-in answer a server error
+    # with no miss counted.
+    try:
+        raw = plain.encode()
+    except UnicodeEncodeError:
+        bcrypt.checkpw(b"", _DUMMY_PASSWORD_HASH.encode())
         return False
-    return bcrypt.checkpw(plain.encode(), hashed.encode())
+    if not has_usable_password(hashed):
+        bcrypt.checkpw(raw, _DUMMY_PASSWORD_HASH.encode())
+        return False
+    return bcrypt.checkpw(raw, hashed.encode())
 
 
 def password_required_for_authority(target: dict | None, scopes) -> str | None:
@@ -131,7 +143,9 @@ def password_required_for_authority(target: dict | None, scopes) -> str | None:
 # lockout window; the session itself stays usable, the way it always has.
 #
 # The lock is not the bound on its own. It is looked at before the hash and
-# counted after it, and an unlock clears it without a password. So the
+# counted after it, and an unlock clears it on a proof that is not this
+# password (an administrator's own password, or the account's authenticator
+# code - see the unlock route). So the
 # password helper also counts each password in security.count_password_attempt
 # BEFORE it is hashed: however many requests arrive together, no more than
 # MAX_LOGIN_ATTEMPTS passwords are checked for one account per lockout window,
@@ -164,6 +178,22 @@ def _lockout_check(user: dict) -> None:
         raise HTTPException(status_code=429,
                             detail=f"Account locked. Try again in {remaining} minute(s).")
     unlock_user(user["id"])
+
+
+def _lock_minutes(user: dict) -> int:
+    """The minutes left on the lock `user` carries, as _lockout_check words
+    them, or 0 when no lock stands. Reads the dict it is handed and clears
+    nothing."""
+    locked_until = user.get("locked_until")
+    if not locked_until:
+        return 0
+    left = (datetime.fromisoformat(locked_until) - datetime.now(timezone.utc)).total_seconds()
+    return int(left // 60) + 1 if left > 0 else 0
+
+
+def lock_minutes_left(user: dict) -> int:
+    """The same, read from the account's row as the database holds it now."""
+    return _lock_minutes(_stored_row(user))
 
 
 def _count_step_up_failure(user: dict, action: str, how: str) -> None:
@@ -217,7 +247,8 @@ def require_step_up(current_user: dict, current_password: str, action: str) -> N
     # Text that cannot be encoded can never match a stored password -
     # hash_password encodes the same way - so it is a miss like any other:
     # counted against the lock, logged, answered 400, and never handed to
-    # the hash, where the encode would raise.
+    # the hash (verify_password would answer False for it too, at the price
+    # of a round).
     try:
         current_password.encode()
         encodable = True
@@ -250,16 +281,57 @@ def require_totp_step_up(current_user: dict, code: str, action: str) -> None:
     cannot clear (on the re-key, the password step-up just before this one
     has cleared the lock's counter). A wrong one also counts against the
     account lock, as every step-up failure does."""
-    import pyotp  # function-local, like every other pyotp use in this app
-    from app.logger import log
-    from app.security import count_totp_attempt, clear_totp_attempts
-    from app.users import reset_failed_attempts
     if not current_user.get("mfa_enabled"):
         raise HTTPException(
             status_code=400,
             detail=f"To {action} you need two-factor enrolled on your account and a "
                    f"current authenticator code. Enroll first, or use "
                    f"PATCH /api/auth/me/password with your current password.")
+    _check_current_code(current_user, code, action)
+
+
+def require_code_to_unlock_yourself(current_user: dict, code: str, who_else: str) -> None:
+    """Unlocking your OWN account: a current authenticator code, or 400.
+
+    An unlock clears the sign-in's lock and its count of misses. A session
+    that could do that for its own account on the session alone could hand
+    itself back, as often as it liked, the guesses the lock had stopped. So
+    the caller's own account takes the one proof a session does not carry:
+    the code. (Refusing the caller's own id outright would strand the one
+    account nobody else may unlock - see the unlock route.)
+
+    The code is checked as require_totp_step_up checks one - counted in
+    security's per-account code bound before it is read, cleared there by a
+    right one - with two differences, both because the lock is the thing a
+    right code clears here. The lock does not refuse this door. And a wrong
+    code while the lock stands is not counted against the lock: it already
+    stands, and the sign-in does not count a miss against a standing lock
+    either. With no lock standing a wrong code counts toward it, as every
+    step-up failure does.
+
+    An account with no authenticator enrolled has no proof to give here. It
+    is told to wait, with the minutes left, or to ask `who_else` - the route's
+    words for who else may unlock an account of this tier."""
+    if not current_user.get("mfa_enabled"):
+        minutes = lock_minutes_left(current_user)
+        what_now = (f"Wait {minutes} minute(s) for the lock to end, or ask {who_else} "
+                    f"to unlock it." if minutes else "Your account is not locked now.")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unlocking your own account takes a current authenticator code, "
+                   f"and your account has no authenticator enrolled. {what_now}")
+    _check_current_code(current_user, code, "unlock your own account", lock_refuses=False)
+
+
+def _check_current_code(current_user: dict, code: str, action: str, *,
+                        lock_refuses: bool = True) -> None:
+    """What every door that takes the caller's current code shares, for an
+    account that has a factor enrolled. `lock_refuses` is False at one door
+    only, the unlock of the caller's own account."""
+    import pyotp  # function-local, like every other pyotp use in this app
+    from app.logger import log
+    from app.security import count_totp_attempt, clear_totp_attempts
+    from app.users import reset_failed_attempts
     if current_user.get("mfa_secret_unreadable") or not current_user.get("mfa_secret"):
         # Truthful refusal, not pyotp.TOTP(None) -> 500: the seed exists and
         # cannot be read (a restore under a rotated JWT_SECRET_KEY - T9).
@@ -269,14 +341,25 @@ def require_totp_step_up(current_user: dict, code: str, action: str) -> None:
                    "be read with this instance's JWT_SECRET_KEY, so the code cannot be "
                    "checked. Re-key the seed column (rekey_at_rest.py) first.")
     # The stored row, as at the password door: a lock stored since the
-    # session's dependency read the account is seen here too.
-    _lockout_check(_stored_row(current_user))
+    # session's dependency read the account is seen here too. A lock that
+    # stands refuses, except at the door that clears it; one that has ended
+    # is cleared at every door, so a miss after it counts from one.
+    stored = _stored_row(current_user)
+    lock_stands = _lock_minutes(stored) > 0
+    if lock_refuses or not lock_stands:
+        _lockout_check(stored)
     if not (code or "").strip():
         raise HTTPException(status_code=400,
                             detail=f"A current authenticator code is required to {action}")
     count_totp_attempt(current_user["id"])
     if not pyotp.TOTP(current_user["mfa_secret"]).verify(code.strip(), valid_window=1):
-        _count_step_up_failure(current_user, action, "totp")
+        if lock_stands:
+            # Reached only where the lock does not refuse. The code was
+            # counted above; the lock is left exactly as it stands.
+            log("auth_step_up_failed", user_id=current_user["id"], action=action,
+                how="totp", attempts=stored.get("failed_attempts"))
+        else:
+            _count_step_up_failure(current_user, action, "totp")
         raise HTTPException(status_code=400, detail="Invalid authenticator code")
     clear_totp_attempts(current_user["id"])
     reset_failed_attempts(current_user["id"])
@@ -408,7 +491,17 @@ def decode_access_token(token: str) -> dict:
 
 
 def validate_password(password: str) -> list[str]:
-    """Return a list of policy violations. Empty list = valid."""
+    """Return a list of policy violations. Empty list = valid.
+
+    Every route that sets a password asks this before it hashes one, so the
+    one thing hash_password cannot take is refused here, in words: text that
+    cannot be encoded (JSON can carry half of a surrogate pair). It is the
+    only violation reported for such text - the others would be noise."""
+    try:
+        password.encode()
+    except UnicodeEncodeError:
+        return ["Password contains a character that cannot be stored. "
+                "Choose a different password"]
     errors: list[str] = []
     if len(password) < MIN_PASSWORD_LENGTH:
         errors.append(f"Password must be at least {MIN_PASSWORD_LENGTH} characters")

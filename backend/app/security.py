@@ -398,8 +398,10 @@ def count_totp_attempt(user_id: int) -> None:
 
 def clear_totp_attempts(user_id: int) -> None:
     """A right code, or the seed itself reset by an operator: the only things
-    that refund code guesses. Never an unlock - that takes no password, so a
-    session alone could refund its own guesses."""
+    that refund code guesses. Never an administrator's unlock of the account -
+    that proves the administrator's password, not this account's code.
+    (Unlocking your own account takes a right code, which clears the count
+    there as a right code does at every door.)"""
     state_store.delete(_totp_key(user_id))
 
 
@@ -425,8 +427,10 @@ def clear_mfa_pending(user_id: int) -> None:
 #
 #   - the lock is looked at before the hash and counted after it, so requests
 #     that arrive together would each pass the look before any was counted;
-#   - an unlock clears the lock and takes no password, so a session that
-#     holds manage_users could clear its own count between rounds.
+#   - an unlock clears the lock, and the proof it takes is never this
+#     account's password (an administrator's own password, or this account's
+#     authenticator code), so a cleared lock says nothing about the password
+#     guesses it had stopped and must not hand them back.
 #
 # So, the same shape as the code bound: ONE versioned write before the
 # password is read (state_store.update), a fixed window from the first
@@ -449,7 +453,8 @@ def clear_mfa_pending(user_id: int) -> None:
 # The sign-in is NOT counted here and is not refused by this count: a burst
 # at the sign-in is bounded per address by check_auth_rate_limit above,
 # before any credential work, and an administrator's unlock must still let a
-# person sign in.
+# person sign in. Per account the sign-in's bound is the lock itself, which is
+# why clearing it takes proof (routers/users.py, admin_unlock_user).
 
 def _password_key(user_id: int) -> str:
     return f"pw_fail:{user_id}"
@@ -489,9 +494,9 @@ def count_password_attempt(user_id: int) -> None:
 
 def clear_password_attempts(user_id: int) -> None:
     """A right password at a step-up door: the one thing that refunds password
-    guesses before the window ends. Never an unlock - that takes no password,
-    so a session alone could refund its own guesses - and never a right
-    authenticator code."""
+    guesses before the window ends. Never an unlock - the proof an unlock
+    takes is an administrator's own password or an authenticator code, not
+    this account's password - and never a right authenticator code."""
     state_store.delete(_password_key(user_id))
 
 

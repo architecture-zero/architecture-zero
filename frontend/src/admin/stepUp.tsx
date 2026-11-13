@@ -9,31 +9,49 @@ import { PRIMARY_COLOR } from '../theme'
 // gated write asks through this prompt, which resolves to the password or to
 // null on cancel. The server answers a string 400 on a wrong one, and the
 // callers show it - a silent snap-back was the failure the attack pass named.
+//
+// One write takes a different proof: unlocking the operator's OWN account
+// costs a current authenticator code, not the password (a locked account's
+// password is not accepted anywhere). ask(what, 'code') shows the same
+// prompt worded for the code, and resolves to what was typed or to null.
 
-type StepUpRequest = { what: string; resolve: (password: string | null) => void }
+type StepUpKind = 'password' | 'code'
+type StepUpRequest = { what: string; kind: StepUpKind; resolve: (proof: string | null) => void }
 
 export function useStepUp() {
   const [req, setReq] = useState<StepUpRequest | null>(null)
-  const ask = (what: string) =>
-    new Promise<string | null>(resolve => setReq({ what, resolve }))
+  const ask = (what: string, kind: StepUpKind = 'password') =>
+    new Promise<string | null>(resolve => setReq({ what, kind, resolve }))
   const prompt = req
-    ? <StepUpPrompt what={req.what} onDone={pw => { req.resolve(pw); setReq(null) }} />
+    ? <StepUpPrompt what={req.what} kind={req.kind} onDone={pw => { req.resolve(pw); setReq(null) }} />
     : null
   return { ask, prompt }
 }
 
-function StepUpPrompt({ what, onDone }: { what: string; onDone: (pw: string | null) => void }) {
+function StepUpPrompt({ what, kind, onDone }: {
+  what: string
+  kind: StepUpKind
+  onDone: (pw: string | null) => void
+}) {
   const [pw, setPw] = useState('')
+  const code = kind === 'code'
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => onDone(null)}>
       <div className="bg-gray-900 border border-gray-700 rounded-xl p-5 w-full max-w-sm space-y-3" onClick={e => e.stopPropagation()}>
-        <p className="text-sm text-white font-medium">Confirm with your password</p>
-        <p className="text-xs text-gray-400">To {what}, enter the password of the account you are signed in as.</p>
+        <p className="text-sm text-white font-medium">
+          {code ? 'Confirm with your authenticator code' : 'Confirm with your password'}
+        </p>
+        <p className="text-xs text-gray-400">
+          {code
+            ? `To ${what}, enter the current code from your authenticator app.`
+            : `To ${what}, enter the password of the account you are signed in as.`}
+        </p>
         <input
-          type="password"
+          type={code ? 'text' : 'password'}
+          inputMode={code ? 'numeric' : undefined}
           autoFocus
-          autoComplete="current-password"
-          placeholder="Your password"
+          autoComplete={code ? 'one-time-code' : 'current-password'}
+          placeholder={code ? 'Authenticator code' : 'Your password'}
           value={pw}
           onChange={e => setPw(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter' && pw) onDone(pw); if (e.key === 'Escape') onDone(null) }}
