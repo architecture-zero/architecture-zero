@@ -1041,7 +1041,11 @@ def put_rows_back(rows: dict[str, tuple[str | None, dict, object]],
     write follow. Between that delete and that write such a row is absent,
     and a write that fails there loses it: a key can leave a row only by the
     row's delete, and the store's writes are not transactional. The earlier
-    text is already back by then. Returns the count written."""
+    text is already back by then.
+    When the store refuses the first upsert, a row holding other text than
+    the one being put back (the release's) is deleted before the error goes
+    on: held means not searchable comes first, and that row's earlier
+    version is lost. Returns the count written."""
     if not rows:
         return 0
     col = _get_collection(department)
@@ -1055,11 +1059,18 @@ def put_rows_back(rows: dict[str, tuple[str | None, dict, object]],
                 vectors.append(_embed(rows[doc_id][0]))
             else:
                 vectors.append(vector.tolist() if hasattr(vector, "tolist") else list(vector))
-        held = col.get(ids=sl, include=["metadatas"])
+        held = col.get(ids=sl, include=["metadatas", "documents"])
         wider = [doc_id for doc_id, meta in zip(held["ids"], held["metadatas"])
                  if set(meta or {}) - set(rows[doc_id][1])]
-        col.upsert(ids=sl, embeddings=vectors, documents=[rows[i][0] for i in sl],
-                   metadatas=[rows[i][1] for i in sl])
+        other_text = [doc_id for doc_id, doc in zip(held["ids"], held["documents"])
+                      if doc != rows[doc_id][0]]
+        try:
+            col.upsert(ids=sl, embeddings=vectors, documents=[rows[i][0] for i in sl],
+                       metadatas=[rows[i][1] for i in sl])
+        except Exception:
+            if other_text:
+                col.delete(ids=other_text)
+            raise
         if wider:
             at = {doc_id: n for n, doc_id in enumerate(sl)}
             col.delete(ids=wider)
