@@ -174,8 +174,9 @@ read, and a second one in the window is refused (429, with the minutes),
 a right code included - otherwise whoever held a session and the
 authenticator, and not the password, could unlock, guess at the sign-in
 until the lock landed, and unlock again without end. A request whose code
-was wrong hands its place back, and nothing else ends the count before its
-window does. An administrator's unlock of another account is deliberately
+was wrong hands its place back - its own place, in the window it took it
+in: one that is answered after that window has ended frees nothing in the
+next - and nothing else ends the count before its window does. An administrator's unlock of another account is deliberately
 not limited that way: it takes the administrator's password each time. The
 password is not accepted
 for your own account - a locked account's password is not accepted
@@ -190,7 +191,12 @@ deactivated account as for an active one. A password that cannot be encoded
 is a wrong password at the sign-in as well: the same 401, counted as one
 miss. A username that cannot be encoded is an unknown username there, at
 the cost of one, and a code that cannot be encoded is a wrong code at every
-door that takes a code.
+door that takes a code. Text a route stores on an account is asked about
+the same way before it is written: a department that cannot be encoded is a
+400 that names the field. A user id from a path that is past what the users
+table can hold never reaches the database: it names no account, and each
+route answers for it what it answers for an id that names none, in its own
+order (at the unlock, after the proof).
 
 The administrative MFA reset (`POST /api/admin/users/{id}/mfa-reset`)
 requires the manage_users scope, refuses Admin-on-Owner, and since

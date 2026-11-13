@@ -60,6 +60,12 @@ FIX (each fails on the route and the helpers as they were):
   - a username that cannot be encoded is an unknown username at the
     sign-in, at the cost of one, and is refused in words where an account
     is created or renamed
+  - a release of the own-account unlock's place gives back only the place
+    its own request took: one that outlives its window frees nothing in
+    the next
+  - a user id past what the table holds names no account at any route
+    that takes one in its path, in that route's own order
+  - a department that cannot be encoded is refused in words
 CONTROL (true before and after, by design):
   - an administrator with the right password unlocks another account, and
     that person signs in at once
@@ -73,6 +79,11 @@ CONTROL (true before and after, by design):
     list here, with the reason it may (read from the source)
   - every function that creates or renames an account asks about the name
     first (read from the source)
+  - every route with {user_id} in its path takes the id through the one
+    guard (read from the source)
+  - every text column on an account is named here with how it is kept
+    storable, and every function that writes a department asks first
+    (read from the model and the source)
 
 Every case drives the app's own routes through the suite's test client, on
 throwaway accounts of its own.
@@ -978,3 +989,211 @@ def test_a_new_username_that_cannot_be_encoded_is_refused_in_words(client, accou
                    {"new_username": NAME_CANNOT_BE_ENCODED, "current_password": PW})
     assert answer == (400, NAME_NOT_STORABLE), answer
     assert _row(top)["username"] == top["name"]
+
+
+# -- FIX: a release gives back only the place its own request took ------------
+
+def _release(account, window):
+    """release_own_unlock for the place taken in `window` - called the way
+    the helper as it was took its arguments too, so this file's cases fail
+    there for what the release did and not for how it was called."""
+    import inspect
+    if "window" in inspect.signature(security.release_own_unlock).parameters:
+        security.release_own_unlock(account["id"], window)
+    else:
+        security.release_own_unlock(account["id"])
+
+
+def test_a_release_that_outlives_its_window_frees_no_place_in_the_next(accounts):
+    """A request takes the window's place; the window ends; another request
+    takes the NEXT window's place and unlocks; then the first request fails
+    and releases. The release subtracted from whatever count was stored, so
+    the next window was handed a second unlock. It gives back only the
+    place its own request took, in the window it took it in."""
+    from fastapi import HTTPException
+    top = accounts("owner", mfa=True)
+    key = f"own_unlock:{top['id']}"
+    first = security.count_own_unlock(top["id"], "someone else")
+    state_store.put(key, {"n": 1, "since": first}, ttl=-1)        # that window ends
+    security.count_own_unlock(top["id"], "someone else")          # the next one's place is taken
+    assert _own_unlocks_counted(top) == 1
+    _release(top, first)                                          # the first request fails, late
+    assert _own_unlocks_counted(top) == 1, "a release from a window that had ended freed a place"
+    with pytest.raises(HTTPException) as refused:
+        security.count_own_unlock(top["id"], "someone else")
+    assert refused.value.status_code == 429
+
+
+def test_a_request_held_across_the_windows_edge_frees_no_place(client, accounts, monkeypatch):
+    """The same, through the route. A request with a wrong code is held
+    while its window ends and another request unlocks in the next window;
+    when the held one is answered (400) and gives its place back, the next
+    window's one unlock stays used: a further right code is refused."""
+    top = accounts("owner", mfa=True)
+    key = f"own_unlock:{top['id']}"
+    _lock(top)
+    real = jwt_auth._check_current_code
+    held = []
+
+    def check(current_user, code, action, **how):
+        if not held:
+            held.append(True)
+            state_store.put(key, state_store.get(key), ttl=-1)        # this request's window ends
+            jwt_auth.require_code_to_unlock_yourself(                 # another unlocks in the next
+                get_user_by_id(top["id"]), _right_code(top), "someone else")
+            _lock(top)
+        return real(current_user, code, action, **how)
+
+    monkeypatch.setattr(jwt_auth, "_check_current_code", check)
+    r = _unlock(client, top, top, mfa_code=_wrong_code(top["seed"]))
+    assert r.status_code == 400 and r.json() == WRONG_CODE, r.text
+    assert held and _own_unlocks_counted(top) == 1, "the held request's release freed the next window's place"
+    r = _unlock(client, top, top, mfa_code=_right_code(top))
+    assert _is_once_per_window(r, "another Owner"), (r.status_code, r.text)
+    assert _row(top)["locked_until"]
+
+
+def test_control_a_release_in_its_own_window_hands_the_place_back(accounts):
+    top = accounts("owner", mfa=True)
+    window = security.count_own_unlock(top["id"], "someone else")
+    assert _own_unlocks_counted(top) == 1
+    _release(top, window)
+    assert _own_unlocks_counted(top) == 0
+    security.count_own_unlock(top["id"], "someone else")
+    assert _own_unlocks_counted(top) == 1
+
+
+# -- FIX: a user id past what the table can hold ------------------------------
+
+PAST_THE_RANGE = 2 ** 70
+
+
+def test_a_user_id_past_the_range_is_no_such_user_at_the_unlock_after_the_proof(client, accounts):
+    """The path takes any whole number and the table keeps 64 bits: a number
+    past that reached the database and raised. It names no account, so the
+    unlock answers what it answers for any id that names none - and in the
+    same order: the proof first."""
+    mid = accounts("admin")
+    path = f"/api/admin/users/{PAST_THE_RANGE}/unlock"
+    assert _send(client, "POST", path, mid["headers"], {}) == (400, PW_REQUIRED)
+    assert _send(client, "POST", path, mid["headers"], {"current_password": NOT_IT}) == (400, WRONG_PW)
+    assert _send(client, "POST", path, mid["headers"], {"current_password": PW}) == (404, NO_SUCH_USER)
+    assert _send(client, "POST", f"/api/admin/users/-{PAST_THE_RANGE}/unlock", mid["headers"],
+                 {"current_password": PW}) == (404, NO_SUCH_USER)
+
+
+def test_a_user_id_past_the_range_is_no_such_user_at_the_role_change(client, accounts):
+    top = accounts("owner")
+    answer = _send(client, "PATCH", f"/api/users/{PAST_THE_RANGE}/role", top["headers"],
+                   {"role": "admin", "current_password": PW})
+    assert answer == (404, NO_SUCH_USER), answer
+
+
+def test_no_route_with_a_user_id_in_its_path_raises_for_an_id_past_the_range(client, accounts):
+    """Every route with {user_id} in its path, found from the app itself,
+    asked for an id past the range with a body that passes its proof: none
+    raises, and none answers a server error. Each answers what it answers
+    for an id that names no account."""
+    from app.main import app
+    top = accounts("owner")
+    body = {"current_password": PW, "role": "admin", "department": "general",
+            "permissions": ["chat"], "new_password": NEW_PW, "username": "utp_never_r",
+            "email": "utp-never@example.com", "groups": [], "external_ids": [],
+            "enabled": False}
+    routes = sorted((sorted(route.methods)[0], route.path) for route in app.routes
+                    if "{user_id}" in getattr(route, "path", ""))
+    assert len(routes) >= 6, routes
+    for method, path in routes:
+        answer = _send(client, method, path.replace("{user_id}", str(PAST_THE_RANGE)),
+                       top["headers"], body)
+        assert answer[0] != "error" and answer[0] < 500, (method, path, answer)
+
+
+def test_control_every_route_with_a_user_id_in_its_path_takes_it_through_the_guard():
+    """Read from the source: every function under app/ whose route decorator
+    has {user_id} in its path declares that parameter as UserId, the one
+    guard (jwt_auth.stored_user_id). A new route that takes it as a bare
+    int fails here."""
+    app_dir = Path(jwt_auth.__file__).resolve().parent
+    seen, bare = 0, []
+    for path in sorted(app_dir.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            in_path = any(isinstance(d, ast.Call) and d.args
+                          and isinstance(d.args[0], ast.Constant)
+                          and "{user_id}" in str(d.args[0].value)
+                          for d in node.decorator_list)
+            if not in_path:
+                continue
+            seen += 1
+            declared = [a.annotation for a in node.args.args if a.arg == "user_id"]
+            if not (declared and isinstance(declared[0], ast.Name) and declared[0].id == "UserId"):
+                bare.append((path.relative_to(app_dir).as_posix(), node.name))
+    assert seen >= 6 and bare == [], (seen, bare)
+    assert jwt_auth.stored_user_id(7) == 7
+    assert [jwt_auth.stored_user_id(n) for n in (0, -7, 2 ** 63, PAST_THE_RANGE)] == [0, 0, 0, 0]
+    assert jwt_auth.stored_user_id(2 ** 63 - 1) == 2 ** 63 - 1
+
+
+# -- FIX: a department that cannot be encoded ---------------------------------
+
+DEPARTMENT_NOT_STORABLE = {"detail": "Department contains a character that cannot be stored. "
+                                     "Choose a different department"}
+
+
+def test_a_department_that_cannot_be_encoded_is_refused_in_words(client, accounts):
+    """The same class as the username: text a route stores on an account.
+    Creating an account in such a department, and moving one into it,
+    raised; both are a string 400 that names the field, and nothing is
+    written."""
+    top, low = accounts("owner"), accounts("member")
+    answer = _send(client, "POST", "/api/users", top["headers"],
+                   {"username": "utp_never_d", "password": NEW_PW, "role": "member",
+                    "department": NAME_CANNOT_BE_ENCODED, "current_password": PW})
+    assert answer == (400, DEPARTMENT_NOT_STORABLE), answer
+    assert get_user_by_username("utp_never_d") is None
+    before = _row(low)["department"]
+    answer = _send(client, "PATCH", f"/api/users/{low['id']}/department", top["headers"],
+                   {"department": NAME_CANNOT_BE_ENCODED})
+    assert answer == (400, DEPARTMENT_NOT_STORABLE), answer
+    assert _row(low)["department"] == before
+    assert jwt_auth.stored_text_refusal("Department", "an-ordinary-one") is None
+    assert jwt_auth.stored_text_refusal("Department", 5) is None
+
+
+# Every text column the users table has, and how what is written to it is
+# kept storable. A new column fails the case below until it is named here.
+_STORED_TEXT = {
+    "username": "asked by username_refusal at every door that creates or renames (the control above)",
+    "department": "asked by stored_text_refusal where an account is created and where its department is changed",
+    "role": "one of a fixed set of names, checked before the write",
+    "permissions": "a list checked against the known scopes, stored as JSON",
+    "password_hash": "made by bcrypt from a password the policy has passed, or the unusable marker",
+    "mfa_secret": "generated here and encrypted; never taken from a request",
+    "created_at": "the clock's",
+    "locked_until": "the clock's",
+}
+_DEPARTMENT_WRITERS = {"create_user", "update_user_department"}
+_DEPARTMENT_ASKED_ELSEWHERE = {
+}
+
+
+def test_control_every_text_column_on_an_account_is_named_here_and_asked_about():
+    """Read from the model: the users table's text columns are exactly the
+    ones named above, each with how its content is kept storable. And read
+    from the source: every function under app/ that creates an account or
+    writes a department asks stored_text_refusal first, or is named above
+    with where the department comes from instead."""
+    from sqlalchemy import String
+    from app.models import User
+    columns = {c.name for c in User.__table__.columns if isinstance(c.type, String)}
+    assert columns == set(_STORED_TEXT), sorted(columns ^ set(_STORED_TEXT))
+    calls = _calls_under_app(_DEPARTMENT_WRITERS | {"stored_text_refusal"})
+    writers = {(where, func) for where, func, name in calls
+               if name in _DEPARTMENT_WRITERS and where != "users.py"}
+    asked = {(where, func) for where, func, name in calls if name == "stored_text_refusal"}
+    assert len(writers) >= 2, writers
+    unasked = writers - asked - set(_DEPARTMENT_ASKED_ELSEWHERE)
+    assert unasked == set(), sorted(unasked)
+    assert set(_DEPARTMENT_ASKED_ELSEWHERE) - writers == set()

@@ -257,7 +257,12 @@ Since v0.1.x, for a script or a client of your own:
   authenticator code: a username that is not valid text is an unknown
   username at the sign-in (401) and a plain 400 where an account is created
   or renamed, and a code that is not valid text is a wrong code wherever a
-  code is taken.
+  code is taken. A department that is not valid text is refused with a
+  plain 400 where an account is created and where its department is changed.
+- A user id in a route's path that is larger than the database can hold
+  names no account: the route answers what it answers for any id that names
+  none (404 "No such user" at the role change, and at the unlock once the
+  proof has passed). It used to answer 500.
 - Sign-in attempts are bounded per address (429), a request over the input
   bound is refused before it is scanned, stored or billed (413), and a second
   message on a conversation that is still answering is refused (409).

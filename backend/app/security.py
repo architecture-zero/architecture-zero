@@ -517,7 +517,8 @@ def clear_password_attempts(user_id: int) -> None:
 # for a wrong one, since no code is read. What is counted is unlocks: a place
 # taken for a request whose code then turns out wrong (or is refused by the
 # code bound) is handed back, because nothing was unlocked - wrong codes have
-# their own count above. Nothing else ends the count before its window does:
+# their own count above - and only by the request that took it, in the window
+# it took it in. Nothing else ends the count before its window does:
 # not a right code, not an administrator's unlock of the same account, not an
 # MFA reset. An administrator's unlock of ANOTHER account is not counted here
 # at all: it takes the administrator's own password, and that party is the
@@ -529,10 +530,12 @@ def _own_unlock_key(user_id: int) -> str:
     return f"own_unlock:{user_id}"
 
 
-def count_own_unlock(user_id: int, who_else: str) -> None:
+def count_own_unlock(user_id: int, who_else: str) -> float:
     """Take this window's place for one unlock of the caller's own account,
-    or refuse with 429 when it is taken - before the code is read. The caller
-    hands the place back (release_own_unlock) if no unlock follows."""
+    or refuse with 429 when it is taken - before the code is read. Returns
+    what identifies the take: the start of the window it was taken in. The
+    caller hands the place back (release_own_unlock, with that value) if no
+    unlock follows."""
     from app import jwt_auth
     window = jwt_auth.LOCKOUT_DURATION_MINUTES * 60
     taken = []
@@ -556,17 +559,39 @@ def count_own_unlock(user_id: int, who_else: str) -> None:
             detail=(f"Your account was already unlocked from its own session in this "
                     f"lockout window, and that is allowed once per window. Try again "
                     f"in {remaining} minute(s), or ask {who_else} to unlock it."))
+    return doc["since"]
 
 
-def release_own_unlock(user_id: int) -> None:
-    """Hand back a place count_own_unlock took, for a request that unlocked
-    nothing (its code was wrong, missing, or refused by the code bound). The
-    window is not moved."""
+class _NotThatWindow(Exception):
+    """Raised inside a release's write, to leave the stored count untouched."""
+
+
+def release_own_unlock(user_id: int, window: float) -> None:
+    """Hand back the place count_own_unlock took in `window` (the value it
+    returned), for a request that unlocked nothing: its code was wrong,
+    missing, or refused by the code bound.
+
+    ONLY that place. The count stored now may not be the one the
+    request took its place in: the request can outlive its window, and by
+    then another request may have taken the next window's place and
+    unlocked. A release that subtracted from whatever is stored would hand
+    that second window a second unlock. So the write happens only while the
+    stored window is still the one named; otherwise - the window ended,
+    whether or not another began - nothing is written, not even an empty
+    row. The window is never moved."""
     from app import jwt_auth
-    state_store.update(_own_unlock_key(user_id),
-                       lambda doc: doc.__setitem__("n", max(0, int(doc.get("n", 0)) - 1)),
-                       jwt_auth.LOCKOUT_DURATION_MINUTES * 60,
-                       default={"n": 0, "since": time.time()})
+
+    def give_back(doc):
+        if doc.get("since") != window:
+            raise _NotThatWindow()
+        doc["n"] = max(0, int(doc.get("n", 0)) - 1)
+
+    try:
+        state_store.update(_own_unlock_key(user_id), give_back,
+                           jwt_auth.LOCKOUT_DURATION_MINUTES * 60,
+                           default={"n": 0, "since": None})
+    except _NotThatWindow:
+        pass
 
 
 

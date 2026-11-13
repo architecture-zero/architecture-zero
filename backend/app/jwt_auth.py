@@ -11,6 +11,7 @@ import os
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Annotated
 
 import bcrypt
 from fastapi import Depends, HTTPException, status
@@ -322,7 +323,15 @@ def require_code_to_unlock_yourself(current_user: dict, code: str, who_else: str
     it is taken, a right code included; the place is handed back when no
     unlock followed (the code was missing, wrong, or refused by the code
     bound), so a mistyped code does not cost the account its remedy. Nothing
-    else ends that count before its window does."""
+    else ends that count before its window does. A release gives back only
+    the place its own request took, in the window it took it in: one
+    that arrives after that window has ended changes nothing, so a request
+    held across a window's edge cannot free a place in the next one.
+
+    Accepted, on purpose: under a flood of blank or wrong requests from the
+    same session, a right code can be answered 429 while another request
+    holds the window's one place for a moment. That fails toward no unlock,
+    and the caller retries."""
     from app.security import count_own_unlock, release_own_unlock
     if not current_user.get("mfa_enabled"):
         minutes = lock_minutes_left(current_user)
@@ -332,12 +341,12 @@ def require_code_to_unlock_yourself(current_user: dict, code: str, who_else: str
             status_code=400,
             detail=f"Unlocking your own account takes a current authenticator code, "
                    f"and your account has no authenticator enrolled. {what_now}")
-    count_own_unlock(current_user["id"], who_else)
+    window = count_own_unlock(current_user["id"], who_else)
     try:
         _check_current_code(current_user, code, "unlock your own account",
                             lock_refuses=False)
     except HTTPException:
-        release_own_unlock(current_user["id"])
+        release_own_unlock(current_user["id"], window)
         raise
 
 
@@ -551,10 +560,41 @@ def username_refusal(username: str) -> str | None:
     text that cannot be encoded cannot be stored, and the write would raise.
     Every route that creates an account or renames one asks this before it
     writes."""
-    if not can_be_encoded(username):
-        return ("Username contains a character that cannot be stored. "
-                "Choose a different username")
+    return stored_text_refusal("Username", username)
+
+
+def stored_text_refusal(what: str, text) -> str | None:
+    """Why this text cannot be stored on an account, or None. `what`
+    names the field, capitalised, for the caller who reads the refusal. One
+    reason today: text that cannot be encoded cannot be stored, and the
+    write would raise. Every route that stores text from a request body on
+    an account - its name, its department, whatever else a surface keeps -
+    asks this before it writes. Anything that is not text is not this
+    function's to judge."""
+    if isinstance(text, str) and not can_be_encoded(text):
+        return (f"{what} contains a character that cannot be stored. "
+                f"Choose a different {what.lower()}")
     return None
+
+
+# -- A user id from a route's path --------------------------------------------
+# The users table keeps ids in a 64-bit integer, and a route's path takes any
+# whole number: one past that range reached the database and raised there, a
+# server error. Such a number names no account, so it is handed on as 0,
+# which names none either - and every route with {user_id} in its path then
+# answers for it exactly what it answers for an id that names no account,
+# in the same order (at the routes that ask for a proof first, after the
+# proof). One guard for all of them: they take their id as UserId.
+_LARGEST_STORED_ID = 2 ** 63 - 1
+
+
+def stored_user_id(user_id: int) -> int:
+    """The id from the path when the users table can hold it, else 0 - an id
+    no account has. Never raises, so it changes no route's order."""
+    return user_id if 0 < user_id <= _LARGEST_STORED_ID else 0
+
+
+UserId = Annotated[int, Depends(stored_user_id)]
 
 
 def create_mfa_challenge_token(user_id: int) -> str:

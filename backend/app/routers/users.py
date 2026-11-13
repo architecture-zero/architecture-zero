@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from app.jwt_auth import (require_permission, hash_password, validate_password,
                           require_step_up, password_required_for_authority,
                           require_code_to_unlock_yourself, lock_minutes_left,
-                          username_refusal)
+                          username_refusal, stored_text_refusal, UserId)
 from app.logger import log
 from app.permissions import PERMISSION_SCOPES, ROLE_PERMISSIONS
 from app.users import (create_user, list_users, deactivate_user, update_user_role,
@@ -84,6 +84,11 @@ def add_user(request: CreateUserRequest, current_user: dict = Depends(require_pe
     # Re-authentication precedes the authority checks below, so a wrong
     # password learns nothing about the ceilings either.
     require_step_up(current_user, request.current_password, "create an account")
+    # A department that cannot be encoded cannot be stored: the
+    # checks below, and then the write, raised on it.
+    refusal = stored_text_refusal("Department", request.department)
+    if refusal:
+        raise HTTPException(status_code=400, detail=refusal)
     # An account IN the reserved help department would have the product's
     # help pages merged into its NORMAL answers (2026-09-21) - a department
     # resolves through the same machinery. Refused at both department doors.
@@ -116,7 +121,7 @@ def add_user(request: CreateUserRequest, current_user: dict = Depends(require_pe
 
 
 @router.delete("/api/users/{user_id}")
-def remove_user(user_id: int, current_user: dict = Depends(require_permission("manage_users"))):
+def remove_user(user_id: UserId, current_user: dict = Depends(require_permission("manage_users"))):
     from app.permissions import is_owner
     from app.users import count_active_owners
     if user_id == current_user["id"]:
@@ -138,7 +143,7 @@ def remove_user(user_id: int, current_user: dict = Depends(require_permission("m
 
 
 @router.patch("/api/users/{user_id}/role")
-def change_role(user_id: int, body: dict, current_user: dict = Depends(require_permission("manage_users"))):
+def change_role(user_id: UserId, body: dict, current_user: dict = Depends(require_permission("manage_users"))):
     from app.permissions import is_owner
     # Step-up first - see add_user.
     require_step_up(current_user, body.get("current_password") or "", "change a role")
@@ -192,7 +197,7 @@ def change_role(user_id: int, body: dict, current_user: dict = Depends(require_p
 
 
 @router.patch("/api/users/{user_id}/department")
-def change_department(user_id: int, body: dict, current_user: dict = Depends(require_permission("manage_users"))):
+def change_department(user_id: UserId, body: dict, current_user: dict = Depends(require_permission("manage_users"))):
     # The Owner's alone (2026-10-31). An account's department is half of what
     # the chat reads for it and half of where it may write (the KB's
     # department write check); with manage_users alone, an Admin - its preset
@@ -207,6 +212,9 @@ def change_department(user_id: int, body: dict, current_user: dict = Depends(req
         raise HTTPException(status_code=403,
                             detail="Only an Owner can change an account's department")
     dept = body.get("department", "general").strip() or "general"
+    refusal = stored_text_refusal("Department", dept)   # cannot be stored: a 400, not a raise
+    if refusal:
+        raise HTTPException(status_code=400, detail=refusal)
     from app.help_docs import refuse_reserved_department
     refuse_reserved_department(dept)   # same reason as add_user: the other door
     update_user_department(user_id, dept)
@@ -215,7 +223,7 @@ def change_department(user_id: int, body: dict, current_user: dict = Depends(req
 
 
 @router.patch("/api/users/{user_id}/permissions")
-def change_permissions(user_id: int, body: dict, current_user: dict = Depends(require_permission("manage_users"))):
+def change_permissions(user_id: UserId, body: dict, current_user: dict = Depends(require_permission("manage_users"))):
     from app.permissions import can_grant, raises_authority, resulting_permissions
     target = get_user_by_id(user_id)
     perms = body.get("permissions")
@@ -257,7 +265,7 @@ class MfaResetRequest(BaseModel):
 
 
 @router.post("/api/admin/users/{user_id}/mfa-reset")
-def admin_mfa_reset(user_id: int, body: MfaResetRequest | None = Body(None),
+def admin_mfa_reset(user_id: UserId, body: MfaResetRequest | None = Body(None),
                     current_user: dict = Depends(require_permission("manage_users"))):
     """Admin: disable MFA for a user (e.g. lost authenticator).
 
@@ -310,7 +318,7 @@ class UnlockRequest(BaseModel):
 
 
 @router.post("/api/admin/users/{user_id}/unlock")
-def admin_unlock_user(user_id: int, body: UnlockRequest | None = Body(None),
+def admin_unlock_user(user_id: UserId, body: UnlockRequest | None = Body(None),
                       current_user: dict = Depends(require_permission("manage_users"))):
     """Admin: unlock a locked account.
 
