@@ -80,11 +80,32 @@ app = FastAPI(
 # 64 bits, and that is a 400 in words here, never a server error. The answer
 # and the log line carry neither the number nor the message - only the
 # route's path as declared, so an id in the path is not logged either.
+#
+# ONLY an overflow raised binding a value into a database statement. Any
+# other OverflowError is the server's own (a date computed out of range, an
+# integer too large for a float, from a setting or a stored value), and
+# answering it as the caller's number would hide a fault behind a 400 at
+# info level: it is raised again, so it stays a 500 and is logged as one.
 NUMBER_OUT_OF_RANGE = "A number in the request is out of range."
+_DATABASE_PACKAGES = ("sqlalchemy", "sqlite3", "psycopg2", "psycopg")
+
+
+def _raised_binding_a_value(exc: BaseException) -> bool:
+    """True when the innermost frame of the traceback is the database
+    driver's or SQLAlchemy's own code - where a value is bound into a
+    statement. The driver's own bind is C, so its caller (SQLAlchemy) is the
+    innermost Python frame."""
+    tb, frame = exc.__traceback__, None
+    while tb is not None:
+        frame, tb = tb.tb_frame, tb.tb_next
+    module = frame.f_globals.get("__name__", "") if frame is not None else ""
+    return module.split(".")[0] in _DATABASE_PACKAGES
 
 
 @app.exception_handler(OverflowError)
 async def _number_out_of_range(request: Request, exc: OverflowError):
+    if not _raised_binding_a_value(exc):
+        raise exc
     route = request.scope.get("route")
     log("request_number_out_of_range", method=request.method,
         route=getattr(route, "path", "(no route)"))

@@ -334,7 +334,9 @@ Since v0.1.x, for a script or a client of your own:
 - Behind those, one backstop: a number anywhere in a request that the
   database cannot hold, on a route that does not refuse it in its own words,
   answers 400 "A number in the request is out of range." rather than 500.
-  The log line names the route as declared, never the number.
+  The log line names the route as declared, never the number. Only a number
+  the database is asked to store or compare is answered this way: an
+  overflow in the server's own arithmetic stays a server error.
 - `DELETE /api/auth/sessions/{id}` answers 404 "No such session" for an id
   that names no open session of the caller's (another account's, one
   already revoked, or none), and revokes and logs nothing. It used to answer

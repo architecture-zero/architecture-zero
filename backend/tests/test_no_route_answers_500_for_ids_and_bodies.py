@@ -37,6 +37,8 @@ FIX (each fails on the routes as they were):
     out: a null department raised
   - the backstop: a number the database cannot hold, on a route that does
     not ask about it, is a 400 in words, logged by the route as declared
+  - and only that: an overflow in the server's own arithmetic stays a
+    server error, and is not logged as the caller's number
   - a whole number past the range in a query string: answered as the
     largest one a column holds (a page past the end, more rows than there
     are), never a server error
@@ -716,7 +718,11 @@ NUMBER_OUT_OF_RANGE = {"detail": "A number in the request is out of range."}
 
 
 def _driver_overflow(*args, **kwargs):
-    raise OverflowError("Python int too large to convert to SQLite INTEGER")
+    """A real one: the driver asked to bind a number past 64 bits."""
+    from app.db import get_session
+    from app.models import User
+    with get_session() as db:
+        db.query(User).filter(User.id == 2 ** 70).first()
 
 
 def test_a_number_the_database_cannot_hold_is_a_400_where_no_route_asks_about_it(
@@ -739,3 +745,34 @@ def test_a_number_the_database_cannot_hold_is_a_400_where_no_route_asks_about_it
         ("request_number_out_of_range", {"method": "GET", "route": "/api/history/{session_id}"}),
     ], logged
     assert sent not in repr(logged)
+
+
+# -- FIX: the backstop answers the database's overflow only ----------------------
+# An OverflowError raised by the server's own arithmetic - a date computed out
+# of range, an integer too large for a float - is the server's fault, not the
+# caller's number. It stays a server error, and the backstop does not log it
+# as a request number out of range.
+
+def _date_overflow(*args, **kwargs):
+    from datetime import datetime, timedelta
+    return datetime.now() + timedelta(minutes=10 ** 12)
+
+
+def _float_overflow(*args, **kwargs):
+    return float(10 ** 400)
+
+
+@pytest.mark.parametrize("raises", [_date_overflow, _float_overflow],
+                         ids=["a date out of range", "an integer too large for a float"])
+def test_an_overflow_of_the_servers_own_is_a_server_error(accounts, monkeypatch, raises):
+    import app.main as main_module
+    from fastapi.testclient import TestClient
+    from app.routers import sessions as sessions_router
+    logged = []
+    monkeypatch.setattr(main_module, "log", lambda event, **fields: logged.append(event))
+    monkeypatch.setattr(sessions_router, "list_sessions", raises)
+    low = accounts("member")
+    loose = TestClient(app, raise_server_exceptions=False)
+    r = loose.get("/api/sessions/mine", headers=low["headers"])
+    assert r.status_code == 500, (r.status_code, r.text)
+    assert "request_number_out_of_range" not in logged, logged
