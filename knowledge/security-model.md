@@ -257,7 +257,9 @@ against the seed it read before a re-key replaced it still meets that
 seed's record, so the code cannot be accepted there a second time. An old
 seed's record expires by itself after a few minutes. The record's key holds
 a short digest of the seed, which cannot be turned back into it; no answer
-or log line carries the key.
+or log line carries the key - not even when a statement on it fails: the
+database engine leaves the values bound into a statement out of its errors,
+and the store names only a key's namespace when it gives up.
 
 Password logins carry per-account lockout after repeated failures. TOTP
 two-factor is built in, and REQUIRE_MFA=true refuses password logins for

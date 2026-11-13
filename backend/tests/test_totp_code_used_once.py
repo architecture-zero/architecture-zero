@@ -36,6 +36,9 @@ FIX (each fails on the doors as they were):
     runs to the end is refused when it writes (the record per account was
     cleared by that re-key, and the held request was accepted); after an
     operator's reset or a re-key, the new seed's codes meet a fresh record
+  - neither a failed statement on the record nor a write the store
+    cannot settle puts the seed's digest, or the key's account and
+    digest, into the error or a log line
   - no door checks a code any other way (read from the source): not by
     .verify(), and not by .now(), .at(), .generate_otp() or .timecode()
     on a one-time-password object built anywhere but the helper
@@ -679,3 +682,65 @@ def test_control_a_code_that_cannot_be_encoded_is_a_wrong_code(client, accounts)
                                         "mfa_code": "12" + chr(0xD800) + "456"}))
     assert r.status_code == 400 and r.json() == {"detail": WRONG}, r.text
     assert _codes_counted(someone) == 1
+
+
+# -- FIX: no seed-derived value reaches an error's text or a log line ----------
+# The record's key holds a digest of the seed. A statement on it that fails
+# carried the key among its bound values into the error's text, and an
+# unhandled error is logged with its text. Here the statements that carry
+# the key are made to fail as the database would - a driver error (not
+# retried) and a write that never settles (retried until the store gives
+# up) - and neither the error that comes out nor anything logged on the way
+# may carry the digest or the key's account-and-digest part.
+
+class _FailTheRecord:
+    """Fails each driver statement whose bound values carry a record key:
+    every one (an operational error), or only its writes (a constraint
+    error, which the store retries)."""
+
+    def __init__(self, kind):
+        self.kind, self.fired = kind, 0
+
+    def __call__(self, cursor, statement, parameters, context):
+        import sqlite3
+        values = parameters.values() if isinstance(parameters, dict) else (parameters or ())
+        if not any(isinstance(v, str) and v.startswith("totp_used:") for v in values):
+            return
+        if self.kind == "operational":
+            self.fired += 1
+            raise sqlite3.OperationalError("database is locked")
+        if statement.lstrip().upper().startswith(("INSERT", "UPDATE")):
+            self.fired += 1
+            raise sqlite3.IntegrityError("UNIQUE constraint failed: security_state.key")
+
+
+@pytest.mark.parametrize("kind", ["operational", "integrity"],
+                         ids=["a driver error", "a write the store cannot settle"])
+def test_no_seed_derived_value_reaches_an_error_or_a_log_line(accounts, monkeypatch, caplog,
+                                                             capfd, kind):
+    import logging
+    import traceback
+    from sqlalchemy import event
+    from app.db import engine
+    monkeypatch.setattr(state_store, "_RETRIES", 3)
+    monkeypatch.setattr(state_store, "_backoff", lambda attempt: None)
+    caplog.set_level(logging.DEBUG)
+    someone = accounts()
+    key = security._used_code_key(someone["id"], someone["seed"])
+    id_part = key.split(":", 1)[1]          # "<account id>:<digest>"
+    digest = key.rsplit(":", 1)[1]
+    capfd.readouterr()
+    fail = _FailTheRecord(kind)
+    event.listen(engine, "do_execute", fail)
+    try:
+        with pytest.raises(Exception) as raised:
+            security.totp_code_refusal(someone["id"], someone["seed"], _code(someone["seed"]))
+    finally:
+        event.remove(engine, "do_execute", fail)
+    assert fail.fired, "no statement on the record was reached"
+    text = "".join(traceback.format_exception(raised.value))
+    out = capfd.readouterr()
+    logged = "\n".join(f"{r.getMessage()} {r.exc_text or ''}" for r in caplog.records)
+    for where, body in (("the error", text), ("the log", logged + out.out + out.err)):
+        for what in (digest, id_part, someone["seed"]):
+            assert what not in body, f"{where} carries a seed-derived value"

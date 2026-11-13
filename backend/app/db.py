@@ -12,6 +12,12 @@ engine = create_engine(
     DATABASE_URL,
     connect_args={"check_same_thread": False} if _sqlite else {},
     pool_pre_ping=True,
+    # A failed statement's error carries its SQL, and by default the values
+    # bound into it too - and an unhandled error is logged with its text. Some
+    # of those values must never reach a log line: a key of the security
+    # store holds a digest of an account's authenticator seed, and a user's
+    # row holds what is written to it. The SQL is kept; the values are not.
+    hide_parameters=True,
 )
 
 if _sqlite:
