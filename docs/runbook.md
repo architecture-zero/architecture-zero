@@ -833,6 +833,28 @@ so a fresh deploy measures a whole corpus, never a half-ingested one.
 Deeper measurement (A/B arms, noise bands) lives in
 `backend/scripts/eval_retrieval.py` - run it inside the container.
 
+**The follow-up shape.** A message that is only a follow-up - "more",
+"explain", "current" - carries no subject, so retrieval is asked with the last
+real question and the follow-up attached. That is the `topic` shape, the
+default. The `exchange` shape also puts the start of the last answer (its
+first 400 characters, whitespace collapsed) between the two, so the query
+names the subject in the corpus's own words. The config key is
+`followup_resolver`: `exchange` turns it on; unset, blank or any other value
+is `topic`. Only the retrieval query changes, and only on a turn that is a
+bare follow-up - the model and the saved conversation keep the user's words.
+The chat and the evaluation runner read the key per call, so no restart is
+needed. It is a config row, not an admin-tab setting:
+
+    docker compose exec backend python -c "from app.config import set_config; set_config('followup_resolver', 'exchange')"
+
+Measure it on your own multi-turn questions before you keep it: a
+retrieval-only run with the key unset, then one with it set, on the same
+corpus. One thing to know first: the query is what the reranker is sent. With
+`rerank_provider=hosted-api` the start of the previous answer goes to that
+vendor inside the query, and the rule that keeps non-public collections off
+the vendor reads the candidates, not the query - so on an instance that holds
+a non-public collection, run this shape with a local or self-hosted reranker.
+
 Growing the locked holdout: `backend/scripts/author_holdout.py` has an OUTSIDE
 model read corpus files and draft questions plus grading keys for them, spread
 deterministically across the whole corpus. It writes a JSON array to

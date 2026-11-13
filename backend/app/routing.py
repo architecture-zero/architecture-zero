@@ -184,21 +184,64 @@ def _last_topic_text(history) -> str:
     return ""
 
 
+# How much of the last answer the 'exchange' shape carries into the retrieval
+# query: enough to name the subject, short enough that the user's own topic
+# stays the larger part of most queries.
+EXCHANGE_CLIP_CHARS = 400
+
+
+def followup_shape() -> str:
+    """How a bare follow-up becomes a retrieval query. 'topic' (the default)
+    re-attaches the last substantive user turn. 'exchange' also carries the
+    start of the last assistant turn, which names the subject in the corpus's
+    own vocabulary where the user's question often does not. Config key
+    `followup_resolver`, read per call so an A/B arm or an operator flips it
+    without a restart; unset, blank or any other value reads as 'topic', and
+    so does a config store that cannot be read."""
+    try:
+        from app.config import get_config
+        v = (get_config("followup_resolver", "") or "").strip().lower()
+    except Exception:
+        v = ""
+    return "exchange" if v == "exchange" else "topic"
+
+
+def _last_assistant_text(history) -> str:
+    """The first EXCHANGE_CLIP_CHARS of the most recent assistant turn,
+    whitespace-collapsed; '' when there is none."""
+    for m in reversed(history or []):
+        role = m.get("role") if isinstance(m, dict) else getattr(m, "role", None)
+        if role != "assistant":
+            continue
+        content = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
+        return " ".join((content or "").split())[:EXCHANGE_CLIP_CHARS]
+    return ""
+
+
 def resolve_followup(query: str, history=None) -> str:
     """Expand a bare follow-up into a self-contained RETRIEVAL query by
-    re-attaching the topic of the last SUBSTANTIVE user turn. Returns `query`
-    unchanged when it is not a bare follow-up, or when no substantive prior
-    turn exists (fail-open - never worse than not rewriting). A status-shaped
-    follow-up ON a status-shaped topic also gets a 'current status' frame so
-    is_status_query fires; every other pairing keeps the neutral
-    '<topic> - <query>' form, which leaves the topic's own terms dominant.
-    Rewrites the retrieval query ONLY - the caller still sends the user's real
-    words to the model and saves them to history."""
+    re-attaching the topic of the last SUBSTANTIVE user turn (and, in the
+    'exchange' shape, the start of the last assistant turn - followup_shape).
+    Returns `query` unchanged when it is not a bare follow-up, or when no
+    substantive prior turn exists (fail-open - never worse than not
+    rewriting). A status-shaped follow-up ON a status-shaped topic also gets a
+    'current status' frame so is_status_query fires - decided on the USER's
+    topic alone, so words in an answer never flip it; every other pairing
+    keeps the neutral '<topic> - <query>' form, which leaves the topic's own
+    terms dominant. Rewrites the retrieval query ONLY - the caller still sends
+    the user's real words to the model and saves them to history."""
     if not is_followup(query) or not history:
         return query
     topic = _last_topic_text(history)
     if not topic:
         return query
-    if _STATUS_FOLLOWUP_RE.match(query) and is_status_topic(topic):
+    status_frame = bool(_STATUS_FOLLOWUP_RE.match(query)) and is_status_topic(topic)
+    # The shape is read only here, on a turn the branch can act on: one config
+    # read on a bare follow-up, none on any other chat question.
+    if followup_shape() == "exchange":
+        answer = _last_assistant_text(history)
+        if answer:
+            topic = f"{topic} {answer}"
+    if status_frame:
         return f"{topic} - current status"
     return f"{topic} - {query.strip()}"
