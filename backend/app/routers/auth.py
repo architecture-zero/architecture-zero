@@ -36,6 +36,7 @@ from app.jwt_auth import (authenticate_user, create_access_token,
                           create_mfa_challenge_token, decode_mfa_challenge_token,
                           refuse_if_mfa_seed_stranded, require_step_up,
                           require_totp_step_up, can_be_encoded, username_refusal,
+                          TokenId,
                           MAX_LOGIN_ATTEMPTS, LOCKOUT_DURATION_MINUTES)
 from app.logger import log, log_error
 from app.metrics import increment
@@ -471,7 +472,7 @@ def get_sessions(current_user: dict = Depends(get_current_user)):
 
 
 @router.delete("/api/auth/sessions/{token_id}")
-def revoke_session(token_id: int, current_user: dict = Depends(get_current_user)):
+def revoke_session(token_id: TokenId, current_user: dict = Depends(get_current_user)):
     """Revoke a specific session by its ID."""
     revoke_refresh_token_by_id(token_id, current_user["id"])
     log("auth_revoke_session", user_id=current_user["id"], token_id=token_id)

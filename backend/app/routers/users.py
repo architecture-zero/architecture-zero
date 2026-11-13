@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from app.jwt_auth import (require_permission, hash_password, validate_password,
                           require_step_up, password_required_for_authority,
                           require_code_to_unlock_yourself, lock_minutes_left,
-                          username_refusal, stored_text_refusal, UserId)
+                          username_refusal, stored_text_refusal, UserId, body_text)
 from app.logger import log
 from app.permissions import PERMISSION_SCOPES, ROLE_PERMISSIONS
 from app.users import (create_user, list_users, deactivate_user, update_user_role,
@@ -156,7 +156,7 @@ def remove_user(user_id: UserId, current_user: dict = Depends(require_permission
 def change_role(user_id: UserId, body: dict, current_user: dict = Depends(require_permission("manage_users"))):
     from app.permissions import is_owner
     # Step-up first - see add_user.
-    require_step_up(current_user, body.get("current_password") or "", "change a role")
+    require_step_up(current_user, body_text(body, "current_password"), "change a role")
     role = body.get("role")
     if role not in ("owner", "admin", "member"):
         raise HTTPException(status_code=400, detail="role must be 'owner', 'admin', or 'member'")
@@ -228,7 +228,8 @@ def change_department(user_id: UserId, body: dict, current_user: dict = Depends(
     # before.
     if get_user_by_id_any_status(user_id) is None:
         raise HTTPException(status_code=404, detail="No such user")
-    dept = body.get("department", "general").strip() or "general"
+    # Read as text or refused by name: a number here raised on .strip().
+    dept = body_text(body, "department", "general").strip() or "general"
     refusal = stored_text_refusal("Department", dept)   # cannot be stored: a 400, not a raise
     if refusal:
         raise HTTPException(status_code=400, detail=refusal)
@@ -250,13 +251,23 @@ def change_permissions(user_id: UserId, body: dict, current_user: dict = Depends
     # was skipped.
     target = get_user_by_id_any_status(user_id)
     perms = body.get("permissions")
+    # A list of scope names, or null for the role's defaults - asked before
+    # anything below reads it. A number raised where the list is walked, a
+    # list holding a list raised where it is compared, and a string was
+    # walked letter by letter.
+    if perms is not None and (not isinstance(perms, list)
+                              or any(not isinstance(p, str) for p in perms)):
+        raise HTTPException(
+            status_code=400,
+            detail="permissions must be a list of scope names, or null to reset "
+                   "to the role's defaults")
     # Step-up (2026-09-09) on the writes that RAISE authority: adding
     # manage_users or manage_system the target does not hold today. A
     # seven-scope override is a durable near-apex account whose role column
     # never changed, so the role gate never fires. Narrowing or
     # preserving writes cost nothing extra.
     if raises_authority(target, perms):
-        require_step_up(current_user, body.get("current_password") or "",
+        require_step_up(current_user, body_text(body, "current_password"),
                         "grant manage_users or manage_system")
     # An id that names no account is a 404 - after the step-up, where this
     # write asks for one, so a caller without the proof learns nothing about

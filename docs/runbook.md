@@ -308,6 +308,24 @@ Since v0.1.x, for a script or a client of your own:
   for it as before. Changing a deactivated Owner's permissions or resetting
   its second factor takes an Owner (403 otherwise), as for an active one;
   both used to be open to any holder of `manage_users`.
+- The same holds for every other whole-number id in a route's path - a
+  session's token, an evaluation question, a result, a quarantined item:
+  one larger than the database can hold names nothing, and the route
+  answers what it answers for an id that names nothing. Each used to
+  answer 500.
+- The four routes that take their JSON body without a schema - the role,
+  department and permissions changes and `PATCH /api/admin/config` - answer
+  400 with a plain reason that names the field when a field holds the wrong
+  type: anything but text for `current_password` or `department`, anything
+  but a list of scope names or null for `permissions`, and a list, an
+  object or null for a config key that holds text. The first three used to
+  answer 500, and the config write stored the value's printed form (a null
+  model name as the word "None"). A null `department` is the default one.
+- A whole number in a body that is larger than the database can hold is
+  refused with a plain 400 that names the field (an evaluation question's
+  `as_level`, a result's `score`, a feedback's `turn_index`: "as_level is
+  out of range"), and an evaluation run asked for question ids that large
+  has no questions to run (400). Each used to answer 500.
 - Sign-in attempts are bounded per address (429), a request over the input
   bound is refused before it is scanned, stored or billed (413), and a second
   message on a conversation that is still answering is refused (409).

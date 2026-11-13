@@ -26,7 +26,8 @@ from app.db import get_session
 from app.eval_runner import (EVAL_SEED_PATH, _DEFAULT_EVAL_QUESTIONS,
                              sync_eval_questions_from_seed, _eval_runs,
                              _run_eval_job, _persist_rag_metric)
-from app.jwt_auth import require_owner
+from app.jwt_auth import (require_owner, row_id, stored_number_refusal,
+                          QuestionId, ResultId)
 from app.logger import log
 from app.config import get_config
 from app.runtime_config import (_config_or_default, DEFAULT_MODEL,
@@ -131,6 +132,10 @@ def sync_eval_questions(current_user: dict = Depends(require_owner)):
 @router.post("/api/admin/evals/questions")
 def create_eval_question(body: EvalQuestionIn, current_user: dict = Depends(require_owner)):
     from app.models import EvalQuestion
+    # A level past what the column keeps raised at the write.
+    refusal = stored_number_refusal("as_level", body.as_level)
+    if refusal:
+        raise HTTPException(status_code=400, detail=refusal)
     with get_session() as db:
         row = EvalQuestion(
             question=body.question.strip(),
@@ -150,13 +155,18 @@ def create_eval_question(body: EvalQuestionIn, current_user: dict = Depends(requ
 
 
 @router.patch("/api/admin/evals/questions/{question_id}")
-def update_eval_question(question_id: int, body: EvalQuestionUpdate,
+def update_eval_question(question_id: QuestionId, body: EvalQuestionUpdate,
                          current_user: dict = Depends(require_owner)):
     from app.models import EvalQuestion
     with get_session() as db:
         row = db.query(EvalQuestion).filter(EvalQuestion.id == question_id).first()
         if not row:
             raise HTTPException(status_code=404, detail="Question not found")
+        # After the 404, so the answer for an id that names no question is
+        # unchanged: a level past what the column keeps raised at the write.
+        refusal = stored_number_refusal("as_level", body.as_level)
+        if refusal:
+            raise HTTPException(status_code=400, detail=refusal)
         if body.question is not None:
             row.question = body.question.strip()
         if body.category is not None:
@@ -175,7 +185,7 @@ def update_eval_question(question_id: int, body: EvalQuestionUpdate,
 
 
 @router.delete("/api/admin/evals/questions/{question_id}")
-def delete_eval_question(question_id: int, current_user: dict = Depends(require_owner)):
+def delete_eval_question(question_id: QuestionId, current_user: dict = Depends(require_owner)):
     from app.models import EvalQuestion
     with get_session() as db:
         row = db.query(EvalQuestion).filter(EvalQuestion.id == question_id).first()
@@ -256,7 +266,10 @@ def run_evals(body: EvalRunRequest, current_user: dict = Depends(require_owner))
                 judge_model=judge_model)
     with get_session() as db:
         if body.question_ids:
-            rows = db.query(EvalQuestion).filter(EvalQuestion.id.in_(body.question_ids)).all()
+            # An id past what the table keeps names no question (row_id): it
+            # selects nothing, where it used to raise in the query.
+            wanted = [row_id(i) for i in body.question_ids]
+            rows = db.query(EvalQuestion).filter(EvalQuestion.id.in_(wanted)).all()
         else:
             rows = db.query(EvalQuestion).order_by(EvalQuestion.category, EvalQuestion.id).all()
         if not rows:
@@ -458,12 +471,15 @@ def get_eval_run(run_id: str, current_user: dict = Depends(require_owner)):
 
 
 @router.patch("/api/admin/evals/results/{result_id}")
-def score_eval_result(result_id: int, body: EvalScoreUpdate, current_user: dict = Depends(require_owner)):
+def score_eval_result(result_id: ResultId, body: EvalScoreUpdate, current_user: dict = Depends(require_owner)):
     from app.models import EvalResult
     with get_session() as db:
         row = db.query(EvalResult).filter(EvalResult.id == result_id).first()
         if not row:
             raise HTTPException(status_code=404, detail="Result not found")
+        refusal = stored_number_refusal("score", body.score)   # raised at the write
+        if refusal:
+            raise HTTPException(status_code=400, detail=refusal)
         row.score = body.score
         return {"id": row.id, "score": row.score}
 @router.get("/api/admin/evals/recall")

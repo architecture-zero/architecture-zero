@@ -219,6 +219,19 @@ unlock does, so the Owner-only rule and the no-usable-password rule apply
 to a deactivated row as to an active one; the role change keeps answering
 404 for an account that is not active.
 
+No route answers a server error for an id it cannot use or a body field of
+the wrong type. Every whole-number id a path carries - a user, a session's
+token, an evaluation question, a result, a quarantined item - reaches its
+route through one guard (`jwt_auth.stored_row_id`), which hands on a number
+the database cannot hold as 0, an id no row has, so the route answers what
+it answers for an id that names nothing, in its own order. The few routes
+that take their JSON body without a schema read each text field through
+`jwt_auth.body_text`: the wrong type is a 400 that names the field, a
+string like the route's other refusals, and nothing is counted or written
+for it. A whole number in a body that a column cannot hold is refused by
+name the same way. A test walks the app's own route table with such ids
+and bodies, so a route added later is asked too.
+
 Password logins carry per-account lockout after repeated failures. TOTP
 two-factor is built in, and REQUIRE_MFA=true refuses password logins for
 un-enrolled accounts - checked AFTER password verification, deliberately,

@@ -128,6 +128,12 @@ def admin_get_config(current_user: dict = Depends(require_permission("manage_sys
     return get_all_config_masked()
 
 
+# The config keys that hold on/off: admin_set_config accepts exactly true/false
+# or a string for them, and stores "true" or "false".
+_BOOL_KEYS = ("allow_model_selection", "allow_rag_toggle", "default_rag_enabled",
+              "guest_mode_enabled")
+
+
 @router.patch("/api/admin/config")
 def admin_set_config(body: dict, current_user: dict = Depends(require_permission("manage_system"))):
     allowed = {"system_prompt", "instance_name", "primary_color", "suggestions",
@@ -169,6 +175,20 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
         raise HTTPException(
             status_code=400,
             detail=f"Unknown config key(s): {', '.join(unknown)}")
+    # Every key is stored as text. A key with a shape of its own is checked
+    # by name below (suggestions is a list, the on/off keys take true/false,
+    # the threshold a number); for every other key a list, an object or null
+    # is refused here, by name, before anything is written: the write loop
+    # stores str(value), so those were saved as their printed form - a null
+    # model name as the word "None". A number or true/false is still stored
+    # as its text, as it always was.
+    _shaped = {"suggestions", "rag_similarity_threshold"} | set(_BOOL_KEYS)
+    _not_text = sorted(k for k, v in body.items()
+                       if k not in _shaped and (v is None or isinstance(v, (list, dict))))
+    if _not_text:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{', '.join(_not_text)} must be text, not a list, an object or null")
     # Validated BEFORE the write loop (moved 2026-08-27): a mid-loop 400 left
     # every earlier key in the body already written and the audit line skipped -
     # a partial write reported as refused, the same lying-response class as the
@@ -246,8 +266,7 @@ def admin_set_config(body: dict, current_user: dict = Depends(require_permission
     # that still mis-parsed toward the permissive side. A mid-loop 400 would
     # re-open the partial-write class this endpoint was cured of on
     # 2026-08-27, which is why the refusal sits before the first write.
-    _bool_keys = ("allow_model_selection", "allow_rag_toggle", "default_rag_enabled",
-                  "guest_mode_enabled")
+    _bool_keys = _BOOL_KEYS
     _not_bool = sorted(k for k in _bool_keys
                        if k in body and not isinstance(body[k], (bool, str)))
     if _not_bool:

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 import bcrypt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Path, status
 from fastapi.security import HTTPBearer
 from jose import JWTError, jwt
 
@@ -589,13 +589,74 @@ def stored_text_refusal(what: str, text) -> str | None:
 _LARGEST_STORED_ID = 2 ** 63 - 1
 
 
+def row_id(number: int) -> int:
+    """`number` when a table can hold it as a row's id, else 0 - an id no row
+    has: ids start at 1 and are kept in 64 bits. Never raises."""
+    return number if 0 < number <= _LARGEST_STORED_ID else 0
+
+
 def stored_user_id(user_id: int) -> int:
     """The id from the path when the users table can hold it, else 0 - an id
     no account has. Never raises, so it changes no route's order."""
-    return user_id if 0 < user_id <= _LARGEST_STORED_ID else 0
+    return row_id(user_id)
 
 
 UserId = Annotated[int, Depends(stored_user_id)]
+
+
+# -- Every other row id from a route's path -----------------------------------
+# What holds for a user id holds for every other row a route reaches by a
+# whole number in its path - a session's token, an evaluation question, a
+# result, a quarantined item. A number outside what a table keeps reached the
+# database and raised there; it names no row, so it is handed on as 0, which
+# names none either, and the route answers what it answers for an id that
+# names nothing, in its own order. One guard, one name per kind of id. No
+# route declares a whole-number id from its path as a bare int: the routes
+# test reads that from the app's own route table.
+
+def stored_row_id(name: str):
+    """The guard for the id a route's path carries under `name`: a dependency
+    that hands the route row_id() of it."""
+    def stored(number: int = Path(alias=name)) -> int:
+        return row_id(number)
+    stored.guards_path_id = name
+    return stored
+
+
+TokenId = Annotated[int, Depends(stored_row_id("token_id"))]
+QuestionId = Annotated[int, Depends(stored_row_id("question_id"))]
+ResultId = Annotated[int, Depends(stored_row_id("result_id"))]
+QuarantineItemId = Annotated[int, Depends(stored_row_id("item_id"))]
+
+
+def stored_number_refusal(what: str, number) -> str | None:
+    """Why this whole number cannot be stored, or None. `what` names the
+    field for the caller who reads the refusal. One reason: a column keeps 64
+    bits, a JSON body can carry any whole number, and the write would raise
+    on one outside that. Anything that is not a whole number is not this
+    function's to judge."""
+    if (isinstance(number, int) and not isinstance(number, bool)
+            and not -_LARGEST_STORED_ID - 1 <= number <= _LARGEST_STORED_ID):
+        return f"{what} is out of range"
+    return None
+
+
+# -- A field of a body that has no schema -------------------------------------
+# A few routes take their JSON body as a plain object, so nothing has checked
+# a field's type before the handler reads it, and a string method called on
+# a number raised. A field that must be text is read through body_text: the
+# answer for anything else is a 400 that names the field - a string, like
+# the route's other refusals, never the list a schema's 422 carries.
+
+def body_text(body: dict, field: str, default: str = "") -> str:
+    """The text `body` carries under `field`; `default` when the field is
+    absent or null; a 400 naming the field when it holds anything else."""
+    value = body.get(field)
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail=f"{field} must be text")
+    return value
 
 
 def create_mfa_challenge_token(user_id: int) -> str:

@@ -15,7 +15,8 @@ from pydantic import BaseModel
 from app.feedback import save_feedback, get_feedback_summary
 from app.history import (get_analytics, list_sessions, upsert_session_meta,
                          get_session_meta, delete_session_meta)
-from app.jwt_auth import check_permission, get_current_user, require_permission
+from app.jwt_auth import (check_permission, get_current_user, require_permission,
+                          stored_number_refusal)
 from app.logger import log
 
 router = APIRouter()
@@ -31,6 +32,10 @@ class FeedbackRequest(BaseModel):
 def feedback(request: FeedbackRequest, current_user: dict = Depends(get_current_user)):
     if request.value not in (1, -1):
         raise HTTPException(status_code=400, detail="value must be 1 or -1")
+    # A turn number past what the column keeps raised at the write.
+    refusal = stored_number_refusal("turn_index", request.turn_index)
+    if refusal:
+        raise HTTPException(status_code=400, detail=refusal)
     # Authenticated is not the same as entitled. The session id arrives in the
     # request body, so without this any logged-in caller could rate any other
     # user's turns - not a content leak, but it poisons the aggregate the

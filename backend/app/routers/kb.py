@@ -40,7 +40,8 @@ from app.db import get_session
 from app.ingest_sync import (KNOWLEDGE_DIR, _sync_knowledge_dir, _sync_docs,
                              _prune_orphan_docs, _prune_orphan_knowledge,
                              _source_lock, _valid_knowledge_sources)
-from app.jwt_auth import require_any_permission, require_owner, require_permission
+from app.jwt_auth import (require_any_permission, require_owner, require_permission,
+                          QuarantineItemId)
 from app.logger import log, log_error
 from app.metrics import increment
 from app.pii import scan_pii, redact_pii
@@ -142,7 +143,7 @@ def admin_list_quarantine(status: str = "held",
 
 
 @router.post("/api/admin/kb/quarantine/{item_id}/release")
-def admin_release_quarantine(item_id: int,
+def admin_release_quarantine(item_id: QuarantineItemId,
                              current_user: dict = Depends(require_permission("manage_kb"))):
     """Owner override: re-ingest a held document into the corpus. The
     injection tag is PRESERVED (audit), only the withholding is waived
@@ -333,7 +334,7 @@ def admin_release_quarantine(item_id: int,
 
 
 @router.delete("/api/admin/kb/quarantine/{item_id}")
-def admin_delete_quarantine(item_id: int,
+def admin_delete_quarantine(item_id: QuarantineItemId,
                             current_user: dict = Depends(require_permission("manage_kb"))):
     """Discard held content - it was never indexed, so this just marks the
     review row deleted (the text is retained for audit unless purged). A row
