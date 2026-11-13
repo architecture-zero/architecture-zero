@@ -34,6 +34,7 @@ from app.database import (add_document, list_sources, delete_source,
                           list_departments, list_pii_sources, get_source_ids,
                           delete_documents, restamp_reused_chunks,
                           chunk_metadata, restore_chunk_metadata,
+                          get_rows, put_rows_back,
                           department_name_refusal)
 from app.db import get_session
 from app.ingest_sync import (KNOWLEDGE_DIR, _sync_knowledge_dir, _sync_docs,
@@ -198,7 +199,19 @@ def admin_release_quarantine(item_id: int,
         added_ids: list[str] = []
         reused_before: dict[str, dict] = {}
         rewritten: list[str] = []
+        pruning: list[str] = []
+        before: dict = {}
         try:
+            # Every row the release may write over or prune, read whole before
+            # anything is written: the rows at the release's own ids, whatever
+            # source holds them, and the source's own. A row of ANOTHER source
+            # at one of these ids (only a caller-chosen /api/ingest doc_id
+            # puts one there) is not in `existing`, so the diff below adds
+            # over it and the add replaces it whole; the rollback deletes the
+            # adds, and that row was then gone. The rollback puts back every
+            # row it deleted that stood here before, and every row the prune
+            # took.
+            before = get_rows(sorted(desired.keys() | existing), department)
             for doc_id, (i, chunk) in desired.items():
                 if doc_id in existing:
                     continue
@@ -223,7 +236,21 @@ def admin_release_quarantine(item_id: int,
                                   rewritten=rewritten)
             stale = sorted(existing - desired.keys())
             if stale:
+                pruning = stale
                 delete_documents(stale, department)
+            # Indexed. Only now is it released - still under the lock, so no
+            # upload can supersede the hold between the index write and this.
+            # Inside the try: a status write that fails is a failed release,
+            # rolled back below and answered with the fixed sentence. After
+            # the try, it left the held text indexed and the source's earlier
+            # rows pruned under an item that read held, and the caller got
+            # the store's own error.
+            with get_session() as db:
+                r = db.get(QuarantinedDoc, item_id)
+                if r:
+                    r.status = "released"
+                    r.reviewed_at = _dt.datetime.utcnow().isoformat()
+                    r.release_error = None
         except Exception as e:
             # Stay held and say why. A failed release that reports success is
             # the worst outcome here: the operator believes reviewed content is
@@ -251,6 +278,7 @@ def admin_release_quarantine(item_id: int,
             # deleted above, so it is not handed its old metadata back; a row
             # of the held text written whole for a key the release does not
             # write (2026-10-29) is handed it back like the others.
+            # The row of a caller's text is put back whole below.
             reused_before = {i: m for i, m in reused_before.items() if i not in rewritten}
             if reused_before:
                 try:
@@ -260,10 +288,31 @@ def admin_release_quarantine(item_id: int,
                         "quarantine release rollback FAILED for %s - %d reused chunks "
                         "may carry the release's metadata while the item reads held",
                         source, len(reused_before))
-            with get_session() as db:
-                r = db.get(QuarantinedDoc, item_id)
-                if r:
-                    r.release_error = f"{type(e).__name__}: {e}"[:300]
+            # And put back, whole, every row the deletes above took that
+            # stood here before the release - another source's row at one of
+            # its ids, a row of a caller's text at one - and every row the
+            # prune took. None of them holds the held text: each was read
+            # before anything was written.
+            gone = {i: before[i] for i in [*added_ids, *rewritten, *pruning] if i in before}
+            if gone:
+                try:
+                    put_rows_back(gone, department)
+                except Exception:
+                    logger.exception(
+                        "quarantine release rollback FAILED for %s - %d rows that "
+                        "stood before the release may be missing", source, len(gone))
+            # The failure is written on the item where it can be: a status
+            # write that failed above may fail here the same way, and the
+            # answer must still be the fixed sentence below.
+            try:
+                with get_session() as db:
+                    r = db.get(QuarantinedDoc, item_id)
+                    if r:
+                        r.release_error = f"{type(e).__name__}: {e}"[:300]
+            except Exception:
+                logger.exception(
+                    "quarantine release: the failure could not be written on item %s",
+                    item_id)
             # The caller gets the fixed sentence below, never the store's
             # words (file paths among them); the log gets those words bounded
             # to 300, the one rule for an internal error's detail (2026-10-30).
@@ -271,14 +320,6 @@ def admin_release_quarantine(item_id: int,
                       source=source, admin_id=current_user["id"], error=str(e)[:300])
             raise HTTPException(status_code=500,
                                 detail="Release failed; item remains held. See logs.")
-        # Indexed. Only now is it released - still under the lock, so no
-        # upload can supersede the hold between the index write and this.
-        with get_session() as db:
-            r = db.get(QuarantinedDoc, item_id)
-            if r:
-                r.status = "released"
-                r.reviewed_at = _dt.datetime.utcnow().isoformat()
-                r.release_error = None
     log("quarantine_released", quarantine_id=item_id, source=source,
         admin_id=current_user["id"], chunks=len(chunks))
     return {"status": "released", "source": source, "chunks": len(chunks)}

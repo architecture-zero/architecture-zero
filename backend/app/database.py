@@ -1011,6 +1011,65 @@ def restore_chunk_metadata(snapshot: dict[str, dict], department: str | None = N
     return len(ids)
 
 
+def get_rows(ids: list[str], department: str | None = None) -> dict[str, tuple[str | None, dict, object]]:
+    """The rows stored at ids, whole: id -> (text, metadata, vector); an id no
+    row holds is absent. Read in EMBED_BATCH_SIZE slices. The quarantine
+    release's read, before it writes anything, of every row it may write over
+    or prune - the rows at its own ids, whatever source holds them, and the
+    source's own - for put_rows_back to return if the release then fails."""
+    col = _existing_collection(department) if ids else None
+    if col is None:
+        return {}
+    out: dict[str, tuple[str | None, dict, object]] = {}
+    for start in range(0, len(ids), EMBED_BATCH_SIZE):
+        out.update(_rows_by_id(col.get(ids=ids[start:start + EMBED_BATCH_SIZE],
+                                       include=["documents", "metadatas", "embeddings"])))
+    return out
+
+
+def put_rows_back(rows: dict[str, tuple[str | None, dict, object]],
+                  department: str | None = None) -> int:
+    """Write rows read by get_rows back as they were: the text, every key of
+    the metadata and the stored vector (a row read without one is embedded
+    again). Not gated: each was stored, and gated, before.
+
+    Written first, deleted only where it must be: per slice, one upsert of
+    every row puts back its text, vector and every key it held, and no row is
+    ever absent. The store MERGES metadata on that upsert and its API refuses
+    None, so a row that held a key the restored row does not (read before
+    the upsert) still carries it; for those rows alone a delete and a second
+    write follow. Between that delete and that write such a row is absent,
+    and a write that fails there loses it: a key can leave a row only by the
+    row's delete, and the store's writes are not transactional. The earlier
+    text is already back by then. Returns the count written."""
+    if not rows:
+        return 0
+    col = _get_collection(department)
+    ids = list(rows)
+    for start in range(0, len(ids), EMBED_BATCH_SIZE):
+        sl = ids[start:start + EMBED_BATCH_SIZE]
+        vectors = []
+        for doc_id in sl:
+            vector = rows[doc_id][2]
+            if vector is None:
+                vectors.append(_embed(rows[doc_id][0]))
+            else:
+                vectors.append(vector.tolist() if hasattr(vector, "tolist") else list(vector))
+        held = col.get(ids=sl, include=["metadatas"])
+        wider = [doc_id for doc_id, meta in zip(held["ids"], held["metadatas"])
+                 if set(meta or {}) - set(rows[doc_id][1])]
+        col.upsert(ids=sl, embeddings=vectors, documents=[rows[i][0] for i in sl],
+                   metadatas=[rows[i][1] for i in sl])
+        if wider:
+            at = {doc_id: n for n, doc_id in enumerate(sl)}
+            col.delete(ids=wider)
+            col.upsert(ids=wider, embeddings=[vectors[at[i]] for i in wider],
+                       documents=[rows[i][0] for i in wider],
+                       metadatas=[rows[i][1] for i in wider])
+    _invalidate_lexical_index(col.name)
+    return len(ids)
+
+
 class RetrievalUnavailable(RuntimeError):
     """Retrieval is DOWN, not empty - an outage.
 

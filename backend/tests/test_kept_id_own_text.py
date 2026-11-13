@@ -280,8 +280,9 @@ def test_control_a_release_that_fails_after_its_restamp_leaves_no_held_text_live
     with a pre-written id among the ids the release reuses: the stale delete
     fails, the release answers 500 and stays held, and no row holds the held
     text. The row the release wrote whole is removed by the rollback rather
-    than handed back the caller's metadata over the held text (the caller's
-    own text was already replaced, and is not restored)."""
+    than handed back the caller's metadata over the held text, and the
+    caller's own row is then put back whole, as it stood before the release
+    (test_release_puts_back_what_it_took)."""
     from app.db import get_session
     from app.models import QuarantinedDoc
     from app.quarantine import write_quarantine_row
@@ -296,6 +297,7 @@ def test_control_a_release_that_fails_after_its_restamp_leaves_no_held_text_live
             metadatas=[{"source": NAME, "chunk": 1, "trust": "untrusted"}],
             embeddings=[EMBEDDING])
     _caller_writes_first(client, admin_headers, _cid(chunk))
+    callers = _rows(gen, ids=[_cid(chunk)])[_cid(chunk)]
     real_delete = kb.delete_documents
 
     def stale_delete_fails(ids, department=None):
@@ -314,6 +316,7 @@ def test_control_a_release_that_fails_after_its_restamp_leaves_no_held_text_live
         rows = _rows(gen, where={"source": NAME})
         assert all(d != chunk for d, _ in rows.values()), rows
         assert "older-chunk" in rows
+        assert rows.get(_cid(chunk)) == callers, "the caller's row was not put back"
     finally:
         with get_session() as db:
             row = db.get(QuarantinedDoc, qid)
