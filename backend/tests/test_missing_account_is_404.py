@@ -32,6 +32,9 @@ FIX (each fails on the routes as they were):
     deactivated account
   - every function with {user_id} in its route's path raises a 404 (read
     from the source)
+  - a session id that names no open session of the caller's (another
+    account's, one already revoked, none) is a 404 at the session revoke,
+    and nothing is revoked or logged
 CONTROL (true before and after, by design):
   - the caller's own checks still come first: no manage_users, and the
     department change below the top tier
@@ -403,3 +406,67 @@ def test_control_the_role_change_and_the_unlock_answer_404_as_they_did(client, a
         answer = _send(client, "POST", f"/api/admin/users/{user_id}/unlock", top["headers"],
                        {"current_password": PW})
         assert answer == (404, NO_SUCH_USER), answer
+
+
+# -- FIX: a session that does not exist is a 404 -------------------------------
+# DELETE /api/auth/sessions/{id} answered "session revoked", and logged a
+# revocation, for any id. An id that names no open session of the caller's -
+# another account's, one already revoked, or none at all - is a 404 now, and
+# nothing is revoked or logged.
+
+NO_SUCH_SESSION = {"detail": "No such session"}
+
+
+def _open_session(account):
+    """A refresh token stored for `account`; its raw value and its id."""
+    from app.jwt_auth import create_refresh_token, hash_token
+    from app.users import list_user_sessions, store_refresh_token
+    before = {s["id"] for s in list_user_sessions(account["id"])}
+    raw, expires = create_refresh_token(account["id"])
+    store_refresh_token(account["id"], hash_token(raw), expires)
+    (new,) = {s["id"] for s in list_user_sessions(account["id"])} - before
+    return raw, new
+
+
+def _revocations_logged(monkeypatch):
+    from app.routers import auth as auth_router
+    logged = []
+    real = auth_router.log
+
+    def log(event, **fields):
+        if event == "auth_revoke_session":
+            logged.append(fields.get("token_id"))
+        return real(event, **fields)
+
+    monkeypatch.setattr(auth_router, "log", log)
+    return logged
+
+
+def test_revoking_a_session_that_is_not_the_callers_open_one_is_a_404(client, accounts,
+                                                                    monkeypatch):
+    from app.users import list_user_sessions
+    me, other = accounts("member"), accounts("member")
+    _, mine = _open_session(me)
+    _, theirs = _open_session(other)
+    logged = _revocations_logged(monkeypatch)
+    for token_id in (theirs, theirs + 1_000_000, PAST_THE_RANGE):
+        answer = _send(client, "DELETE", f"/api/auth/sessions/{token_id}", me["headers"])
+        assert answer == (404, NO_SUCH_SESSION), (token_id, answer)
+    assert theirs in {s["id"] for s in list_user_sessions(other["id"])}, \
+        "another account's session was revoked"
+    answer = _send(client, "DELETE", f"/api/auth/sessions/{mine}", me["headers"])
+    assert answer == (200, {"status": "session revoked"}), answer
+    answer = _send(client, "DELETE", f"/api/auth/sessions/{mine}", me["headers"])
+    assert answer == (404, NO_SUCH_SESSION), answer
+    assert logged == [mine], logged
+
+
+def test_control_revoking_your_own_open_session_ends_it(client, accounts):
+    from app.users import list_user_sessions
+    me = accounts("member")
+    raw, mine = _open_session(me)
+    answer = _send(client, "DELETE", f"/api/auth/sessions/{mine}", me["headers"])
+    assert answer == (200, {"status": "session revoked"}), answer
+    assert mine not in {s["id"] for s in list_user_sessions(me["id"])}
+    r = client.post("/api/auth/refresh", headers={"Authorization": f"Bearer {raw}"})
+    assert r.status_code == 401, r.text

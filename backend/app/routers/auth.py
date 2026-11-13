@@ -481,8 +481,12 @@ def get_sessions(current_user: dict = Depends(get_current_user)):
 
 @router.delete("/api/auth/sessions/{token_id}")
 def revoke_session(token_id: TokenId, current_user: dict = Depends(get_current_user)):
-    """Revoke a specific session by its ID."""
-    revoke_refresh_token_by_id(token_id, current_user["id"])
+    """Revoke one of the caller's own sessions by its ID. An id that names no
+    open session of the caller's - another account's, one already revoked,
+    or none at all - is a 404, and nothing is revoked or logged: this used to
+    answer "session revoked" and log a revocation for any id."""
+    if not revoke_refresh_token_by_id(token_id, current_user["id"]):
+        raise HTTPException(status_code=404, detail="No such session")
     log("auth_revoke_session", user_id=current_user["id"], token_id=token_id)
     return {"status": "session revoked"}
 

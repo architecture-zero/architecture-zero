@@ -335,6 +335,10 @@ Since v0.1.x, for a script or a client of your own:
   database cannot hold, on a route that does not refuse it in its own words,
   answers 400 "A number in the request is out of range." rather than 500.
   The log line names the route as declared, never the number.
+- `DELETE /api/auth/sessions/{id}` answers 404 "No such session" for an id
+  that names no open session of the caller's (another account's, one
+  already revoked, or none), and revokes and logs nothing. It used to answer
+  "session revoked" for any id.
 - An authenticator code is accepted once per account, at whichever route
   it is sent: `POST /api/auth/mfa/complete`, the `mfa_code` of a re-key
   (`POST /api/auth/mfa/setup`) and of the caller's own unlock, and

@@ -444,7 +444,10 @@ def list_user_sessions(user_id: int) -> list[dict]:
         return [{"id": rt.id, "expires_at": rt.expires_at} for rt in rows]
 
 
-def revoke_refresh_token_by_id(token_id: int, user_id: int):
+def revoke_refresh_token_by_id(token_id: int, user_id: int) -> bool:
+    """Revoke one of `user_id`'s sessions. True when this call revoked one;
+    False when the id names no session of theirs that is still open - another
+    account's, one already revoked, or none - and nothing was changed."""
     # Look up the hash, flip the DB flag, THEN drop the cache entry - reads
     # consult the cache first and never re-check the DB revoked flag, so a
     # DB-only revoke here would leave a "signed-out" session valid until its
@@ -452,10 +455,11 @@ def revoke_refresh_token_by_id(token_id: int, user_id: int):
     from app.redis_client import get_redis
     with get_session() as db:
         rt = db.query(RefreshToken).filter(
-            RefreshToken.id == token_id, RefreshToken.user_id == user_id
+            RefreshToken.id == token_id, RefreshToken.user_id == user_id,
+            RefreshToken.revoked == False,  # noqa: E712
         ).first()
         if not rt:
-            return
+            return False
         token_hash = rt.token_hash
         rt.revoked = True
     r = get_redis()
@@ -464,3 +468,4 @@ def revoke_refresh_token_by_id(token_id: int, user_id: int):
             r.delete(_rt_redis_key(token_hash))
         except Exception as e:
             _redis_delete_failed("revoke_refresh_token_by_id", e)
+    return True
