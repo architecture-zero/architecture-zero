@@ -15,6 +15,10 @@ Design constraints:
 """
 import re
 
+from app.logger import get_logger
+
+log = get_logger("routing")
+
 # Signals that a question is about what happened / what was done / when -
 # past-work narrative rather than current fact. Month-year and ISO-date
 # mentions count: dated events live in the session log.
@@ -152,8 +156,7 @@ def is_followup(query: str) -> bool:
     # A follow-up is a few words, and a long message never is one. The
     # pattern's two whitespace runs around its punctuation went quadratic on
     # a long run of spaces (1.09 s at 24,000 characters; the chat bound lets a
-    # signed-in caller send 200,000), so the length is checked first
-    # (2026-09-30).
+    # signed-in caller send 200,000), so the length is checked first.
     if len(q) > FOLLOWUP_MAX_CHARS:
         return False
     return bool(_FOLLOWUP_RE.match(q))
@@ -190,20 +193,77 @@ def _last_topic_text(history) -> str:
 EXCHANGE_CLIP_CHARS = 400
 
 
+# What followup_shape has already said in the log. Each thing is said once per
+# process, not once per follow-up; the limit keeps a run of different mistyped
+# values from growing the set.
+_SHAPE_NOTICES: set = set()
+_SHAPE_NOTICE_LIMIT = 8
+
+
+def _note_once(what: str, message: str, *args) -> None:
+    if what in _SHAPE_NOTICES or len(_SHAPE_NOTICES) >= _SHAPE_NOTICE_LIMIT:
+        return
+    _SHAPE_NOTICES.add(what)
+    log.warning(message, *args)
+
+
+def _rerank_query_can_reach_a_vendor() -> str:
+    """Why a rerank query from this instance could go to a hosted vendor, or
+    '' when it cannot: the provider in effect is the hosted one and nothing
+    closes it (the host latch, the vendor's name, its key). These are the
+    reranker's own two answers - the ones its scorer asks before it sends
+    anything - not a second reading of the settings. An answer that cannot be
+    read counts as yes, and says so: the caller then keeps answer text out of
+    the query."""
+    try:
+        from app import rerank
+        if rerank.rerank_provider() == "hosted-api" and rerank._hosted_unavailable() is None:
+            return "the hosted rerank provider is in effect"
+        return ""
+    except Exception as e:
+        return "the rerank provider could not be read (%s)" % type(e).__name__
+
+
 def followup_shape() -> str:
     """How a bare follow-up becomes a retrieval query. 'topic' (the default)
     re-attaches the last substantive user turn. 'exchange' also carries the
     start of the last assistant turn, which names the subject in the corpus's
     own vocabulary where the user's question often does not. Config key
     `followup_resolver`, read per call so an A/B arm or an operator flips it
-    without a restart; unset, blank or any other value reads as 'topic', and
-    so does a config store that cannot be read."""
+    without a restart. Unset, blank and `topic` read as 'topic', and so does a
+    config store that cannot be read. Any other value that is not `exchange`
+    also reads as 'topic' and says so once in the log: a mistyped value must
+    not measure one shape under the other's name.
+
+    The start of an answer never rides a query that can reach a hosted
+    vendor. The retrieval query is what the reranker is sent, an answer can be
+    written from any collection the caller may read, and the rule that keeps
+    non-public collections off the vendor reads the candidates, not the
+    query. So while the hosted rerank provider is the one in effect, the key's
+    `exchange` is refused and the shape is 'topic' on every turn (said once in
+    the log). The decision is made here, before retrieval, so it cannot
+    depend on what a turn retrieves. The local model and a scoring endpoint
+    on the operator's own hardware leave the shape available."""
     try:
         from app.config import get_config
         v = (get_config("followup_resolver", "") or "").strip().lower()
     except Exception:
         v = ""
-    return "exchange" if v == "exchange" else "topic"
+    if v in ("", "topic"):
+        return "topic"
+    if v != "exchange":
+        _note_once("unrecognised " + v[:60],
+                   "unrecognised followup_resolver %r (expected topic or exchange) - "
+                   "using 'topic'", v[:60])
+        return "topic"
+    vendor = _rerank_query_can_reach_a_vendor()
+    if vendor:
+        _note_once("refused: " + vendor,
+                   "followup_resolver=exchange is not applied: %s, and the start of an "
+                   "answer never rides a query that can reach a vendor - using 'topic'",
+                   vendor)
+        return "topic"
+    return "exchange"
 
 
 def _last_assistant_text(history) -> str:
@@ -237,7 +297,8 @@ def resolve_followup(query: str, history=None) -> str:
         return query
     status_frame = bool(_STATUS_FOLLOWUP_RE.match(query)) and is_status_topic(topic)
     # The shape is read only here, on a turn the branch can act on: one config
-    # read on a bare follow-up, none on any other chat question.
+    # read on a bare follow-up while the key is unset, none on any other chat
+    # question.
     if followup_shape() == "exchange":
         answer = _last_assistant_text(history)
         if answer:

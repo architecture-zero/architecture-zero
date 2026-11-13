@@ -126,10 +126,6 @@ Even with the latch set, the hosted reranker only ever receives text from
 the "general" department (the shared floor). When the passages for a
 question include any other department's documents, a help page or a peer's
 answer, none of that question's passages is sent: it is ranked on the
-instance's own reranking model instead. The question itself is sent with
-the passages. One optional setting changes what the question carries: the
-`exchange` follow-up shape (off unless an operator sets it - see "Running
-an evaluation" in docs/runbook.md) adds the start of the previous answer to
-a bare follow-up's retrieval query, and that answer may have drawn on any
-department. Leave it off with a hosted reranker on an instance that holds
-more than the "general" department.
+instance's own reranking model instead. When passages are sent, the
+question is sent with them; the instance never adds text from its own
+answers to what a hosted reranker receives.

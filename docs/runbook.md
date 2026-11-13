@@ -839,21 +839,28 @@ real question and the follow-up attached. That is the `topic` shape, the
 default. The `exchange` shape also puts the start of the last answer (its
 first 400 characters, whitespace collapsed) between the two, so the query
 names the subject in the corpus's own words. The config key is
-`followup_resolver`: `exchange` turns it on; unset, blank or any other value
-is `topic`. Only the retrieval query changes, and only on a turn that is a
-bare follow-up - the model and the saved conversation keep the user's words.
-The chat and the evaluation runner read the key per call, so no restart is
-needed. It is a config row, not an admin-tab setting:
+`followup_resolver`: `exchange` turns it on; unset, blank or `topic` is the
+`topic` shape, and so is any other value, which the backend log names once so
+a mistyped value is not mistaken for the shape it was meant to be. Only the
+retrieval query changes, and only on a turn that is a bare follow-up - the
+model and the saved conversation keep the user's words. The chat and the
+evaluation runner read the key per call, so no restart is needed. It is a
+config row, not an admin-tab setting:
 
     docker compose exec backend python -c "from app.config import set_config; set_config('followup_resolver', 'exchange')"
 
-Measure it on your own multi-turn questions before you keep it: a
-retrieval-only run with the key unset, then one with it set, on the same
-corpus. One thing to know first: the query is what the reranker is sent. With
-`rerank_provider=hosted-api` the start of the previous answer goes to that
-vendor inside the query, and the rule that keeps non-public collections off
-the vendor reads the candidates, not the query - so on an instance that holds
-a non-public collection, run this shape with a local or self-hosted reranker.
+**The `exchange` shape is not available while a hosted reranker is in
+use.** The retrieval query is what the reranker is sent, and an answer can be
+written from any department the person asking may read, so its opening words
+must not travel to a third party inside a query. While
+`rerank_provider=hosted-api` is in effect - the provider is set, the host
+latch is open and the vendor's key is present - the key's `exchange` is
+refused and every follow-up takes the `topic` shape; the backend log says so
+once (`followup_resolver=exchange is not applied`). The local model and
+`rerank_provider=remote-http`, a scoring endpoint on your own hardware, leave
+the shape available. Measure it on your own multi-turn questions before you
+keep it: a retrieval-only run with the key unset, then one with it set, on
+the same corpus.
 
 Growing the locked holdout: `backend/scripts/author_holdout.py` has an OUTSIDE
 model read corpus files and draft questions plus grading keys for them, spread

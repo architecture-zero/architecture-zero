@@ -28,6 +28,15 @@ follow-up's query carries the first 400 characters of the last assistant turn,
 whitespace-collapsed, between the topic and the follow-up; the status frame is
 still decided on the user's topic alone; every other turn is unchanged; and the
 model and the saved history still receive the user's real words.
+
+THE HOSTED RERANKER (the last section). The retrieval query is what the
+reranker is sent, so the start of an answer never rides a query that can
+reach a hosted vendor: while the hosted rerank provider is the one in effect,
+`exchange` is refused and every query resolves as the topic shape - through
+the function, the chat and the evaluation replay - and the vendor's stand-in
+is handed nothing of the answer. The refusal is said once in the log, and so
+is a value of the key that is not recognised. With the local model, or a
+scoring endpoint on the operator's own hardware, the shape stays available.
 """
 import importlib.util
 import json
@@ -461,3 +470,249 @@ def test_exchange_reaches_the_evaluation_replay(client, monkeypatch, key):
         if i == 5:   # chained follow-ups: a bare token with an answer to carry
             want = f"{USER} Here is where it stands today. - more"
         assert got[i] == want, i
+
+
+# -- The exchange shape and a hosted reranker ---------------------------------
+# FIX cases fail on the commit that added the shape, where `exchange` was
+# applied whatever the reranker was; CONTROL cases pass on both.
+
+SCORER_URL = "http://scorer.invalid/rerank"
+
+
+class _Scorer:
+    """Stands in for requests.post inside the reranker and records every call:
+    the hosted vendor's contract ({query, documents} -> results) and the
+    self-hosted endpoint's ({query, texts} -> scores)."""
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, url, **kw):
+        body = kw.get("json") or {}
+        self.calls.append({"url": url, "json": body})
+        texts = body.get("documents", body.get("texts", []))
+
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"results": [{"index": i, "relevance_score": 1.0 - i / 10}
+                                    for i in range(len(texts))],
+                        "scores": [1.0 - i / 10 for i in range(len(texts))]}
+        return _Resp()
+
+
+class _LocalModel:
+    """The local cross-encoder, stood in for; records the queries it scores."""
+    def __init__(self):
+        self.queries = []
+
+    def rerank(self, query, docs):
+        self.queries.append(query)
+        return [float(len(d)) for d in docs]
+
+
+def _reranker(monkeypatch, provider, *, latch=True, vendor_key="test-key", vendor=None):
+    """The reranker set the way a deployer sets it - the provider key, the host
+    latch and the vendor's key - with the vendor's endpoint, the self-hosted
+    endpoint and the local model stood in for. The reranker's own decision
+    functions run for real. Returns (the endpoint stand-in, the local one)."""
+    import app.rag_config as rc
+    import app.rerank as rr
+    cfg = {"rerank_enabled": "true", "rerank_provider": provider,
+           "rerank_remote_url": SCORER_URL}
+    if vendor:
+        cfg["rerank_hosted_vendor"] = vendor
+    monkeypatch.setattr(rr, "_cfg", lambda k, d: cfg.get(k, d))
+    monkeypatch.setattr(rc, "RERANK_HOSTED_ALLOWED", latch)
+    if vendor_key:
+        monkeypatch.setenv("COHERE_API_KEY", vendor_key)
+    else:
+        monkeypatch.delenv("COHERE_API_KEY", raising=False)
+    scorer, local = _Scorer(), _LocalModel()
+    monkeypatch.setattr(rr, "requests", type("Requests", (), {"post": scorer}))
+    monkeypatch.setattr(rr, "_get_encoder", lambda model=None: local)
+    return scorer, local
+
+
+@pytest.fixture(autouse=True)
+def _nothing_said_yet():
+    """The shape reader says each thing once per process; every test here
+    starts and ends with nothing said."""
+    import app.routing as routing
+    notices = getattr(routing, "_SHAPE_NOTICES", None)
+    if notices is not None:
+        notices.clear()
+    yield
+    if notices is not None:
+        notices.clear()
+
+
+@pytest.fixture
+def routing_lines():
+    """Every line the routing module logs during the test, in order. Its
+    logger does not propagate, so the test hangs a handler of its own on it
+    for the length of the test."""
+    import logging
+    import app.routing  # noqa: F401 - its logger is set up before ours is added
+    lines = []
+
+    class _Lines(logging.Handler):
+        def emit(self, record):
+            lines.append(record.getMessage())
+    logger, handler = logging.getLogger("routing"), _Lines(level=logging.DEBUG)
+    logger.addHandler(handler)
+    yield lines
+    logger.removeHandler(handler)
+
+
+def _pool():
+    from app.database import GLOBAL_COLLECTION
+    return [{"text": "Stage the files in a folder before the import.", "source": "docs/a.md",
+             "score": 0.9, "collection": GLOBAL_COLLECTION},
+            {"text": "The import embeds each chunk.", "source": "docs/b.md",
+             "score": 0.8, "collection": GLOBAL_COLLECTION}]
+
+
+def _chat_turn_through_the_reranker(client, admin_headers, monkeypatch, prompt, history):
+    """One chat turn with retrieval's own pipeline running: the store hands
+    back a small public pool and the reranker - whichever one the settings
+    name - is asked to rank it. Only the model is stubbed."""
+    monkeypatch.setattr("app.database.query_similar", lambda query, **kw: _pool())
+
+    def _stream(messages, model, tools=None, system_prompt="", max_tokens=1024):
+        yield {"type": "text", "text": "ok"}
+
+    with patch("app.routers.chat.stream_chat_events", side_effect=_stream), \
+         patch("app.routers.chat.save_message", side_effect=lambda *a, **k: None):
+        r = client.post("/api/chat", headers=admin_headers, json={
+            "prompt": prompt, "model": "test-model", "use_rag": True,
+            "session_id": "followup-hosted", "history": history})
+    assert r.status_code == 200, r.text
+
+
+# FIX
+def test_with_a_hosted_reranker_exchange_resolves_as_the_topic_shape(client, monkeypatch, key):
+    key("exchange")
+    _reranker(monkeypatch, "hosted-api")
+    compared = 0
+    for name, history in HISTORIES.items():
+        for query in QUERIES:
+            assert _live(query, history) == BEFORE.resolve_followup(query, history), (name, query)
+            compared += 1
+    assert compared == 168
+
+
+# FIX
+def test_with_a_hosted_reranker_the_chat_and_the_replay_retrieve_as_the_topic_shape(
+        client, admin_headers, monkeypatch, key):
+    key("exchange")
+    _reranker(monkeypatch, "hosted-api")
+    for prompt, name in CHAT_ROWS:
+        history = HISTORIES[name]
+        got = _chat_retrieval_query(client, admin_headers, prompt, history)
+        assert got == BEFORE.resolve_followup(prompt, history), (prompt, name)
+    got = _replay_retrieval_queries(monkeypatch, "followup-hosted-replay", REPLAY_ROWS)
+    assert got == [BEFORE.resolve_followup(q, setup) if setup else q for q, setup in REPLAY_ROWS]
+
+
+# FIX
+def test_nothing_of_the_answer_reaches_the_hosted_reranker(client, admin_headers,
+                                                           monkeypatch, key):
+    """One chat turn with the hosted path stubbed at its request: the vendor is
+    really asked, and what it is handed is the topic-shape query."""
+    key("exchange")
+    scorer, local = _reranker(monkeypatch, "hosted-api")
+    history = HISTORIES["a 5,000-character answer"]
+    _chat_turn_through_the_reranker(client, admin_headers, monkeypatch, "explain", history)
+    assert len(scorer.calls) == 1 and local.queries == []
+    call = scorer.calls[0]
+    assert call["url"] == "https://api.cohere.com/v2/rerank"
+    assert call["json"]["documents"] == [c["text"] for c in _pool()]
+    assert call["json"]["query"] == f"{USER} - explain"
+    for piece in ("three stages", "chunked", "embedded", "staged"):
+        assert piece not in call["json"]["query"]
+
+
+# FIX
+def test_the_refusal_is_said_once_in_the_log_and_names_no_text(client, monkeypatch,
+                                                              routing_lines, key):
+    key("exchange")
+    _reranker(monkeypatch, "hosted-api")
+    for _ in range(3):
+        assert _live("explain", HISTORIES["user and answer"]) == f"{USER} - explain"
+    lines = list(routing_lines)
+    assert len(lines) == 1, lines
+    assert KEY in lines[0] and "hosted" in lines[0] and "topic" in lines[0]
+    assert USER not in lines[0] and ANSWER not in lines[0] and "explain" not in lines[0]
+
+
+# FIX
+def test_a_value_that_is_not_recognised_is_said_once_in_the_log(client, monkeypatch,
+                                                               routing_lines, key):
+    """A mistyped value still reads as the topic shape, and now says so - once
+    for each value - so an arm set to it is not measured under its label."""
+    for value in ("", "topic", "TOPIC "):
+        key(value)
+        _live("explain", HISTORIES["user and answer"])
+    assert routing_lines == []
+    key("exhcange")
+    for _ in range(3):
+        assert _live("explain", HISTORIES["user and answer"]) == f"{USER} - explain"
+    lines = list(routing_lines)
+    assert len(lines) == 1 and KEY in lines[0] and "exhcange" in lines[0], lines
+    key("bogus")
+    _live("explain", HISTORIES["user and answer"])
+    _live("explain", HISTORIES["user and answer"])
+    lines = list(routing_lines)
+    assert len(lines) == 2 and "bogus" in lines[1], lines
+    assert all(USER not in ln and ANSWER not in ln for ln in lines)
+
+
+# FIX
+def test_a_reranker_decision_that_cannot_be_read_gives_the_topic_shape(client, monkeypatch,
+                                                                      routing_lines, key):
+    """Fail closed, and say which thing happened: the line names the unreadable
+    decision, not a hosted provider nobody configured."""
+    import app.rerank as rr
+    key("exchange")
+
+    def _unreadable():
+        raise RuntimeError("no such table")
+    monkeypatch.setattr(rr, "rerank_provider", _unreadable)
+    for _ in range(2):
+        assert _live("explain", HISTORIES["user and answer"]) == f"{USER} - explain"
+    lines = list(routing_lines)
+    assert len(lines) == 1, lines
+    assert KEY in lines[0] and "could not be read (RuntimeError)" in lines[0]
+    assert "no such table" not in lines[0] and "is in effect" not in lines[0]
+
+
+# CONTROL
+@pytest.mark.parametrize("setting", [
+    {"provider": "local"},
+    {"provider": "remote-http"},
+    {"provider": "hosted-api", "latch": False},
+    {"provider": "hosted-api", "vendor_key": None},
+    {"provider": "hosted-api", "vendor": "nobody"},
+], ids=["local", "self-hosted endpoint", "hosted but latched off", "hosted with no key",
+        "hosted with an unknown vendor"])
+def test_exchange_stays_available_when_no_rerank_query_can_reach_a_vendor(
+        client, monkeypatch, key, setting):
+    key("exchange")
+    _reranker(monkeypatch, **setting)
+    assert _live("explain", HISTORIES["user and answer"]) == f"{USER} {ANSWER} - explain"
+
+
+# CONTROL
+def test_with_the_local_model_or_a_self_hosted_endpoint_the_exchange_query_stays_off_the_vendor(
+        client, admin_headers, monkeypatch, key):
+    key("exchange")
+    history = HISTORIES["user and answer"]
+    scorer, local = _reranker(monkeypatch, "local")
+    _chat_turn_through_the_reranker(client, admin_headers, monkeypatch, "explain", history)
+    assert scorer.calls == [] and local.queries == [f"{USER} {ANSWER} - explain"]
+    scorer, local = _reranker(monkeypatch, "remote-http")
+    _chat_turn_through_the_reranker(client, admin_headers, monkeypatch, "explain", history)
+    assert [c["url"] for c in scorer.calls] == [SCORER_URL] and local.queries == []
+    assert scorer.calls[0]["json"]["query"] == f"{USER} {ANSWER} - explain"
