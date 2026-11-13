@@ -50,7 +50,8 @@ from app.users import (create_user, get_user_by_id, lock_user,
 BACKEND = Path(__file__).resolve().parents[1]
 APP = BACKEND / "app"
 REPO = BACKEND.parent
-HOME = "routers/auth.py"            # the one module that may name the flag
+HOME = "routers/auth.py"            # the one module that may read the flag
+TABLE = "env_flags.py"              # the on/off table: the flag is one of its rows
 
 ON = ["true", "TRUE", "True", "tRuE"]
 OFF = ["false", "FALSE", "False", ""]
@@ -239,8 +240,15 @@ def test_no_other_module_under_app_names_the_flag():
     """CONTROL. The string, not just the read: a comment that names the flag
     in a second module is where a second reader starts. A module that needs
     the state asks the auth router; the boot's line does (main calls
-    log_require_mfa and never touches the name)."""
-    assert _files_naming_the_flag(APP) == [HOME]
+    log_require_mfa and never touches the name).
+
+    Re-pointed when the strict read became every on/off setting's: the flag
+    is now a row of the table in app/env_flags.py, which does the reading for
+    the router, so the table is the second file that names it and the only
+    one allowed to. It answers no caller - the router is still the one module
+    that asks it for this row (tests/test_env_flags_strict.py pins that no
+    other module reads a row's variable for itself)."""
+    assert _files_naming_the_flag(APP) == [TABLE, HOME]
 
 
 def test_the_scan_can_see_a_second_module(tmp_path):

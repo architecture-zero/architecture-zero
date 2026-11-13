@@ -8,9 +8,10 @@ from urllib.parse import urlparse
 from fastapi import HTTPException, Request
 
 from app import state_store
+from app.env_flags import flag
 
 # ── Rate limiting ─────────────────────────────────────────────────────────────
-ENABLE_RATE_LIMIT    = os.getenv("ENABLE_RATE_LIMIT",    "false").lower() == "true"
+ENABLE_RATE_LIMIT    = flag("ENABLE_RATE_LIMIT")
 RATE_LIMIT_REQUESTS  = int(os.getenv("RATE_LIMIT_REQUESTS", "20"))
 RATE_LIMIT_WINDOW    = int(os.getenv("RATE_LIMIT_WINDOW",   "60"))   # seconds
 
@@ -640,7 +641,7 @@ def check_daily_guest_budget(limit: int) -> None:
 
 
 # ── Prompt injection detection ────────────────────────────────────────────────
-ENABLE_INJECTION_PROTECTION = os.getenv("ENABLE_INJECTION_PROTECTION", "true").lower() == "true"
+ENABLE_INJECTION_PROTECTION = flag("ENABLE_INJECTION_PROTECTION")
 
 _INJECTION_PATTERNS = [
     re.compile(r, re.IGNORECASE) for r in [

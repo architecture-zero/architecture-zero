@@ -20,13 +20,14 @@ from jose import JWTError, jwt
 
 from app.permissions import effective_permissions, is_owner, STEP_UP_SCOPES
 from app.users import get_user_by_id, get_user_by_username
+from app.env_flags import flag
 
 # Password policy. Applies to NEW passwords only (validated at setup, user
 # creation, and password change - never at login), so tightening it can not
 # lock an existing account out.
 MIN_PASSWORD_LENGTH   = int(os.getenv("MIN_PASSWORD_LENGTH", "12"))
-REQUIRE_SPECIAL_CHARS = os.getenv("REQUIRE_SPECIAL_CHARS", "true").lower() == "true"
-REQUIRE_UPPERCASE     = os.getenv("REQUIRE_UPPERCASE", "true").lower() == "true"
+REQUIRE_SPECIAL_CHARS = flag("REQUIRE_SPECIAL_CHARS")
+REQUIRE_UPPERCASE     = flag("REQUIRE_UPPERCASE")
 
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-me-before-deploying")
 ALGORITHM = "HS256"

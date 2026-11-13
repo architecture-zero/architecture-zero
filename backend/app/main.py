@@ -1,8 +1,8 @@
 """Application assembly.
 
 After the router split this file builds the app and nothing else: middleware,
-the ten include_router calls, the boot-time side effects, and the six lifecycle
-hooks. No routes, no models, no handlers, no business logic.
+the ten include_router calls, the boot-time side effects, and the seven
+lifecycle hooks. No routes, no models, no handlers, no business logic.
 
 Direction is one-way and enforced by tests/test_module_hygiene.py: main imports
 routers and the shared modules; nothing under app/ imports main.
@@ -33,6 +33,7 @@ from app.eval_runner import sync_eval_questions_from_seed
 # evals router sees the rebind. A from-import would snapshot False forever.
 from app import runtime_config
 from app.runtime_config import _all_origins, _allow_all, ENABLE_AUDIT_LOG, MAX_JSON_BODY_BYTES
+from app.env_flags import flag, states as on_off_states
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ logging.basicConfig(
 
 # API docs UI (/docs, /redoc, /openapi.json) is OFF by default - it publishes
 # the full API surface. Enable only in local dev with ENABLE_API_DOCS=true.
-_API_DOCS = os.getenv("ENABLE_API_DOCS", "false").lower() == "true"
+_API_DOCS = flag("ENABLE_API_DOCS")
 app = FastAPI(
     title="Architecture Zero API",
     version="1.0",
@@ -246,6 +247,34 @@ async def _require_mfa_on_startup():
 
 
 @app.on_event("startup")
+async def _on_off_settings_on_startup():
+    """One line per boot naming every on/off setting the host's environment
+    carries and which way each was read: `on_off_settings`, with one field
+    per row of app/env_flags.py - the variable's name, and the word on or
+    off.
+
+    Each of those settings is read by one rule (the word true, the word
+    false, unset or empty for the row's default, and a refusal to start for
+    anything else), so this hook only runs on a boot where every value was
+    recognised. What the line adds is the answer an operator otherwise has to
+    work out from an env file and a table of defaults: what this process is
+    running with, the rows nobody set included. A setting that is silent
+    when it is off cannot be told apart from one that was never read.
+
+    The words on and off and never a value. A log line and nothing else: no
+    route answers with this list. It is the ENVIRONMENT's reading - where a
+    row is only the default of a setting an admin can save (the provider
+    switches), the saved setting governs and the admin panel shows it.
+    """
+    try:
+        log("on_off_settings", **on_off_states())
+    except Exception as e:
+        # Never take the boot down over a log line: every row was already
+        # read where it is used. The refusal's own text never carries a value.
+        log_error("on_off_settings_line_crashed", error=f"{type(e).__name__}: {e}"[:300])
+
+
+@app.on_event("startup")
 async def _system_prompt_divergence_on_startup():
     """Report a persona that the 2026-08-27 DB-first change moved.
 
@@ -284,10 +313,12 @@ async def _system_prompt_divergence_on_startup():
 # 2026-10-29): the session TestClient's startup ran those prunes in executor
 # threads WHILE a test held their seams monkeypatched, so the admin prune's dry
 # run could see the boot thread's delete. Read at startup, not at import, so a
-# test that needs the boot sync opts in with monkeypatch.setenv. Anything but
-# "false" keeps it on: unset or mistyped boots as production always has.
+# test that needs the boot sync opts in with monkeypatch.setenv. Read by the
+# one rule of app/env_flags.py: unset or empty keeps it on, as production
+# always has booted, and a value that is neither `true` nor `false` refuses
+# to start where it used to be read as on.
 def _boot_sync_enabled() -> bool:
-    return os.getenv("BOOT_BACKGROUND_SYNC", "true").strip().lower() != "false"
+    return flag("BOOT_BACKGROUND_SYNC")
 
 
 @app.on_event("startup")

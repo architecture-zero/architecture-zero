@@ -56,8 +56,9 @@ import re
 import threading
 import uuid
 from datetime import datetime, timezone
+from app.env_flags import flag
 
-ENABLE_ASYNC_JOBS = os.getenv("ENABLE_ASYNC_JOBS", "false").lower() == "true"
+ENABLE_ASYNC_JOBS = flag("ENABLE_ASYNC_JOBS")
 # Pending documents held in memory at once, each up to the upload handler's
 # MAX_UPLOAD_MB of extracted text. Past this, dispatch refuses and the caller
 # ingests synchronously or retries - a queue that accepts everything is just a

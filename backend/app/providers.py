@@ -6,15 +6,17 @@ from urllib.parse import urlparse
 import requests as req
 
 from app import model_catalog
+from app.env_flags import flag, stated
 
 logger = logging.getLogger(__name__)
 
 # Multi-provider support - enable any combination via ENABLE_* flags.
 # Backward compat: if PROVIDER is set (and ENABLE_* are not), derive from it.
-_legacy        = os.getenv("PROVIDER", "ollama").lower()
-ENABLE_OLLAMA     = os.getenv("ENABLE_OLLAMA",     "true"  if _legacy == "ollama"    else "false").lower() == "true"
-ENABLE_ANTHROPIC  = os.getenv("ENABLE_ANTHROPIC",  "true"  if _legacy == "anthropic" else "false").lower() == "true"
-ENABLE_OPENAI     = os.getenv("ENABLE_OPENAI",     "true"  if _legacy == "openai"    else "false").lower() == "true"
+# That derived default lives with the rows, in app/env_flags.py: each switch
+# left unset or empty is on when PROVIDER names its provider.
+ENABLE_OLLAMA     = flag("ENABLE_OLLAMA")
+ENABLE_ANTHROPIC  = flag("ENABLE_ANTHROPIC")
+ENABLE_OPENAI     = flag("ENABLE_OPENAI")
 
 OLLAMA_BASE          = os.getenv("OLLAMA_BASE", "http://host.docker.internal:11434")
 # Context window for every Ollama request - see _ollama_options (Ollama's own
@@ -55,6 +57,10 @@ def _get_runtime(db_key: str, env_key: str, default: str = "") -> str:
 
 
 def _get_runtime_bool(db_key: str, env_key: str, env_default: str = "false") -> bool:
+    """A stored on/off setting whose default is an environment switch: the
+    stored row when an admin has saved one, else what the host wrote for
+    `env_key` (a row of app/env_flags.py, read by its one rule), else
+    `env_default`. Called per request."""
     try:
         from app.config import get_config
         val = get_config(db_key, "")
@@ -62,7 +68,8 @@ def _get_runtime_bool(db_key: str, env_key: str, env_default: str = "false") -> 
             return val.lower() == "true"
     except Exception:
         pass
-    return os.getenv(env_key, env_default).lower() == "true"
+    said = stated(env_key)
+    return (env_default == "true") if said is None else said
 
 
 # -- OpenAI-compatible provider registry -------------------------------------

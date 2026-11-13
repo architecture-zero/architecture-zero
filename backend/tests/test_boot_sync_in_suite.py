@@ -42,14 +42,29 @@ def test_the_suite_client_started_no_boot_sync_and_no_watcher(client):
 
 
 @pytest.mark.parametrize("value, on", [
-    (None, True), ("true", True), ("TRUE", True), ("off", True), ("0", True),
-    ("flase", True), ("false", False), ("  False ", False)])
+    (None, True), ("", True), ("true", True), ("TRUE", True),
+    ("false", False), ("False", False)])
 def test_the_switch_is_on_unless_set_to_false(monkeypatch, value, on):
     if value is None:
         monkeypatch.delenv("BOOT_BACKGROUND_SYNC", raising=False)
     else:
         monkeypatch.setenv("BOOT_BACKGROUND_SYNC", value)
     assert main._boot_sync_enabled() is on
+
+
+@pytest.mark.parametrize("value", ["off", "0", "flase", "  False "])
+def test_a_value_that_is_neither_word_refuses(monkeypatch, value):
+    """Re-pointed when the switch came under the one rule of app/env_flags.py.
+    These four were legs of the test above: the first three read as on and
+    the padded one as off, each without a word. The switch was the one on/off
+    setting whose mistyped value already fell on the production side, so no
+    host loses the boot sync by this: a value that is neither word now stops
+    the start and names the variable, as it does for every other row."""
+    monkeypatch.setenv("BOOT_BACKGROUND_SYNC", value)
+    with pytest.raises(RuntimeError) as refusal:
+        main._boot_sync_enabled()
+    assert str(refusal.value).startswith("SECURITY: BOOT_BACKGROUND_SYNC ")
+    assert "unset or empty is on" in str(refusal.value)
 
 
 @pytest.mark.parametrize("value", [None, "true", "false"])

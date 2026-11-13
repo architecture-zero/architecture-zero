@@ -15,6 +15,7 @@ import time
 from urllib.parse import urlparse
 import requests as _req
 from app.config import get_config, set_config
+from app.env_flags import flag
 
 log = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ class PeerAnswerMalformed(Exception):
 # deployment, so PEER_ALLOW_PRIVATE=true re-permits private ranges. Loopback
 # and link-local stay refused either way - neither is ever a peer, and
 # link-local is the metadata address.
-_ALLOW_PRIVATE = os.getenv("PEER_ALLOW_PRIVATE", "false").lower() == "true"
+_ALLOW_PRIVATE = flag("PEER_ALLOW_PRIVATE")
 
 
 class PeerURLRefused(ValueError):

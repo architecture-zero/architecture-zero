@@ -13,10 +13,11 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from jose import JWTError, jwt
 from starlette.middleware.base import BaseHTTPMiddleware
+from app.env_flags import flag
 
 # Private by default: the middleware layer is ON unless deliberately turned
 # off for a public-demo posture (route-level auth still holds either way).
-ENABLE_AUTH = os.getenv("ENABLE_AUTH", "true").lower() == "true"
+ENABLE_AUTH = flag("ENABLE_AUTH")
 SECRET_KEY  = os.getenv("JWT_SECRET_KEY", "change-me-before-deploying")
 
 # Fail closed, UNCONDITIONALLY: route-level dependencies validate JWTs
@@ -50,7 +51,7 @@ WATCHER_API_KEY = os.getenv("WATCHER_API_KEY", "")
 # An unrecognized scope grants nothing (the route 403s).
 # One key per caller, so a leaked key revokes one peer, not the federation.
 # Plain text (no JSON/quotes) so docker compose's .env parser accepts it.
-ECO_EXPOSE_KB = os.getenv("ECO_EXPOSE_KB", "false").lower() == "true"
+ECO_EXPOSE_KB = flag("ECO_EXPOSE_KB")
 
 
 def _load_peer_key_scopes() -> dict:

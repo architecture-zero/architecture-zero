@@ -29,7 +29,7 @@ from app.security import validate_outbound_url
 from app.providers import (ENABLE_OLLAMA, ENABLE_ANTHROPIC, ENABLE_OPENAI,
                            OLLAMA_BASE, ANTHROPIC_KEY, OPENAI_COMPAT, offered_providers,
                            compat_key_configured, _compat_base, _compat_headers,
-                           _get_runtime)
+                           _get_runtime, _get_runtime_bool)
 from app.runtime_config import (_config_or_default, _ollama_get, DEFAULT_MODEL,
                                 RAG_SIMILARITY_THRESHOLD)
 from app.self_check import ollama_model_list
@@ -65,9 +65,12 @@ class ProviderSettingsRequest(BaseModel):
 
 def _settings_dict() -> dict:
     out = {
-        "ollama_enabled":           _get_runtime("provider_ollama_enabled",    "ENABLE_OLLAMA",    "true" if ENABLE_OLLAMA    else "false") == "true",
-        "anthropic_enabled":        _get_runtime("provider_anthropic_enabled", "ENABLE_ANTHROPIC", "true" if ENABLE_ANTHROPIC else "false") == "true",
-        "openai_enabled":           _get_runtime("provider_openai_enabled",    "ENABLE_OPENAI",    "true" if ENABLE_OPENAI    else "false") == "true",
+        # The same reader the provider lanes use (get_provider_config), so
+        # this page reports what governs: a host that wrote TRUE has the
+        # provider on, and used to be told here that it was off.
+        "ollama_enabled":           _get_runtime_bool("provider_ollama_enabled",    "ENABLE_OLLAMA",    "true" if ENABLE_OLLAMA    else "false"),
+        "anthropic_enabled":        _get_runtime_bool("provider_anthropic_enabled", "ENABLE_ANTHROPIC", "true" if ENABLE_ANTHROPIC else "false"),
+        "openai_enabled":           _get_runtime_bool("provider_openai_enabled",    "ENABLE_OPENAI",    "true" if ENABLE_OPENAI    else "false"),
         "ollama_base_url":          _get_runtime("ollama_base_url",   "OLLAMA_BASE",   OLLAMA_BASE),
         "anthropic_key_set":        bool(_get_runtime("anthropic_api_key", "ANTHROPIC_API_KEY", ANTHROPIC_KEY)),
         "default_model":            _config_or_default("default_model", DEFAULT_MODEL),

@@ -5,11 +5,12 @@ import threading
 import time
 import glob as glob_module
 from pathlib import Path
+from app.env_flags import flag
 
-ENABLE_AGENT_TOOLS = os.getenv("ENABLE_AGENT_TOOLS", "false").lower() == "true"
-ENABLE_READ_TOOLS  = os.getenv("ENABLE_READ_TOOLS",  "true").lower()  == "true"
-ENABLE_WRITE_TOOLS = os.getenv("ENABLE_WRITE_TOOLS", "false").lower() == "true"
-ENABLE_SHELL_TOOLS = os.getenv("ENABLE_SHELL_TOOLS", "false").lower() == "true"
+ENABLE_AGENT_TOOLS = flag("ENABLE_AGENT_TOOLS")
+ENABLE_READ_TOOLS  = flag("ENABLE_READ_TOOLS")
+ENABLE_WRITE_TOOLS = flag("ENABLE_WRITE_TOOLS")
+ENABLE_SHELL_TOOLS = flag("ENABLE_SHELL_TOOLS")
 AGENT_WORKSPACE    = Path(os.getenv("AGENT_WORKSPACE", "/app/repo")).resolve()
 
 

@@ -92,11 +92,12 @@ import time
 
 from app.alerting import DISK_ALERT_THRESHOLD_PCT, fire as fire_alert
 from app.logger import log, log_error
+from app.env_flags import flag
 
 SELF_CHECK_INTERVAL_SECONDS = int(os.getenv("SELF_CHECK_INTERVAL_SECONDS", "300"))
 # How soon a failing boot pass of the lane is tried again (R-AZ-01).
 BOOT_RETRY_SECONDS = 15
-SELF_CHECK_BACKUP = os.getenv("SELF_CHECK_BACKUP", "true").lower() == "true"
+SELF_CHECK_BACKUP = flag("SELF_CHECK_BACKUP")
 
 
 def _instance_name() -> str:

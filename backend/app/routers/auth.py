@@ -25,12 +25,11 @@ two lockout constants moved to jwt_auth (2026-09-09): the password step-up
 counts its failures against the same account lock, so the knob is read once
 and re-bound here for the login and MFA paths (and the tests that patch it).
 """
-import os
-
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from app.config import instance_name
+from app.env_flags import flag
 from app.jwt_auth import (authenticate_user, create_access_token,
                           create_refresh_token, hash_token, hash_password,
                           get_current_user, validate_password,
@@ -68,8 +67,8 @@ def _require_mfa_from_env() -> bool:
     an operator wrote REQUIRE_MFA=1, restarted, and believed two-factor was
     required while accounts with no authenticator went on signing in with a
     password alone. A control that reads as configured and performs nothing
-    is worse than an absent one, so since 2026-11-11 such a value stops the
-    import, and with it the boot.
+    is worse than an absent one, so such a value stops the import, and with
+    it the boot.
 
     Not solved by accepting 1, yes or on: that would switch enforcement ON at
     an update, on a host whose accounts never enrolled, and lock every one of
@@ -79,19 +78,13 @@ def _require_mfa_from_env() -> bool:
 
     The message names the variable and the two words and never the value:
     an env file is not something a boot log should quote from.
+
+    This was the first setting read this way. The rule now belongs to every
+    on/off setting the host carries, so the read itself lives with the rest
+    of them in app/env_flags.py, where this switch is one row of the table;
+    this function is its one caller, and the constant below its one answer.
     """
-    word = os.getenv("REQUIRE_MFA", "").lower()
-    if word == "true":
-        return True
-    if word in ("", "false"):
-        return False
-    raise RuntimeError(
-        "SECURITY: REQUIRE_MFA is set to a value that is neither true nor "
-        "false. Refusing to start rather than guess whether two-factor is "
-        "required: set REQUIRE_MFA=true or REQUIRE_MFA=false (unset or empty "
-        "is off), with nothing else in the value, and start the backend again. "
-        "Under Docker Compose that is `docker compose up -d`: a plain restart "
-        "keeps the value the container was created with.")
+    return flag("REQUIRE_MFA")
 
 
 REQUIRE_MFA = _require_mfa_from_env()

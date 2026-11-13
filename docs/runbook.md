@@ -128,6 +128,21 @@ with; `knowledge/onboarding.md` has the order and why). A backend that starts sa
 which way it read the switch in a log line named `require_mfa`, with `state`
 on or off.
 
+That rule now holds for every on/off setting, so read the rest of `.env` the
+same way before the pull. Each takes the word `true` or the word `false`, in
+any letter case; a line left empty, or no line at all, is the setting's
+default. A value that is neither `true` nor `false` - `1`, `yes`, `on`, a
+word with a space or a quote beside it - used to be read as off without a
+word (as on, for the one setting that only asked whether the value was
+`false`). The backend no longer starts on such a value: the last line of its
+log names the variable and the two words it takes, and never the value.
+`.env.example` lists every one of these settings under its default. One
+meaning changed, in the safe direction: an empty value on a setting that is
+on by default (`ENABLE_AUTH=`, `ENABLE_AUDIT_LOG=`) used to turn it off and
+now leaves it on, so write `false` where off is what you mean. A backend that
+starts says how it read all of them in one log line named `on_off_settings`:
+each setting's name with the word on or off.
+
 `git pull && docker compose up -d --build` on a RUNNING instance also works -
 it is the line this section used to give, and the one the 2026-09-29 upgrade
 rehearsal ran - but it takes no copy, and while the new image builds the

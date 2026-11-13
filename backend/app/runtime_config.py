@@ -21,6 +21,7 @@ from app.pii import (build_blocklist, OutputFilter, normalize_comp_mode,
 # module is a second consumer of both, so a rename over there orphans this file
 # rather than failing at its definition site.
 from app.providers import _get_runtime, _ollama_headers, OLLAMA_BASE
+from app.env_flags import flag
 
 # ── Env constants, moved verbatim from main.py ───────────────────────────────
 #
@@ -70,13 +71,13 @@ def _env_num(name: str, default: str, cast):
 # across runs. Overridable at runtime via config key eval_judge_model.
 EVAL_JUDGE_MODEL_DEFAULT    = os.getenv("EVAL_JUDGE_MODEL", "claude-sonnet-4-6")
 MAX_CONTEXT_TOKENS          = _env_num("MAX_CONTEXT_TOKENS", "6000", int)
-RAG_ONLY_MODE               = os.getenv("RAG_ONLY_MODE", "false").lower() == "true"
+RAG_ONLY_MODE               = flag("RAG_ONLY_MODE")
 RAG_SIMILARITY_THRESHOLD    = _env_num("RAG_SIMILARITY_THRESHOLD", "0.40", float)
 PII_SCAN_MODE               = os.getenv("PII_SCAN_MODE", "off").lower()
 # Private by default. Guest (unauthenticated) access is OFF unless explicitly
 # opted in here AND enabled in admin config. Without this env var set, the
 # instance is login-required for everyone.
-ALLOW_GUEST_MODE            = os.getenv("ALLOW_GUEST_MODE", "false").lower() == "true"
+ALLOW_GUEST_MODE            = flag("ALLOW_GUEST_MODE")
 # Global daily guest budget - the VOLUME backstop. GUEST_MAX_TURNS caps one
 # conversation and check_rate_limit caps one IP (and defaults OFF), so neither
 # bounds a whole day: IP-rotating or distributed callers run up unbounded volume
@@ -128,12 +129,12 @@ GUEST_MODEL                 = os.getenv("GUEST_MODEL", "").strip()
 # In-product help (2026-09-21): sync the help pages shipped in the image into
 # their reserved collection at boot, honour the chat route's help lane, and
 # tell the client to show the Help button. Off = none of the three.
-HELP_DOCS_SYNC              = os.getenv("HELP_DOCS", "true").strip().lower() == "true"
-ENCRYPTION_AT_REST_VERIFIED = os.getenv("ENCRYPTION_AT_REST_VERIFIED", "false").lower() == "true"
+HELP_DOCS_SYNC              = flag("HELP_DOCS")
+ENCRYPTION_AT_REST_VERIFIED = flag("ENCRYPTION_AT_REST_VERIFIED")
 _DATA_DIR                   = os.getenv("DATA_DIR", "/app/data")
 # Read by main (the boot-time purge) and by the chat handler (whether to write
 # an audit row at all), so it is shared rather than either module's.
-ENABLE_AUDIT_LOG            = os.getenv("ENABLE_AUDIT_LOG", "true").lower() == "true"
+ENABLE_AUDIT_LOG            = flag("ENABLE_AUDIT_LOG")
 
 
 def _config_or_default(key: str, default: str) -> str:

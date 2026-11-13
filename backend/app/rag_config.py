@@ -12,6 +12,7 @@ generator can import it without pulling chromadb / fastembed / requests.
 """
 import os
 import re
+from app.env_flags import flag
 
 
 def _env_set(name: str, default: str) -> set[str]:
@@ -57,7 +58,7 @@ BM25_B  = float(os.getenv("BM25_B", "0.75"))
 BM25_FETCH = int(os.getenv("BM25_FETCH", "20"))
 
 # --- Cross-encoder reranker (retrieve wide -> rerank -> keep top_k) ---
-RERANK_ENABLED        = os.getenv("RERANK_ENABLED", "true").lower() == "true"
+RERANK_ENABLED        = flag("RERANK_ENABLED")
 RERANK_MODEL          = os.getenv("RERANK_MODEL", "Xenova/ms-marco-MiniLM-L-6-v2")
 RERANK_FETCH          = int(os.getenv("RERANK_FETCH", "60"))           # wide net before diversity+rerank
 RERANK_MAX_PER_SOURCE = int(os.getenv("RERANK_MAX_PER_SOURCE", "3"))   # candidate cap per source
@@ -87,7 +88,7 @@ RERANK_HOSTED_MODEL   = os.getenv("RERANK_HOSTED_MODEL", "")           # blank =
 # turn ranks locally. So what a deployer weighs is the global collection
 # alone: a deployment whose global collection holds content no vendor may
 # read never sets it.
-RERANK_HOSTED_ALLOWED = os.getenv("RERANK_HOSTED_ALLOWED", "").lower() == "true"
+RERANK_HOSTED_ALLOWED = flag("RERANK_HOSTED_ALLOWED")
 
 # --- Recency weighting ---
 # Applies to chunks carrying entry_date metadata (dated log/journal entries);
