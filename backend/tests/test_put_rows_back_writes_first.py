@@ -51,7 +51,11 @@ class _Failing:
 
     def upsert(self, *a, **kw):
         self._call("upsert", kw)
-        return self._col.upsert(*a, **kw)
+        out = self._col.upsert(*a, **kw)
+        n = sum(1 for c, _ in self._plan["calls"] if c == "upsert")
+        if self._plan.get("upsert_lands_then_raises") == n:
+            raise RuntimeError("the store answered an error after the write")
+        return out
 
     def delete(self, *a, **kw):
         self._call("delete", kw)
@@ -131,6 +135,20 @@ def test_control_a_wider_row_whose_delete_fails_holds_the_earlier_text(col, monk
     now = _now(col, list(rows))
     assert {i: t for i, (t, _) in now.items()} == {i: t for i, (t, _, _) in rows.items()}, (
         "the release's text stayed where the earlier row belonged")
+
+
+def test_fix_a_first_write_that_lands_and_then_raises_deletes_nothing_it_put_back(
+        col, monkeypatch):
+    """The store writes the first upsert and then raises. The rows are
+    back by then; the delete that follows a refused write reads again, or it
+    deletes the rows it has just put back."""
+    _release_over(col, 4)
+    rows = _earlier(4)
+    _failing(monkeypatch, upsert_lands_then_raises=1)
+    with pytest.raises(RuntimeError):
+        database.put_rows_back(rows)
+    assert _now(col, list(rows)) == _as_read(rows), (
+        "the put-back deleted the rows it had just put back")
 
 
 def test_control_a_wider_row_ends_holding_exactly_the_earlier_row(col, monkeypatch):

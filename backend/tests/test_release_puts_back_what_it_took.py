@@ -191,3 +191,71 @@ def test_control_d_a_release_that_lands_reads_released(
     assert _item(qid) == ("released", None)
     [chunk] = chunk_plain(HELD)
     assert [d for d, _ in _rows(gen).values()] == [chunk]
+
+
+# -- C1. A piece the store wrote, or whose add failed inside its own delete ------
+# The release recorded a piece's id only after add_document returned. A store
+# that wrote the row and then raised, or a failure inside the add's own delete
+# of the row held at that id (database._drop_held_rows), left an id the
+# rollback did not know: the held text indexed under an item that read held,
+# or another source's row at that id gone. The id is recorded before the write
+# now, so the rollback deletes it and puts back what stood there.
+
+class _StoreFailsAt:
+    """The collection, with the first upsert or delete of exactly `ids`
+    landing and then raising."""
+
+    def __init__(self, col, kind, ids, fired):
+        self._col, self._kind, self._ids, self._fired = col, kind, ids, fired
+
+    def __getattr__(self, name):
+        attr = getattr(self._col, name)
+        if name != self._kind:
+            return attr
+
+        def lands_then_raises(*a, **kw):
+            out = attr(*a, **kw)
+            if not self._fired and list(kw.get("ids") or []) == self._ids:
+                self._fired.append(name)
+                raise RuntimeError(f"the store answered an error after the {name}")
+            return out
+        return lands_then_raises
+
+
+def _store_fails_at(monkeypatch, kind, ids) -> list:
+    fired: list = []
+    real = database._get_collection
+    monkeypatch.setattr(database, "_get_collection",
+                        lambda department=None: _StoreFailsAt(real(department), kind, ids, fired))
+    return fired
+
+
+def test_fix_c1_a_piece_the_store_wrote_and_then_failed_is_taken_out(
+        store, client, admin_headers, monkeypatch, held_item):
+    [chunk] = chunk_plain(HELD)
+    gen = store.get_collection(database.GLOBAL_COLLECTION)
+    _older_row(gen)
+    before = _rows(gen)
+    qid = held_item(HELD)
+    fired = _store_fails_at(monkeypatch, "upsert", [_cid(chunk)])
+    r = _release(client, admin_headers, qid)
+    assert fired == ["upsert"]
+    assert r.status_code == 500 and r.json()["detail"] == FIXED, r.text
+    assert _item(qid)[0] == "held"
+    assert all(d != chunk for d, _ in _rows(gen).values()), (
+        "the held text stayed indexed under an item that reads held")
+    assert _rows(gen) == before
+
+
+def test_fix_c1_another_sources_row_is_back_when_the_adds_own_delete_fails(
+        store, client, admin_headers, monkeypatch, held_item):
+    [chunk] = chunk_plain(HELD)
+    gen = store.get_collection(database.GLOBAL_COLLECTION)
+    _caller_writes_first(client, admin_headers, _cid(chunk), source=OTHER_SOURCE)
+    before = _rows(gen)
+    qid = held_item(HELD)
+    fired = _store_fails_at(monkeypatch, "delete", [_cid(chunk)])
+    r = _release(client, admin_headers, qid)
+    assert fired == ["delete"]
+    assert r.status_code == 500 and r.json()["detail"] == FIXED, r.text
+    assert _rows(gen) == before, "another source's row at the release's id was lost"

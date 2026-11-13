@@ -1068,6 +1068,17 @@ def put_rows_back(rows: dict[str, tuple[str | None, dict, object]],
             col.upsert(ids=sl, embeddings=vectors, documents=[rows[i][0] for i in sl],
                        metadatas=[rows[i][1] for i in sl])
         except Exception:
+            # Read again first: an upsert that wrote and then raised
+            # has already put the earlier text back, and the read made before
+            # it would delete rows it restored. Only a row whose stored text is
+            # not the text being put back is deleted; when this read fails too,
+            # the read made before the write decides.
+            try:
+                now = col.get(ids=sl, include=["documents"])
+                other_text = [i for i, doc in zip(now["ids"], now["documents"])
+                              if doc != rows[i][0]]
+            except Exception:
+                pass
             if other_text:
                 col.delete(ids=other_text)
             raise

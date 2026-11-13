@@ -215,9 +215,16 @@ def admin_release_quarantine(item_id: int,
             for doc_id, (i, chunk) in desired.items():
                 if doc_id in existing:
                     continue
+                # Recorded BEFORE the write: a store that writes the
+                # row and then raises, or a failure inside the add's own delete of
+                # the row held at this id, left an id the rollback did not know -
+                # the held text indexed under a row that reads held, or another
+                # source's row gone. The rollback deletes every recorded id (one
+                # never written is a no-op) and puts back, from `before`, what
+                # stood there.
+                added_ids.append(doc_id)
                 add_document(doc_id, chunk, {"source": source, "chunk": i, **meta},
                              department=department, quarantine_exempt=True)
-                added_ids.append(doc_id)
             # The ids skipped above kept the previous writer's metadata - a
             # deleted knowledge file's from_file stamp (the orphan prune then
             # deleted this release) and its curated tier instead of the
