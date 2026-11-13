@@ -7,6 +7,19 @@ lifecycle hooks. No routes, no models, no handlers, no business logic.
 Direction is one-way and enforced by tests/test_module_hygiene.py: main imports
 routers and the shared modules; nothing under app/ imports main.
 """
+# FIRST, before any import below runs: every on/off
+# setting of the host's environment is read (app/env_flags.py, one rule for
+# all of them), and a value that is neither of a setting's two words stops
+# the start HERE - before the database module, the vector store's client,
+# the logger's file or the app object exist. A start that is going to be
+# refused has then imported nothing and written nothing. Each module below
+# still reads its own setting through the same table; this is what makes
+# the refusal come first, and what reaches a setting that is only read when
+# it is used. tests/test_env_flags_before_any_write.py pins the order and
+# what a refused start left behind.
+from app.env_flags import check_all as _check_on_off_settings
+_check_on_off_settings()
+
 import os
 import logging
 import asyncio

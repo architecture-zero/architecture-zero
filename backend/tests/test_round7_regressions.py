@@ -368,7 +368,14 @@ def test_bad_numeric_env_refuses_to_boot_and_says_which(monkeypatch):
     """A typo in one .env line used to surface as a bare ValueError from inside
     an import chain, naming nothing. It still REFUSES - falling back to the
     default would be the silent-discard shape this whole arc removed - but it
-    now names the variable, the bad value and the default."""
+    now names the variable and the default.
+
+    Re-pointed: this asserted that the message also quoted the bad value. It
+    no longer does, on purpose - a value on the wrong line of an env file can
+    be a secret, and the refusal lands in a boot log - so the value is pinned
+    ABSENT here, from the message and from the chain beneath it (the parser's
+    own error quotes what it was given).
+    tests/test_env_flags_before_any_write.py asks the same of a whole start."""
     from app.runtime_config import _env_num
 
     monkeypatch.setenv("RAG_SIMILARITY_THRESHOLD", "high")
@@ -376,8 +383,9 @@ def test_bad_numeric_env_refuses_to_boot_and_says_which(monkeypatch):
         _env_num("RAG_SIMILARITY_THRESHOLD", "0.40", float)
     msg = str(exc.value)
     assert "RAG_SIMILARITY_THRESHOLD" in msg, msg
-    assert "high" in msg, msg
     assert "0.40" in msg, msg
+    assert "high" not in msg, msg
+    assert exc.value.__cause__ is None and exc.value.__suppress_context__
 
 
 def test_good_numeric_env_still_parses(monkeypatch):

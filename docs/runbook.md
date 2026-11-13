@@ -143,6 +143,20 @@ now leaves it on, so write `false` where off is what you mean. A backend that
 starts says how it read all of them in one log line named `on_off_settings`:
 each setting's name with the word on or off.
 
+That check is the first thing the backend does, before anything is written:
+before it opens the database, the vector store or its log file, and before
+any step that changes what is stored. So a start refused over one of these
+settings has changed nothing, and the fix is the one line the log names. The
+line reads `RuntimeError: SECURITY: <NAME> is set to a value that is neither
+true nor false. Refusing to start ...`, and it is the last line of
+`docker compose logs --tail 50 backend`. `wait_backend_healthy.sh` above
+exits 1 on such a start, because the backend never answers; the script itself
+prints the container's state and nothing from that log. The same check runs
+by itself as `python -m app.env_flags` inside the backend container (exit 0
+and silent when every setting reads, exit 1 with that one line when one does
+not) - the thing to call first from a script of your own that does work
+before the server starts.
+
 `git pull && docker compose up -d --build` on a RUNNING instance also works -
 it is the line this section used to give, and the one the 2026-09-29 upgrade
 rehearsal ran - but it takes no copy, and while the new image builds the

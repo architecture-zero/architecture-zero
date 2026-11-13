@@ -32,12 +32,19 @@ added here, with what unset means, or it has no rule. tests/
 test_env_flags_strict.py reads the app's source and fails on an on/off read
 of the environment anywhere but this file.
 
-WHAT THIS MODULE MAY IMPORT: the standard library's os, and nothing of the
-app. Every module that carries an on/off setting imports it, the ones that
-open nothing included, so it must not open the database, the vector store,
-a socket or a file.
+WHAT THIS MODULE MAY IMPORT: the standard library's os and sys, and nothing
+of the app. It is the first thing the backend runs (app/main.py calls
+check_all before it builds anything), so it must not open the database, the
+vector store, a socket or a file - a start that is going to be refused must
+be refused with nothing written.
+
+    python -m app.env_flags
+
+runs the same check by itself: exit 0 when every row reads, exit 1 with the
+one refusal line when one does not.
 """
 import os
+import sys
 
 
 def _legacy_provider_is(word: str):
@@ -144,7 +151,38 @@ def flag(name: str) -> bool:
     return default(name) if said is None else said
 
 
+def check_all() -> None:
+    """Read every row, whether or not any module has asked for it yet, and
+    raise the refusal of the first one whose value is neither word.
+
+    Called at the top of app/main.py, ahead of the app object and of every
+    import that opens or writes something. A module that reads its own
+    setting at import would refuse too - later, after whatever was imported
+    before it had run - and a setting read only at call time would not
+    refuse until the call."""
+    for name in _TABLE:
+        flag(name)
+
+
 def states() -> dict:
     """Every row's effective state by name, as the words on and off - what
     the boot's one line on these settings carries. Never a value."""
     return {name: ("on" if flag(name) else "off") for name in _TABLE}
+
+
+def _main() -> int:
+    """`python -m app.env_flags`: the check by itself. Exit 0 and not a word
+    when every row reads; exit 1 with the refusal of the first row that does
+    not, as the only line on the error stream. The line is this module's own
+    sentence, built from the row's name - never the variable's value."""
+    for name in _TABLE:
+        try:
+            flag(name)
+        except RuntimeError:
+            print(_refusal(name), file=sys.stderr)
+            return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_main())

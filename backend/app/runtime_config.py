@@ -53,17 +53,22 @@ def _env_num(name: str, default: str, cast):
     rag_config and main. They have the same unhelpful failure and should adopt
     this helper; that sweep is tracked on the roadmap rather than done here,
     because a ten-module edit is not what belongs in a release-eve commit.
+
+    The message names the variable and what it takes and never the value it
+    could not use, and the parser's own error - which quotes the value - is
+    not chained beneath it: a value on the wrong line of an env file can be a
+    secret, and a boot log is not the place to quote one.
     """
     raw = os.getenv(name)
     if raw is None or raw.strip() == "":
         raw = default
     try:
         return cast(raw.strip())
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError):
         raise ValueError(
-            f"{name}={raw!r} is not a valid {cast.__name__}. "
+            f"{name} is set to a value that is not a valid {cast.__name__}. "
             f"Fix it in .env (the default is {default}) and restart."
-        ) from exc
+        ) from None
 
 
 # Answer-mode judge: pinned CLOUD model (not the opportunistic local tier, not
