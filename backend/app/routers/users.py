@@ -126,7 +126,17 @@ def remove_user(user_id: UserId, current_user: dict = Depends(require_permission
     from app.users import count_active_owners
     if user_id == current_user["id"]:
         raise HTTPException(status_code=400, detail="Cannot deactivate yourself")
-    target = get_user_by_id(user_id)
+    # An id that names no account is a 404, and nothing is written or logged
+    # for it: the write below is by id alone, so this answered "deactivated"
+    # for an account that never existed. Read whatever the row's status, as
+    # the unlock reads its target: a deactivated account is still an account,
+    # and deactivating it again answers as it always has (its sessions are
+    # revoked once more; nothing else changes). The Owner rules below keep
+    # looking at ACTIVE Owners only - the last-Owner count is of those.
+    row = get_user_by_id_any_status(user_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="No such user")
+    target = row if row.get("is_active") else None
     if target and target.get("role") == "owner":
         # Owner accounts are protected: only an Owner may deactivate an
         # Owner, and the LAST active Owner can never be removed - doing so
@@ -211,6 +221,13 @@ def change_department(user_id: UserId, body: dict, current_user: dict = Depends(
             raise HTTPException(status_code=403, detail="Cannot change your own department")
         raise HTTPException(status_code=403,
                             detail="Only an Owner can change an account's department")
+    # An id that names no account is a 404, after the caller's own check
+    # above and before anything is written: the write is by id alone, and
+    # this answered "updated" for an account that never existed. A
+    # deactivated account is still an account; its department is written as
+    # before.
+    if get_user_by_id_any_status(user_id) is None:
+        raise HTTPException(status_code=404, detail="No such user")
     dept = body.get("department", "general").strip() or "general"
     refusal = stored_text_refusal("Department", dept)   # cannot be stored: a 400, not a raise
     if refusal:
@@ -225,7 +242,13 @@ def change_department(user_id: UserId, body: dict, current_user: dict = Depends(
 @router.patch("/api/users/{user_id}/permissions")
 def change_permissions(user_id: UserId, body: dict, current_user: dict = Depends(require_permission("manage_users"))):
     from app.permissions import can_grant, raises_authority, resulting_permissions
-    target = get_user_by_id(user_id)
+    # The target is read whatever its status, as the unlock reads its own:
+    # the write below is by id alone, so a deactivated row is still a row it
+    # would change, and the ceilings below must see that row. Read through
+    # the active-only reader they saw nothing for it - an Owner's
+    # deactivated row was not Owner-managed, and the no-usable-password rule
+    # was skipped.
+    target = get_user_by_id_any_status(user_id)
     perms = body.get("permissions")
     # Step-up (2026-09-09) on the writes that RAISE authority: adding
     # manage_users or manage_system the target does not hold today. A
@@ -235,6 +258,12 @@ def change_permissions(user_id: UserId, body: dict, current_user: dict = Depends
     if raises_authority(target, perms):
         require_step_up(current_user, body.get("current_password") or "",
                         "grant manage_users or manage_system")
+    # An id that names no account is a 404 - after the step-up, where this
+    # write asks for one, so a caller without the proof learns nothing about
+    # which ids exist - and before anything is written: this answered
+    # "updated" for an account that never existed.
+    if target is None:
+        raise HTTPException(status_code=404, detail="No such user")
     # Authority ceiling BEFORE any write - manage_users alone must not be a
     # route to manage_system (and from there to the provider keys in config).
     # Reset-to-defaults is checked too: it is still a write to the target's
@@ -289,8 +318,17 @@ def admin_mfa_reset(user_id: UserId, body: MfaResetRequest | None = Body(None),
     require_step_up(current_user, body.current_password if body else "",
                     "reset a second factor")
     from app.permissions import is_owner
-    target = get_user_by_id(user_id)
-    if target and target.get("role") == "owner" and not is_owner(current_user):
+    # The target is read AFTER the proof, so a caller who fails the proof
+    # learns nothing about which ids exist - and whatever its status, as the
+    # unlock reads its own: the write below is by id alone, so a deactivated
+    # row is still a row whose second factor this would remove, and the
+    # ceiling applies to it as to an active one. An id that names no account
+    # is a 404, not an "MFA disabled", and nothing is cleared or logged for
+    # it.
+    target = get_user_by_id_any_status(user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="No such user")
+    if target.get("role") == "owner" and not is_owner(current_user):
         raise HTTPException(status_code=403,
                             detail="Only an Owner can reset an Owner's MFA")
     disable_mfa(user_id)

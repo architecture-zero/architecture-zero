@@ -205,6 +205,20 @@ writes, so a bearer session alone cannot strip a second factor. Targeting
 your own account is allowed with the step-up, because there is no
 self-service disable route and refusing it would strand a sole Owner.
 
+Every route that takes a user id writes by that id alone, so each asks
+first whether the id names an account: one that names none is a 404 "No
+such user", and nothing is written or logged for it. That holds at the
+deactivation, the department change, the permissions change and the MFA
+reset as it does at the role change and the unlock. The 404 comes after the
+caller's own permission checks and after the proof where a route asks for
+one (the MFA reset, and a permissions write that grants manage_users or
+manage_system), so a caller without the proof learns nothing about which
+ids exist. A deactivated account is still an account. The permissions
+change and the MFA reset read their target whatever its status, as the
+unlock does, so the Owner-only rule and the no-usable-password rule apply
+to a deactivated row as to an active one; the role change keeps answering
+404 for an account that is not active.
+
 Password logins carry per-account lockout after repeated failures. TOTP
 two-factor is built in, and REQUIRE_MFA=true refuses password logins for
 un-enrolled accounts - checked AFTER password verification, deliberately,

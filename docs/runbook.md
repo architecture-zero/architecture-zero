@@ -292,8 +292,22 @@ Since v0.1.x, for a script or a client of your own:
   plain 400 where an account is created and where its department is changed.
 - A user id in a route's path that is larger than the database can hold
   names no account: the route answers what it answers for any id that names
-  none (404 "No such user" at the role change, and at the unlock once the
+  none (404 "No such user"; at a route that asks for a proof, once the
   proof has passed). It used to answer 500.
+- An id that names no account answers 404 "No such user" at every route
+  that takes a user id, and nothing is written or logged for it.
+  Deactivating an account (`DELETE /api/users/{id}`), the department
+  change, the permissions change and the second-factor reset used to answer
+  as if the change had been made ("deactivated", "updated", "MFA
+  disabled"). The 404 comes after the caller's own permission checks, and
+  after the proof where the route asks for one: always at the second-factor
+  reset, and at the permissions change when it grants `manage_users` or
+  `manage_system`. A deactivated account is still an account: deactivating
+  it again answers "deactivated", its department and permissions can still
+  be written and its second factor reset, and the role change answers 404
+  for it as before. Changing a deactivated Owner's permissions or resetting
+  its second factor takes an Owner (403 otherwise), as for an active one;
+  both used to be open to any holder of `manage_users`.
 - Sign-in attempts are bounded per address (429), a request over the input
   bound is refused before it is scanned, stored or billed (413), and a second
   message on a conversation that is still answering is refused (409).
