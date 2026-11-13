@@ -326,6 +326,11 @@ Since v0.1.x, for a script or a client of your own:
   `as_level`, a result's `score`, a feedback's `turn_index`: "as_level is
   out of range"), and an evaluation run asked for question ids that large
   has no questions to run (400). Each used to answer 500.
+- A whole number in a query string that is larger than the database can
+  hold is answered as the largest one it can hold: `page` on
+  `GET /api/admin/audit` is a page past the end, and `count` on
+  `DELETE /api/history/{session_id}/tail` asks for more messages than there
+  are. Both used to answer 500.
 - An authenticator code is accepted once per account, at whichever route
   it is sent: `POST /api/auth/mfa/complete`, the `mfa_code` of a re-key
   (`POST /api/auth/mfa/setup`) and of the caller's own unlock, and

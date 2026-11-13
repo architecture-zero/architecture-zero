@@ -642,6 +642,16 @@ def stored_number_refusal(what: str, number) -> str | None:
     return None
 
 
+def within_stored_range(number: int) -> int:
+    """The whole number nearest to `number` that a 64-bit column - or a LIMIT
+    or an OFFSET - can hold. For a count or a position read from a query
+    string, where a number past the range means "more than there is": the
+    route answers it as it answers the largest one, where it used to raise in
+    the query. (An id is not this function's: an id past the range names no
+    row - row_id.)"""
+    return max(-_LARGEST_STORED_ID - 1, min(number, _LARGEST_STORED_ID))
+
+
 # -- A field of a body that has no schema -------------------------------------
 # A few routes take their JSON body as a plain object, so nothing has checked
 # a field's type before the handler reads it, and a string method called on

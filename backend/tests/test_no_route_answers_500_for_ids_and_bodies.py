@@ -35,6 +35,9 @@ FIX (each fails on the routes as they were):
     or null as its printed form)
   - null where text is expected in a body with no schema is the field left
     out: a null department raised
+  - a whole number past the range in a query string: answered as the
+    largest one a column holds (a page past the end, more rows than there
+    are), never a server error
   - a whole number past the range in a body: an evaluation question's
     level, a result's score, a feedback's turn number, the ids a run names
 CONTROL (true before and after, by design):
@@ -607,3 +610,93 @@ def test_a_run_naming_only_ids_past_the_range_has_no_questions_to_run(client, ac
     answer = _send(client, "POST", "/api/admin/evals/run", top["headers"],
                    {"question_ids": [BIG, -BIG], "retrieval_only": True})
     assert answer == nothing, answer
+
+
+# -- FIX: a whole number past the range in a query string ----------------------
+# A count or a position read from a query string past what a LIMIT or an
+# OFFSET can hold raised in the query. The route answers it as it answers the
+# largest number it can hold (jwt_auth.within_stored_range) - a page past the
+# end, more rows than there are - or with its own refusal where it bounds the
+# number itself. Walked from the app's route table, so a route added later is
+# asked too.
+
+_EDGE = 2 ** 63 - 1
+
+
+def _int_query_params(route):
+    return [p for p in get_flat_dependant(route.dependant).query_params if p.type_ is int]
+
+
+_QUERY_ROUTES = [(m, p) for m, p, r in _ROUTES if _int_query_params(r)]
+# A route with a whole number in its query string that this walk does not
+# send, with the reason. Only reads and deletes are walked: a write with a
+# number in its query string would be named here.
+_QUERY_NOT_WALKED = {}
+
+
+def _send_query(client, method, url, headers, params, body):
+    assert "{" not in url, f"a path parameter was left unfilled: {url}"
+    try:
+        kw = {"params": {k: str(v) for k, v in params.items()}}
+        if body is not None:
+            kw["content"] = json.dumps(body)
+            headers = {**headers, "Content-Type": "application/json"}
+        r = client.request(method, url, headers=headers, **kw)
+        try:
+            return r.status_code, r.json()
+        except ValueError:
+            return r.status_code, r.text[:200]
+    except Exception as exc:
+        return "error", type(exc).__name__
+
+
+def _without_echo(answer, number):
+    """The answer with any top-level field that only echoes the number sent
+    taken out - a page number, a count asked for."""
+    status, body = answer
+    if isinstance(body, dict):
+        body = {k: v for k, v in body.items() if v != number}
+    return status, body
+
+
+def test_control_every_route_with_a_whole_number_in_its_query_string_is_walked_or_named():
+    walked = [(m, p) for m, p in _QUERY_ROUTES if m in ("GET", "DELETE")]
+    others = sorted(set(_QUERY_ROUTES) - set(walked))
+    assert others == sorted(_QUERY_NOT_WALKED), others
+    assert len(walked) >= 2, walked
+
+
+@pytest.mark.parametrize("method,path", [(m, p) for m, p in _QUERY_ROUTES if m in ("GET", "DELETE")],
+                         ids=_label([(m, p) for m, p in _QUERY_ROUTES if m in ("GET", "DELETE")]))
+def test_a_whole_number_past_the_range_in_a_query_string_is_answered_like_the_largest(
+        client, accounts, method, path):
+    """Each whole number the route reads from its query string, sent past the
+    range either way, gets the status the largest (or smallest) number a
+    column can hold gets, and the same answer apart from the number echoed
+    back. None raises."""
+    route = _route(method, path)
+    top = accounts("owner")
+    url = _fill(path, {n: (NAMES_NOTHING if k is int else TEXT_NAMES_NOTHING)
+                       for n, k in _path_ids(route).items()})
+    body = _passing_body(route)
+    required = {p.alias: (1 if p.type_ is int else "probe")
+                for p in get_flat_dependant(route.dependant).query_params if p.required}
+    for param in _int_query_params(route):
+        for edge, past in ((_EDGE, (2 ** 63, 2 ** 70)), (-_EDGE - 1, (-(2 ** 63) - 1, -(2 ** 70)))):
+            expected = _send_query(client, method, url, top["headers"],
+                                   {**required, param.alias: edge}, body)
+            assert not _is_server_error(expected), (method, path, param.alias, edge, expected)
+            for number in past:
+                answer = _send_query(client, method, url, top["headers"],
+                                     {**required, param.alias: number}, body)
+                assert not _is_server_error(answer), (method, path, param.alias, number, answer)
+                assert answer[0] == expected[0], (method, path, param.alias, number, answer, expected)
+                if expected[0] < 300:
+                    assert _without_echo(answer, number) == _without_echo(expected, edge), \
+                        (method, path, param.alias, number, answer, expected)
+
+
+def test_a_count_or_position_past_the_range_is_the_nearest_one_a_column_holds():
+    assert jwt_auth.within_stored_range(2 ** 70) == _EDGE
+    assert jwt_auth.within_stored_range(-(2 ** 70)) == -_EDGE - 1
+    assert jwt_auth.within_stored_range(7) == 7

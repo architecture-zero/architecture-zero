@@ -162,6 +162,7 @@ def get_audit_log(
     date_to: str | None = None,
     model_filter: str | None = None,
 ) -> dict:
+    from app.jwt_auth import within_stored_range
     with get_session() as db:
         q = db.query(AuditLog)
         if username_filter:
@@ -176,7 +177,8 @@ def get_audit_log(
         total = q.count()
         entries = (
             q.order_by(AuditLog.id.desc())
-            .offset((page - 1) * page_size)
+            # A page past what an OFFSET can hold is a page past the end.
+            .offset(within_stored_range((page - 1) * page_size))
             .limit(page_size)
             .all()
         )

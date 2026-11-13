@@ -41,7 +41,7 @@ from app.database import (query_similar, list_departments, HELP_DEPARTMENT,
 from app.history import (save_message, load_history,
                          delete_tail_messages, upsert_session_meta,
                          get_session_meta, delete_session_meta)
-from app.jwt_auth import check_permission, require_permission
+from app.jwt_auth import check_permission, require_permission, within_stored_range
 from app.logger import log, log_error
 from app.metrics import increment, record_request
 from app.peers import get_peers, query_peer_kb
@@ -341,7 +341,10 @@ def delete_history_tail(session_id: str, req: Request, count: int = Query(1, ge=
         raise HTTPException(status_code=409, detail=turn_guard.IN_FLIGHT_DETAIL)
     try:
         # Report what was DELETED, not what was ASKED FOR - see delete_tail_messages.
-        deleted = delete_tail_messages(session_id, count, current_user["id"])
+        # A count past what a LIMIT can hold asks for more rows than there
+        # are, as a merely large one does; it used to raise in the query.
+        deleted = delete_tail_messages(session_id, within_stored_range(count),
+                                       current_user["id"])
     finally:
         turn_guard.release(caller, session_id, token)
     return {"status": "ok", "deleted": deleted, "requested": count}
