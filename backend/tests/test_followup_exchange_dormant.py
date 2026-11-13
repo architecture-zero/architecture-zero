@@ -31,12 +31,15 @@ model and the saved history still receive the user's real words.
 
 THE HOSTED RERANKER (the last section). The retrieval query is what the
 reranker is sent, so the start of an answer never rides a query that can
-reach a hosted vendor: while the hosted rerank provider is the one in effect,
-`exchange` is refused and every query resolves as the topic shape - through
-the function, the chat and the evaluation replay - and the vendor's stand-in
-is handed nothing of the answer. The refusal is said once in the log, and so
-is a value of the key that is not recognised. With the local model, or a
-scoring endpoint on the operator's own hardware, the shape stays available.
+reach a hosted vendor: while the host allows hosted reranking - the latch
+RERANK_HOSTED_ALLOWED is open - `exchange` is refused and every query
+resolves as the topic shape, whatever the provider setting reads, through the
+function, the chat and the evaluation replay, and no reranker's stand-in is
+handed any of the answer. The latch alone decides, and it is fixed for the
+life of the process, so no turn can be resolved under one answer and reranked
+under another. The refusal is said once in the log, and so is a value of the
+key that is not recognised. With the latch shut the shape is available with
+every provider setting.
 """
 import importlib.util
 import json
@@ -473,8 +476,10 @@ def test_exchange_reaches_the_evaluation_replay(client, monkeypatch, key):
 
 
 # -- The exchange shape and a hosted reranker ---------------------------------
-# FIX cases fail on the commit that added the shape, where `exchange` was
-# applied whatever the reranker was; CONTROL cases pass on both.
+# FIX cases fail on the commit before, where `exchange` was refused only while
+# the hosted provider was both configured and usable - a rule that read a
+# per-call setting, so a turn could be resolved under one answer and reranked
+# under another. CONTROL cases pass on both.
 
 SCORER_URL = "http://scorer.invalid/rerank"
 
@@ -512,7 +517,7 @@ class _LocalModel:
         return [float(len(d)) for d in docs]
 
 
-def _reranker(monkeypatch, provider, *, latch=True, vendor_key="test-key", vendor=None):
+def _reranker(monkeypatch, provider, *, latch, vendor_key="test-key", vendor=None):
     """The reranker set the way a deployer sets it - the provider key, the host
     latch and the vendor's key - with the vendor's endpoint, the self-hosted
     endpoint and the local model stood in for. The reranker's own decision
@@ -536,10 +541,15 @@ def _reranker(monkeypatch, provider, *, latch=True, vendor_key="test-key", vendo
 
 
 @pytest.fixture(autouse=True)
-def _nothing_said_yet():
-    """The shape reader says each thing once per process; every test here
-    starts and ends with nothing said."""
+def _nothing_said_yet_and_the_latch_shut(monkeypatch):
+    """The shape reader says each thing once per process, and it refuses
+    `exchange` while the host's hosted-rerank latch is open. Every test in
+    this file starts and ends with nothing said, and starts with the latch
+    shut whatever the machine's environment holds; a test that wants it open
+    opens it through _reranker."""
+    import app.rag_config as latch_home
     import app.routing as routing
+    monkeypatch.setattr(latch_home, "RERANK_HOSTED_ALLOWED", False)
     notices = getattr(routing, "_SHAPE_NOTICES", None)
     if notices is not None:
         notices.clear()
@@ -591,10 +601,21 @@ def _chat_turn_through_the_reranker(client, admin_headers, monkeypatch, prompt, 
     assert r.status_code == 200, r.text
 
 
-# FIX
-def test_with_a_hosted_reranker_exchange_resolves_as_the_topic_shape(client, monkeypatch, key):
+# Every provider setting the reranker knows. With the latch open each one is
+# refused; with it shut each one leaves the shape available.
+PROVIDER_ROWS = ["hosted-api", "local", "remote-http"]
+
+
+# FIX for every row but hosted-api, which the provider-and-latch rule of the
+# commit before already refused.
+@pytest.mark.parametrize("provider", PROVIDER_ROWS)
+def test_with_the_latch_open_exchange_resolves_as_the_topic_shape(client, monkeypatch, key,
+                                                                 provider):
+    """The rule is the latch alone: while the host allows hosted reranking a
+    config change by itself can start sending queries to a vendor, so the
+    shape is refused whatever the provider setting reads at this moment."""
     key("exchange")
-    _reranker(monkeypatch, "hosted-api")
+    _reranker(monkeypatch, provider, latch=True)
     compared = 0
     for name, history in HISTORIES.items():
         for query in QUERIES:
@@ -603,26 +624,27 @@ def test_with_a_hosted_reranker_exchange_resolves_as_the_topic_shape(client, mon
     assert compared == 168
 
 
-# FIX
-def test_with_a_hosted_reranker_the_chat_and_the_replay_retrieve_as_the_topic_shape(
-        client, admin_headers, monkeypatch, key):
+# FIX for every row but hosted-api.
+@pytest.mark.parametrize("provider", PROVIDER_ROWS)
+def test_with_the_latch_open_the_chat_and_the_replay_retrieve_as_the_topic_shape(
+        client, admin_headers, monkeypatch, key, provider):
     key("exchange")
-    _reranker(monkeypatch, "hosted-api")
+    _reranker(monkeypatch, provider, latch=True)
     for prompt, name in CHAT_ROWS:
         history = HISTORIES[name]
         got = _chat_retrieval_query(client, admin_headers, prompt, history)
         assert got == BEFORE.resolve_followup(prompt, history), (prompt, name)
-    got = _replay_retrieval_queries(monkeypatch, "followup-hosted-replay", REPLAY_ROWS)
+    got = _replay_retrieval_queries(monkeypatch, f"followup-latch-open-{provider}", REPLAY_ROWS)
     assert got == [BEFORE.resolve_followup(q, setup) if setup else q for q, setup in REPLAY_ROWS]
 
 
-# FIX
+# CONTROL (it was the FIX of the commit before)
 def test_nothing_of_the_answer_reaches_the_hosted_reranker(client, admin_headers,
                                                            monkeypatch, key):
     """One chat turn with the hosted path stubbed at its request: the vendor is
     really asked, and what it is handed is the topic-shape query."""
     key("exchange")
-    scorer, local = _reranker(monkeypatch, "hosted-api")
+    scorer, local = _reranker(monkeypatch, "hosted-api", latch=True)
     history = HISTORIES["a 5,000-character answer"]
     _chat_turn_through_the_reranker(client, admin_headers, monkeypatch, "explain", history)
     assert len(scorer.calls) == 1 and local.queries == []
@@ -635,22 +657,39 @@ def test_nothing_of_the_answer_reaches_the_hosted_reranker(client, admin_headers
 
 
 # FIX
+def test_with_the_latch_open_no_reranker_is_handed_any_of_the_answer(client, admin_headers,
+                                                                     monkeypatch, key):
+    """The latch open and the provider set to the local model, then to a
+    self-hosted endpoint: neither is handed answer text either, because the
+    next config change could point the same query at the vendor."""
+    key("exchange")
+    history = HISTORIES["a 5,000-character answer"]
+    scorer, local = _reranker(monkeypatch, "local", latch=True)
+    _chat_turn_through_the_reranker(client, admin_headers, monkeypatch, "explain", history)
+    assert scorer.calls == [] and local.queries == [f"{USER} - explain"]
+    scorer, local = _reranker(monkeypatch, "remote-http", latch=True)
+    _chat_turn_through_the_reranker(client, admin_headers, monkeypatch, "explain", history)
+    assert [c["url"] for c in scorer.calls] == [SCORER_URL] and local.queries == []
+    assert scorer.calls[0]["json"]["query"] == f"{USER} - explain"
+
+
+# FIX (the line names the latch now, not a provider)
 def test_the_refusal_is_said_once_in_the_log_and_names_no_text(client, monkeypatch,
                                                               routing_lines, key):
     key("exchange")
-    _reranker(monkeypatch, "hosted-api")
+    _reranker(monkeypatch, "local", latch=True)
     for _ in range(3):
         assert _live("explain", HISTORIES["user and answer"]) == f"{USER} - explain"
     lines = list(routing_lines)
     assert len(lines) == 1, lines
-    assert KEY in lines[0] and "hosted" in lines[0] and "topic" in lines[0]
+    assert KEY in lines[0] and "RERANK_HOSTED_ALLOWED" in lines[0] and "topic" in lines[0]
     assert USER not in lines[0] and ANSWER not in lines[0] and "explain" not in lines[0]
 
 
-# FIX
+# CONTROL
 def test_a_value_that_is_not_recognised_is_said_once_in_the_log(client, monkeypatch,
                                                                routing_lines, key):
-    """A mistyped value still reads as the topic shape, and now says so - once
+    """A mistyped value still reads as the topic shape, and says so - once
     for each value - so an arm set to it is not measured under its label."""
     for value in ("", "topic", "TOPIC "):
         key(value)
@@ -669,50 +708,58 @@ def test_a_value_that_is_not_recognised_is_said_once_in_the_log(client, monkeypa
     assert all(USER not in ln and ANSWER not in ln for ln in lines)
 
 
-# FIX
-def test_a_reranker_decision_that_cannot_be_read_gives_the_topic_shape(client, monkeypatch,
-                                                                      routing_lines, key):
-    """Fail closed, and say which thing happened: the line names the unreadable
-    decision, not a hosted provider nobody configured."""
-    import app.rerank as rr
-    key("exchange")
+# RE-POINTED IN PLACE. Under the rule of the commit before - the hosted
+# provider configured AND usable - a hosted provider with no key, or naming no
+# known vendor, left the shape available, and one control said so for both.
+# Under the latch rule each has TWO answers, by the latch alone: refused with
+# it open (the key or the vendor name can change without a restart, the latch
+# cannot), available with it shut. The case that could not be read is gone
+# with the read: the latch is a module constant, and reading it cannot fail.
 
-    def _unreadable():
-        raise RuntimeError("no such table")
-    monkeypatch.setattr(rr, "rerank_provider", _unreadable)
-    for _ in range(2):
-        assert _live("explain", HISTORIES["user and answer"]) == f"{USER} - explain"
-    lines = list(routing_lines)
-    assert len(lines) == 1, lines
-    assert KEY in lines[0] and "could not be read (RuntimeError)" in lines[0]
-    assert "no such table" not in lines[0] and "is in effect" not in lines[0]
+# FIX
+@pytest.mark.parametrize("setting", [
+    {"provider": "hosted-api", "vendor_key": None},
+    {"provider": "hosted-api", "vendor": "nobody"},
+], ids=["hosted with no key", "hosted with an unknown vendor"])
+def test_with_the_latch_open_exchange_is_refused_even_where_the_vendor_could_not_be_called(
+        client, monkeypatch, key, setting):
+    key("exchange")
+    _reranker(monkeypatch, latch=True, **setting)
+    assert _live("explain", HISTORIES["user and answer"]) == f"{USER} - explain"
 
 
 # CONTROL
 @pytest.mark.parametrize("setting", [
     {"provider": "local"},
     {"provider": "remote-http"},
-    {"provider": "hosted-api", "latch": False},
+    {"provider": "hosted-api"},
     {"provider": "hosted-api", "vendor_key": None},
     {"provider": "hosted-api", "vendor": "nobody"},
-], ids=["local", "self-hosted endpoint", "hosted but latched off", "hosted with no key",
+], ids=["local", "self-hosted endpoint", "hosted", "hosted with no key",
         "hosted with an unknown vendor"])
-def test_exchange_stays_available_when_no_rerank_query_can_reach_a_vendor(
-        client, monkeypatch, key, setting):
+def test_with_the_latch_shut_exchange_is_available_whatever_the_provider_setting_says(
+        client, monkeypatch, key, routing_lines, setting):
     key("exchange")
-    _reranker(monkeypatch, **setting)
+    _reranker(monkeypatch, latch=False, **setting)
     assert _live("explain", HISTORIES["user and answer"]) == f"{USER} {ANSWER} - explain"
+    assert routing_lines == []
 
 
 # CONTROL
-def test_with_the_local_model_or_a_self_hosted_endpoint_the_exchange_query_stays_off_the_vendor(
+def test_with_the_latch_shut_the_exchange_query_never_reaches_the_vendor(
         client, admin_headers, monkeypatch, key):
+    """With the latch shut the exchange query is scored by the local model or
+    the self-hosted endpoint - and a hosted provider behind the shut latch
+    sends nothing: that turn falls back to the local model."""
     key("exchange")
     history = HISTORIES["user and answer"]
-    scorer, local = _reranker(monkeypatch, "local")
+    scorer, local = _reranker(monkeypatch, "local", latch=False)
     _chat_turn_through_the_reranker(client, admin_headers, monkeypatch, "explain", history)
     assert scorer.calls == [] and local.queries == [f"{USER} {ANSWER} - explain"]
-    scorer, local = _reranker(monkeypatch, "remote-http")
+    scorer, local = _reranker(monkeypatch, "remote-http", latch=False)
     _chat_turn_through_the_reranker(client, admin_headers, monkeypatch, "explain", history)
     assert [c["url"] for c in scorer.calls] == [SCORER_URL] and local.queries == []
     assert scorer.calls[0]["json"]["query"] == f"{USER} {ANSWER} - explain"
+    scorer, local = _reranker(monkeypatch, "hosted-api", latch=False)
+    _chat_turn_through_the_reranker(client, admin_headers, monkeypatch, "explain", history)
+    assert scorer.calls == [] and local.queries == [f"{USER} {ANSWER} - explain"]

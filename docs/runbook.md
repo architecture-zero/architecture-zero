@@ -849,18 +849,21 @@ config row, not an admin-tab setting:
 
     docker compose exec backend python -c "from app.config import set_config; set_config('followup_resolver', 'exchange')"
 
-**The `exchange` shape is not available while a hosted reranker is in
-use.** The retrieval query is what the reranker is sent, and an answer can be
-written from any department the person asking may read, so its opening words
-must not travel to a third party inside a query. While
-`rerank_provider=hosted-api` is in effect - the provider is set, the host
-latch is open and the vendor's key is present - the key's `exchange` is
-refused and every follow-up takes the `topic` shape; the backend log says so
-once (`followup_resolver=exchange is not applied`). The local model and
-`rerank_provider=remote-http`, a scoring endpoint on your own hardware, leave
-the shape available. Measure it on your own multi-turn questions before you
-keep it: a retrieval-only run with the key unset, then one with it set, on
-the same corpus.
+**The `exchange` shape is not available while the host allows hosted
+reranking.** The retrieval query is what the reranker is sent, and an answer
+can be written from any department the person asking may read, so its opening
+words must not travel to a third party inside a query. While the host latch
+`RERANK_HOSTED_ALLOWED` is set, a config change alone can send the next query
+to a vendor, so the key's `exchange` is refused and every follow-up takes the
+`topic` shape, whatever `rerank_provider` says; the backend log says so once
+(`followup_resolver=exchange is not applied`). The latch is read when the
+backend starts and cannot change while it runs, so no answer slips through
+between the two settings. With the latch unset the shape is available with
+any provider: the local model, `rerank_provider=remote-http` (a scoring
+endpoint on your own hardware), and a hosted provider, which the unset latch
+keeps from sending anything. Measure it on your own multi-turn questions
+before you keep it: a retrieval-only run with the key unset, then one with it
+set, on the same corpus.
 
 Growing the locked holdout: `backend/scripts/author_holdout.py` has an OUTSIDE
 model read corpus files and draft questions plus grading keys for them, spread

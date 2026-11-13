@@ -128,4 +128,6 @@ question include any other department's documents, a help page or a peer's
 answer, none of that question's passages is sent: it is ranked on the
 instance's own reranking model instead. When passages are sent, the
 question is sent with them; the instance never adds text from its own
-answers to what a hosted reranker receives.
+answers to what a hosted reranker receives: the `exchange` follow-up shape,
+which puts the start of an answer into a query, is not available while the
+latch is set.

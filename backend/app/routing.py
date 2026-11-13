@@ -207,21 +207,16 @@ def _note_once(what: str, message: str, *args) -> None:
     log.warning(message, *args)
 
 
-def _rerank_query_can_reach_a_vendor() -> str:
-    """Why a rerank query from this instance could go to a hosted vendor, or
-    '' when it cannot: the provider in effect is the hosted one and nothing
-    closes it (the host latch, the vendor's name, its key). These are the
-    reranker's own two answers - the ones its scorer asks before it sends
-    anything - not a second reading of the settings. An answer that cannot be
-    read counts as yes, and says so: the caller then keeps answer text out of
-    the query."""
-    try:
-        from app import rerank
-        if rerank.rerank_provider() == "hosted-api" and rerank._hosted_unavailable() is None:
-            return "the hosted rerank provider is in effect"
-        return ""
-    except Exception as e:
-        return "the rerank provider could not be read (%s)" % type(e).__name__
+def _rerank_query_can_reach_a_vendor() -> bool:
+    """True when this host allows hosted reranking: the latch
+    RERANK_HOSTED_ALLOWED is open. The latch and nothing else. With it shut no
+    provider setting can send a rerank query to a vendor; with it open a
+    config change alone can start that, on any turn. The latch is fixed for
+    the life of the process, so the answer here and the answer at the rerank
+    call are always the same one - there is no turn that can see two. It is
+    read through its module when called, never from a copy taken at import."""
+    from app import rag_config
+    return bool(rag_config.RERANK_HOSTED_ALLOWED)
 
 
 def followup_shape() -> str:
@@ -239,11 +234,15 @@ def followup_shape() -> str:
     vendor. The retrieval query is what the reranker is sent, an answer can be
     written from any collection the caller may read, and the rule that keeps
     non-public collections off the vendor reads the candidates, not the
-    query. So while the hosted rerank provider is the one in effect, the key's
-    `exchange` is refused and the shape is 'topic' on every turn (said once in
-    the log). The decision is made here, before retrieval, so it cannot
-    depend on what a turn retrieves. The local model and a scoring endpoint
-    on the operator's own hardware leave the shape available."""
+    query. So while the host allows hosted reranking (the latch
+    RERANK_HOSTED_ALLOWED is open), the key's `exchange` is refused and the
+    shape is 'topic' on every turn, whatever the provider setting reads (said
+    once in the log). The decision is made here, before retrieval, so it
+    cannot depend on what a turn retrieves, and on the latch alone, so it
+    cannot change between this read and the rerank call. With the latch shut
+    the shape is available with any provider setting: the local model, a
+    scoring endpoint on the operator's own hardware, and a hosted provider
+    that the shut latch keeps from sending anything."""
     try:
         from app.config import get_config
         v = (get_config("followup_resolver", "") or "").strip().lower()
@@ -256,12 +255,11 @@ def followup_shape() -> str:
                    "unrecognised followup_resolver %r (expected topic or exchange) - "
                    "using 'topic'", v[:60])
         return "topic"
-    vendor = _rerank_query_can_reach_a_vendor()
-    if vendor:
-        _note_once("refused: " + vendor,
-                   "followup_resolver=exchange is not applied: %s, and the start of an "
-                   "answer never rides a query that can reach a vendor - using 'topic'",
-                   vendor)
+    if _rerank_query_can_reach_a_vendor():
+        _note_once("refused",
+                   "followup_resolver=exchange is not applied: hosted reranking is allowed "
+                   "on this host (RERANK_HOSTED_ALLOWED) and the start of an answer never "
+                   "rides a query that can reach a vendor - using 'topic'")
         return "topic"
     return "exchange"
 
