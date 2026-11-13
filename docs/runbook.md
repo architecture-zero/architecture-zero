@@ -341,6 +341,10 @@ Since v0.1.x, for a script or a client of your own:
   that names no open session of the caller's (another account's, one
   already revoked, or none), and revokes and logs nothing. It used to answer
   "session revoked" for any id.
+- `GET /api/query-kb` (the door a federated peer reads) serves at most 20
+  pieces for one question, and never more than this instance's own chat
+  fetches in a turn: an `n` above that is answered with that many, and one
+  below 1 with one. It used to answer 422 for either.
 - An authenticator code is accepted once per account, at whichever route
   it is sent: `POST /api/auth/mfa/complete`, the `mfa_code` of a re-key
   (`POST /api/auth/mfa/setup`) and of the caller's own unlock, and

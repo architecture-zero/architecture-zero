@@ -237,8 +237,18 @@ class ChatRequest(BaseModel):
 
 # -- Eco Mode: the SERVE side -------------------------------------------------
 
+def _query_kb_max_results() -> int:
+    """The most pieces a peer is served for one question: 20, this door's
+    bound since it was written, and never more than this instance's own chat
+    fetches from its store in a turn (RERANK_FETCH). A larger n is answered
+    with the bound and a smaller one with 1 - never refused: a peer whose
+    setting asks for more gets what this door serves, not a 422."""
+    from app.rag_config import RERANK_FETCH
+    return max(1, min(20, RERANK_FETCH))
+
+
 @router.get("/api/query-kb")
-def query_kb_for_peer(req: Request, q: str, n: int = Query(8, ge=1, le=20)):
+def query_kb_for_peer(req: Request, q: str, n: int = Query(8)):
     """Serve this instance's KB to a federated peer. The gate is the peer-key
     middleware (X-Peer-Key against PEER_KEYS, only when ECO_EXPOSE_KB=true) -
     it stamps request.state.peer_scope; this route fails closed without the
@@ -264,6 +274,7 @@ def query_kb_for_peer(req: Request, q: str, n: int = Query(8, ge=1, le=20)):
     if level is None:
         raise HTTPException(status_code=403,
                             detail="Peer KB serving is not enabled on this instance.")
+    n = max(1, min(n, _query_kb_max_results()))
     departments = [d for d in list_departments()
                    if d != "general" and department_min_level(d) <= level]
     try:

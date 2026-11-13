@@ -776,3 +776,25 @@ def test_an_overflow_of_the_servers_own_is_a_server_error(accounts, monkeypatch,
     r = loose.get("/api/sessions/mine", headers=low["headers"])
     assert r.status_code == 500, (r.status_code, r.text)
     assert "request_number_out_of_range" not in logged, logged
+
+
+# -- FIX: a peer's n at the knowledge-base door is answered with the bound ------
+# The door served a peer at most 20 pieces and refused a larger n (or one
+# below 1) with a 422, while the forks took any n. One rule now: at most 20,
+# and never more than this instance's own chat fetches in a turn; a larger n
+# is answered with the bound and a smaller one with 1, never refused.
+
+def test_a_peers_n_at_the_kb_door_is_answered_with_the_bound(client, monkeypatch):
+    from types import SimpleNamespace
+    from app.routers import chat as chat_router
+    asked = []
+    monkeypatch.setattr(chat_router, "query_similar",
+                        lambda q, n_results, department=None: asked.append(n_results) or [])
+    monkeypatch.setattr(chat_router, "list_departments", lambda: [])
+    stamped = SimpleNamespace(state=SimpleNamespace(peer_scope="public"))
+    for n in (8, 20, 21, 10 ** 6, 2 ** 70, 0, -5):
+        assert chat_router.query_kb_for_peer(stamped, "probe", n) == {"results": []}
+    assert asked == [8, 20, 20, 20, 20, 1, 1], asked
+    for n in (21, 2 ** 70, 0):
+        r = client.get("/api/query-kb", params={"q": "probe", "n": str(n)})
+        assert r.status_code != 422, (n, r.status_code, r.text)
