@@ -331,6 +331,10 @@ Since v0.1.x, for a script or a client of your own:
   `GET /api/admin/audit` is a page past the end, and `count` on
   `DELETE /api/history/{session_id}/tail` asks for more messages than there
   are. Both used to answer 500.
+- Behind those, one backstop: a number anywhere in a request that the
+  database cannot hold, on a route that does not refuse it in its own words,
+  answers 400 "A number in the request is out of range." rather than 500.
+  The log line names the route as declared, never the number.
 - An authenticator code is accepted once per account, at whichever route
   it is sent: `POST /api/auth/mfa/complete`, the `mfa_code` of a re-key
   (`POST /api/auth/mfa/setup`) and of the caller's own unlock, and

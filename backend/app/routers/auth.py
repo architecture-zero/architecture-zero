@@ -701,7 +701,8 @@ def _needs_setup() -> bool:
     frontend's boot handler routes on, read before any session exists.
 
     Wrapped, unlike owner_exists()'s other call sites, because this app
-    registers no exception handlers: an unwrapped database fault on a pre-auth
+    registers no handler for a database fault (its one exception handler
+    answers a number out of range): an unwrapped database fault on a pre-auth
     read is a bare 500 that takes the rest of the public config down with it
     (the login screen then renders blind) and leaves nothing in the log to say
     what broke. Defaults to "claimed" because the wrong direction is the

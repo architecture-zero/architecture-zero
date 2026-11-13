@@ -26,7 +26,8 @@ import os
 import logging
 import asyncio
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.auth import AuthMiddleware
@@ -69,6 +70,25 @@ app = FastAPI(
     redoc_url="/redoc" if _API_DOCS else None,
     openapi_url="/openapi.json" if _API_DOCS else None,
 )
+
+
+# -- A number the database cannot hold ----------------------------------------
+# Every route refuses, in its own words, the whole numbers it reads that a
+# column cannot hold (jwt_auth.row_id, stored_number_refusal,
+# within_stored_range). This is the backstop for a field a route does not
+# ask about yet: the database driver raises OverflowError on a number past
+# 64 bits, and that is a 400 in words here, never a server error. The answer
+# and the log line carry neither the number nor the message - only the
+# route's path as declared, so an id in the path is not logged either.
+NUMBER_OUT_OF_RANGE = "A number in the request is out of range."
+
+
+@app.exception_handler(OverflowError)
+async def _number_out_of_range(request: Request, exc: OverflowError):
+    route = request.scope.get("route")
+    log("request_number_out_of_range", method=request.method,
+        route=getattr(route, "path", "(no route)"))
+    return JSONResponse(status_code=400, content={"detail": NUMBER_OUT_OF_RANGE})
 # INNERMOST (added first): the request-body ceiling, so the JSON parser is
 # never handed more than MAX_JSON_BODY_BYTES on any route a caller can reach
 # before authentication. The two ingest doors carry their own figure - see

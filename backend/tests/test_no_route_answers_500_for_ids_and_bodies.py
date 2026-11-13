@@ -35,6 +35,8 @@ FIX (each fails on the routes as they were):
     or null as its printed form)
   - null where text is expected in a body with no schema is the field left
     out: a null department raised
+  - the backstop: a number the database cannot hold, on a route that does
+    not ask about it, is a 400 in words, logged by the route as declared
   - a whole number past the range in a query string: answered as the
     largest one a column holds (a page past the end, more rows than there
     are), never a server error
@@ -700,3 +702,40 @@ def test_a_count_or_position_past_the_range_is_the_nearest_one_a_column_holds():
     assert jwt_auth.within_stored_range(2 ** 70) == _EDGE
     assert jwt_auth.within_stored_range(-(2 ** 70)) == -_EDGE - 1
     assert jwt_auth.within_stored_range(7) == 7
+
+
+# -- FIX: the backstop - a number the database cannot hold, on any route --------
+# Every route refuses in its own words the numbers it reads that a column
+# cannot hold. Behind that, one exception handler answers an OverflowError
+# that reaches the framework - a field a route does not ask about yet - with
+# a 400 in words, logged by the route as declared and never by the number.
+# Pinned on two routes that ask about no number: the database layer they
+# call is made to raise as the driver does.
+
+NUMBER_OUT_OF_RANGE = {"detail": "A number in the request is out of range."}
+
+
+def _driver_overflow(*args, **kwargs):
+    raise OverflowError("Python int too large to convert to SQLite INTEGER")
+
+
+def test_a_number_the_database_cannot_hold_is_a_400_where_no_route_asks_about_it(
+        client, accounts, monkeypatch):
+    import app.main as main_module
+    from app.routers import chat as chat_router
+    from app.routers import sessions as sessions_router
+    logged = []
+    monkeypatch.setattr(main_module, "log", lambda event, **fields: logged.append((event, fields)))
+    monkeypatch.setattr(sessions_router, "list_sessions", _driver_overflow)
+    monkeypatch.setattr(chat_router, "load_history", _driver_overflow)
+    low = accounts("member")
+    answer = _send(client, "GET", "/api/sessions/mine", low["headers"])
+    assert answer == (400, NUMBER_OUT_OF_RANGE), answer
+    sent = "98765432109876543210987654321"
+    answer = _send(client, "GET", f"/api/history/{sent}", low["headers"])
+    assert answer == (400, NUMBER_OUT_OF_RANGE), answer
+    assert logged == [
+        ("request_number_out_of_range", {"method": "GET", "route": "/api/sessions/mine"}),
+        ("request_number_out_of_range", {"method": "GET", "route": "/api/history/{session_id}"}),
+    ], logged
+    assert sent not in repr(logged)
