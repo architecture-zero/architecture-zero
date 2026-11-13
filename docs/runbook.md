@@ -326,6 +326,17 @@ Since v0.1.x, for a script or a client of your own:
   `as_level`, a result's `score`, a feedback's `turn_index`: "as_level is
   out of range"), and an evaluation run asked for question ids that large
   has no questions to run (400). Each used to answer 500.
+- An authenticator code is accepted once per account, at whichever route
+  it is sent: `POST /api/auth/mfa/complete`, the `mfa_code` of a re-key
+  (`POST /api/auth/mfa/setup`) and of the caller's own unlock, and
+  `POST /api/auth/mfa/enable`. A second use of a right code - or a code
+  older than one already accepted - gets that route's wrong-code status
+  (401 at the sign-in, 400 at the others) with "Invalid authenticator code.
+  A code works once: wait for the next one your authenticator shows.", and
+  is counted like a wrong code. A script that signs in and then sends a
+  code to another route needs the next code for the second request; the
+  code that turned two-factor on is spent, so the first sign-in after it
+  takes the next one. It used to be accepted again until its window ended.
 - Sign-in attempts are bounded per address (429), a request over the input
   bound is refused before it is scanned, stored or billed (413), and a second
   message on a conversation that is still answering is refused (409).

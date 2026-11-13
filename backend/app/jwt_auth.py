@@ -356,9 +356,8 @@ def _check_current_code(current_user: dict, code: str, action: str, *,
     """What every door that takes the caller's current code shares, for an
     account that has a factor enrolled. `lock_refuses` is False at one door
     only, the unlock of the caller's own account."""
-    import pyotp  # function-local, like every other pyotp use in this app
     from app.logger import log
-    from app.security import count_totp_attempt, clear_totp_attempts
+    from app.security import count_totp_attempt, clear_totp_attempts, totp_code_refusal
     from app.users import reset_failed_attempts
     if current_user.get("mfa_secret_unreadable") or not current_user.get("mfa_secret"):
         # Truthful refusal, not pyotp.TOTP(None) -> 500: the seed exists and
@@ -380,11 +379,13 @@ def _check_current_code(current_user: dict, code: str, action: str, *,
         raise HTTPException(status_code=400,
                             detail=f"A current authenticator code is required to {action}")
     count_totp_attempt(current_user["id"])
-    # Text that cannot be encoded can match no code, and the comparison would
-    # raise on it: a server error, counted in the code bound and nowhere
-    # else. It is a wrong code like any other.
-    if not can_be_encoded(code) or not pyotp.TOTP(
-            current_user["mfa_secret"]).verify(code.strip(), valid_window=1):
+    # One helper decides, for every door that takes a code: a code that is
+    # not right, text that cannot be encoded, and a right code this account
+    # has already had accepted are each a miss here - counted below like any
+    # wrong code. A code is accepted once (security.totp_code_refusal).
+    refusal = totp_code_refusal(current_user["id"], current_user["mfa_secret"],
+                                code.strip())
+    if refusal:
         if lock_stands:
             # Reached only where the lock does not refuse. The code was
             # counted above; the lock is left exactly as it stands.
@@ -392,7 +393,7 @@ def _check_current_code(current_user: dict, code: str, action: str, *,
                 how="totp", attempts=stored.get("failed_attempts"))
         else:
             _count_step_up_failure(current_user, action, "totp")
-        raise HTTPException(status_code=400, detail="Invalid authenticator code")
+        raise HTTPException(status_code=400, detail=refusal)
     clear_totp_attempts(current_user["id"])
     reset_failed_attempts(current_user["id"])
     log("auth_step_up", user_id=current_user["id"], action=action, how="totp")

@@ -348,9 +348,10 @@ def admin_mfa_reset(user_id: UserId, body: MfaResetRequest | None = Body(None),
     # cap their old seed filled. This door removes the seed the count was
     # against; an unlock leaves the seed where it is, so it never clears the
     # count.
-    from app.security import clear_totp_attempts, clear_mfa_pending
+    from app.security import clear_totp_attempts, clear_mfa_pending, clear_used_code
     clear_totp_attempts(user_id)
     clear_mfa_pending(user_id)
+    clear_used_code(user_id)   # the record of the last code accepted: that seed's
     log("admin_mfa_reset", admin_id=current_user["id"], target_user_id=user_id,
         self_target=(user_id == current_user["id"]))
     return {"status": "MFA disabled"}

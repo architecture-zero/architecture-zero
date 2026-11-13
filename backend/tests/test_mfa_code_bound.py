@@ -216,10 +216,11 @@ def test_a_right_code_clears_the_bound(client, probe, monkeypatch):
     assert _sign_in(client, _wrong_code(seed)).status_code == 401
     assert _sign_in(client, pyotp.TOTP(seed).now()).status_code == 200
     # Cleared, not merely under the cap: two more wrong codes read as wrong
-    # codes, and the right one still signs in.
+    # codes, and the right one still signs in. The NEXT step's code: a code
+    # is accepted once, so the one that signed in above is spent.
     assert _sign_in(client, _wrong_code(seed)).status_code == 401
     assert _sign_in(client, _wrong_code(seed)).status_code == 401
-    assert _sign_in(client, pyotp.TOTP(seed).now()).status_code == 200
+    assert _sign_in(client, pyotp.TOTP(seed).at(time.time(), 1)).status_code == 200
 
 
 def test_a_mistyped_pending_code_is_a_400_not_a_401(client, probe):

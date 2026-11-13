@@ -420,6 +420,95 @@ def clear_mfa_pending(user_id: int) -> None:
     state_store.delete(_pending_key(user_id))
 
 
+# -- A code is accepted once, per ACCOUNT -------------------------------------
+# A code stays right for its own 30 seconds and for the step either side (the
+# doors check with a window of one step), and nothing recorded that one had
+# been accepted. So a code that had just opened one door was good again at
+# another, and at the same door, until its window ended: the sign-in's code
+# was good for the re-key, for the unlock of the caller's own account and for
+# the enrollment confirm. A verifier must not accept the second use of a
+# one-time password (RFC 6238, section 5.2).
+#
+# So each account has one record: the newest time step it has had a code
+# ACCEPTED for. A code is accepted only if it is right for one of the three
+# steps the window allows AND that step is newer than the record, and the
+# record moves in the same versioned write that accepts it
+# (state_store.update, the shape of the counts above). Never read, compared
+# and written as separate steps: two requests carrying the same right code
+# at once would each read the old record, and both would pass. A code from
+# the step before or after is still good, once. After any code is accepted,
+# one from an older step is not, used or not.
+#
+# To the caller a refused reuse is a miss. Every door that takes a code asks
+# totp_code_refusal and treats what it answers as it treats a wrong code -
+# the same status, counted the same - and the sentence adds that a code
+# works once. The record goes when the seed goes (an operator's reset, a new
+# seed stored by a setup): one seed's steps say nothing about another's.
+CODE_WRONG = "Invalid authenticator code"
+CODE_USED = ("Invalid authenticator code. A code works once: wait for the next "
+             "one your authenticator shows.")
+# How long the record is kept after a code is accepted. It must outlive every
+# code it is there to refuse: one accepted a step ahead stays right for two
+# more steps (90 seconds from the start of the step it was accepted in).
+_USED_CODE_TTL = 300  # seconds
+
+
+def _used_code_key(user_id: int) -> str:
+    return f"totp_used:{user_id}"
+
+
+def _matched_step(seed: str, code: str) -> int | None:
+    """The time step `code` is right for under `seed` - the current one, the
+    one before or the one after - or None. All three are compared, each in
+    constant time, whichever one matches."""
+    import datetime
+    import pyotp  # function-local, like every other pyotp use in this app
+    totp = pyotp.TOTP(seed)
+    current = totp.timecode(datetime.datetime.now())
+    matched = None
+    for offset in (-1, 0, 1):
+        if pyotp.utils.strings_equal(code, totp.generate_otp(current + offset)):
+            matched = current + offset
+    return matched
+
+
+def totp_code_refusal(user_id: int, seed: str, code: str) -> str | None:
+    """None when `code` is ACCEPTED for the account: it is right for `seed`
+    now, and its time step is newer than any the account has had accepted -
+    and that step is recorded in the same write. Otherwise the sentence for
+    the caller: CODE_WRONG for a code that is not right (text that cannot be
+    encoded included - it can match no code, and comparing it would raise),
+    CODE_USED for one that is right and not newer than the record. The door
+    counts either one as a miss."""
+    try:
+        code.encode()
+    except UnicodeEncodeError:
+        return CODE_WRONG
+    step = _matched_step(seed, code)
+    if step is None:
+        return CODE_WRONG
+    accepted = []
+
+    def take(doc):
+        # Runs again if the write has to be retried, so the answer is reset.
+        accepted.clear()
+        if step > int(doc.get("step", -1)):
+            doc["step"] = step
+            accepted.append(True)
+
+    state_store.update(_used_code_key(user_id), take, _USED_CODE_TTL,
+                       default={"step": -1}, keep_expiry=False)
+    return None if accepted else CODE_USED
+
+
+def clear_used_code(user_id: int) -> None:
+    """The seed the record was kept for is gone - an operator reset the
+    factor, or a setup stored a new seed - so the record goes with it. Called
+    where the code count is cleared for the same reason, and nowhere else: a
+    right code moves the record, it never clears it."""
+    state_store.delete(_used_code_key(user_id))
+
+
 # -- Password attempts at the step-up doors, per ACCOUNT ----------------------
 # Every door that takes the caller's own password goes through
 # jwt_auth.require_step_up, and that helper counts the attempt here before the

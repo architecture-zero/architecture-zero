@@ -71,8 +71,11 @@ Particularly interesting, because these are where the interesting failures live:
   the count, a correct password does not), and `POST /api/auth/mfa/enable`
   verifies a pending code only - on an enrolled account it answers 409
   without reading the code, and a pending seed may be confirmed for
-  `MFA_PENDING_TTL` after its setup. A way to test codes against an
-  account's seed past that cap is in scope.
+  `MFA_PENDING_TTL` after its setup. A code is accepted once per account:
+  every route that takes one records the time step it accepted, in the
+  write that accepts it, and refuses a code that is not newer. A way to
+  test codes against an account's seed past that cap, or to have one code
+  accepted twice, is in scope.
 - **A replayed refresh token.** Rotation revokes the token it spends; a
   revoked refresh token presented again is treated as a stolen copy and every
   session in that family is revoked, with the same 401 a garbage token gets.

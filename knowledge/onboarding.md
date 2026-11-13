@@ -109,6 +109,10 @@ The same steps by API, for a script or a client of your own: POST
 /api/auth/mfa/setup with your current password in the body as
 `current_password` returns the QR code and the key, and POST
 /api/auth/mfa/enable with one code from the authenticator activates it.
+A code is accepted once per account, at whichever door it is sent: the one
+that activates the authenticator is spent, so the first sign-in takes the
+next code, and a script that signs in and then confirms a write with a code
+needs two different codes.
 Re-enrolling an account that already has MFA takes the same password plus
 `rekey: true` and a current code from the authenticator being replaced
 (`mfa_code`).

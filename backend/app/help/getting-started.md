@@ -13,7 +13,7 @@ There is no password-reset link. If you cannot sign in, ask your administrator. 
 
 ## Two-factor sign-in
 
-You can add a second step to your own sign-in: a six-digit code from an authenticator app on your phone. Click your name at the top of the page, then the Two-factor tab. Type your password and click Start setup, scan the QR code with the app (or type the key shown under it), then type the app's six-digit code and click Turn on. From then on, signing in asks for a code after your password. There is no off switch on that tab.
+You can add a second step to your own sign-in: a six-digit code from an authenticator app on your phone. Click your name at the top of the page, then the Two-factor tab. Type your password and click Start setup, scan the QR code with the app (or type the key shown under it), then type the app's six-digit code and click Turn on. From then on, signing in asks for a code after your password. Each code works once: the one you typed to turn two-factor on is used up, so your first sign-in takes the next code the app shows, and a code refused right after you used it somewhere else means the same - wait for the next one. There is no off switch on that tab.
 
 ## A new or lost authenticator
 

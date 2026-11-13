@@ -163,6 +163,19 @@ names the action. If the person was not mistyping, treat it as someone with
 their session guessing at their password: have them sign out everywhere and
 review the audit log.
 
+## "Invalid authenticator code. A code works once"
+
+The code was right, and this account has already had it - or a newer one -
+accepted: at the sign-in, at a confirmation that asks for a code (replacing
+an authenticator, unlocking your own account), or when two-factor was
+turned on. A code is accepted once, wherever it is sent, so the same code
+cannot be replayed at another door while it is still on the screen. Wait for
+the authenticator to show the next code (at most 30 seconds) and use that.
+It is counted like a wrong code, so do not retry the same one: repeated
+tries reach the code cap and, at the sign-in, the account lock. A plain
+"Invalid authenticator code" with no second sentence is a code that was
+never right: check the clock on the phone.
+
 ## "Unlocking your own account takes a current authenticator code"
 
 Unlocking an account clears the lock that stops password guessing at the

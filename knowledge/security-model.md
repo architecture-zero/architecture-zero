@@ -232,6 +232,27 @@ for it. A whole number in a body that a column cannot hold is refused by
 name the same way. A test walks the app's own route table with such ids
 and bodies, so a route added later is asked too.
 
+An authenticator code is accepted once. A code stays right for its own 30
+seconds and the step either side, so without a record of what had been
+accepted the sign-in's code was good again - at the re-key, at the unlock
+of the caller's own account, at the enrollment confirm, and at the sign-in
+itself - until its window ended. Each account now has one record, the
+newest time step it has had a code accepted for, kept in the same store as
+the counts above (the database, so it survives a restart and is shared by
+every worker on the node). Every door that takes a code asks one helper
+(`security.totp_code_refusal`): a code is accepted only if it is right and
+its step is newer than the record, and the record moves in the same
+versioned write that accepts it, so the same right code sent by several
+requests at once is accepted for one of them. A code from the step before
+or after is still good, once; after any code is accepted, an older one is
+not. A reuse is a miss - the door's own status, the wrong code's sentence
+plus "A code works once: wait for the next one your authenticator shows" -
+and it is counted like a wrong code: in the code bound, against the
+sign-in's challenge, toward the lock. The code that confirms a setup is
+recorded like any other, so the first sign-in takes the next one. The
+record goes when the seed goes: an administrator's MFA reset, and the new
+seed a setup stores.
+
 Password logins carry per-account lockout after repeated failures. TOTP
 two-factor is built in, and REQUIRE_MFA=true refuses password logins for
 un-enrolled accounts - checked AFTER password verification, deliberately,

@@ -335,11 +335,13 @@ def test_a_self_unlock_with_a_wrong_code_is_refused_and_a_right_one_unlocks(clie
     assert not row["locked_until"] and row["failed_attempts"] == 0
     assert _codes_counted(owner) == 0, "a right code did not clear the code count"
 
+    # The sign-in takes the NEXT step's code: a code is accepted once, and
+    # the one that unlocked the account above is spent.
     r = _sign_in(client, owner, PW)
     assert r.status_code == 200 and r.json().get("mfa_required"), r.text
     r = client.post("/api/auth/mfa/complete",
                     json={"mfa_token": r.json()["mfa_token"],
-                          "code": pyotp.TOTP(owner["seed"]).now()})
+                          "code": pyotp.TOTP(owner["seed"]).at(time.time(), 1)})
     assert r.status_code == 200 and "access_token" in r.json(), r.text
 
 
@@ -759,8 +761,11 @@ def _is_once_per_window(response, who_else):
             and said.group(2) == who_else)
 
 
-def _right_code(account):
-    return pyotp.TOTP(account["seed"]).now()
+def _right_code(account, step=0):
+    """A code that is right now: the current step's, or with step=1 the next
+    step's - also accepted, and newer than a current one already used (a
+    code is accepted once)."""
+    return pyotp.TOTP(account["seed"]).at(time.time(), step)
 
 
 def test_the_second_own_account_unlock_in_a_window_is_refused(client, accounts):
@@ -847,7 +852,9 @@ def test_after_the_window_an_own_account_unlock_works_again(client, accounts):
     assert _is_once_per_window(_unlock(client, top, top, mfa_code=_right_code(top)), "another Owner")
     # The count's row as it reads once the lockout window has passed.
     state_store.put(f"own_unlock:{top['id']}", {"n": 1, "since": 0.0}, ttl=-1)
-    r = _unlock(client, top, top, mfa_code=_right_code(top))
+    # A window later the authenticator shows a new code; the next step's
+    # stands in for it, since the first unlock's code is spent.
+    r = _unlock(client, top, top, mfa_code=_right_code(top, 1))
     assert r.status_code == 200 and r.json() == UNLOCKED, r.text
     assert not _row(top)["locked_until"]
 

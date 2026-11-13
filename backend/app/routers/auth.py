@@ -35,7 +35,7 @@ from app.jwt_auth import (authenticate_user, create_access_token,
                           get_current_user, validate_password,
                           create_mfa_challenge_token, decode_mfa_challenge_token,
                           refuse_if_mfa_seed_stranded, require_step_up,
-                          require_totp_step_up, can_be_encoded, username_refusal,
+                          require_totp_step_up, username_refusal,
                           TokenId,
                           MAX_LOGIN_ATTEMPTS, LOCKOUT_DURATION_MINUTES)
 from app.logger import log, log_error
@@ -45,6 +45,7 @@ from app.security import (check_setup_rate_limit, check_auth_rate_limit,
                           check_mfa_challenge,
                           record_mfa_failure, burn_mfa_challenge,
                           count_totp_attempt, clear_totp_attempts,
+                          totp_code_refusal, clear_used_code,
                           mark_mfa_pending, mfa_pending_live, clear_mfa_pending,
                           client_ip_from_request, verify_setup_claim_code,
                           burn_setup_claim_code)
@@ -283,7 +284,6 @@ def mfa_complete(request: MFACompleteRequest, req: Request):
     enrollment confirm.
     """
     from datetime import datetime, timezone, timedelta
-    import pyotp
     check_auth_rate_limit(client_ip_from_request(req), "mfa")
     user_id, jti = decode_mfa_challenge_token(request.mfa_token)
     check_mfa_challenge(jti)
@@ -308,10 +308,12 @@ def mfa_complete(request: MFACompleteRequest, req: Request):
         unlock_user(user["id"])
 
     count_totp_attempt(user["id"])
-    totp = pyotp.TOTP(user["mfa_secret"])
-    # A code that cannot be encoded can match nothing, and the comparison
-    # would raise on it: it is a wrong code, counted like one.
-    if not can_be_encoded(request.code) or not totp.verify(request.code, valid_window=1):
+    # A code that is not right, one that cannot be encoded, and a right one
+    # this account has already had accepted - at this door or another - are
+    # each a miss: counted against the challenge and the account alike. A
+    # code is accepted once (security.totp_code_refusal).
+    refusal = totp_code_refusal(user["id"], user["mfa_secret"], request.code)
+    if refusal:
         record_mfa_failure(jti)
         increment("auth_failures_total")
         attempts = increment_failed_attempts(user["id"])
@@ -320,7 +322,7 @@ def mfa_complete(request: MFACompleteRequest, req: Request):
             lock_user(user["id"], until)
             log("auth_lockout", user_id=user["id"], username=user["username"], stage="mfa")
             raise HTTPException(status_code=429, detail=f"Too many failed attempts. Account locked for {LOCKOUT_DURATION_MINUTES} minutes.")
-        raise HTTPException(status_code=401, detail="Invalid authenticator code")
+        raise HTTPException(status_code=401, detail=refusal)
 
     burn_mfa_challenge(jti)
     clear_totp_attempts(user["id"])
@@ -393,6 +395,9 @@ def mfa_setup(request: MFASetupRequest | None = None,
             username=current_user["username"])
     secret = pyotp.random_base32()
     set_mfa_secret(current_user["id"], secret)
+    # The record of the last code accepted was kept for the seed this one
+    # replaces; the new seed's first code is not a reuse of anything.
+    clear_used_code(current_user["id"])
     # The new seed may be confirmed for MFA_PENDING_TTL, then setup starts
     # again (2026-10-02): the confirm takes a session alone, so a pending seed
     # that waited forever was a door that stayed open forever.
@@ -434,7 +439,6 @@ def mfa_enable(request: MFAEnableRequest, current_user: dict = Depends(get_curre
     before the code is read, and a pending seed may be confirmed only for
     MFA_PENDING_TTL after its setup.
     """
-    import pyotp
     user = get_user_by_id(current_user["id"])
     if user and user.get("mfa_enabled"):
         raise HTTPException(
@@ -451,13 +455,16 @@ def mfa_enable(request: MFAEnableRequest, current_user: dict = Depends(get_curre
             detail="This authenticator setup has expired - start it again with "
                    "POST /api/auth/mfa/setup.")
     count_totp_attempt(user["id"])
-    totp = pyotp.TOTP(user["mfa_secret"])
-    if not can_be_encoded(request.code) or not totp.verify(request.code, valid_window=1):
+    # The same helper as every other door, so the code that confirms a setup
+    # is recorded as accepted: it is spent, and the first sign-in takes the
+    # next one.
+    refusal = totp_code_refusal(user["id"], user["mfa_secret"], request.code)
+    if refusal:
         # 400, not 401 (2026-10-02): a signed-in client reads a 401 as an
         # expired session - refresh, retry, sign out - so a mistyped code in
         # the middle of a re-key signed the person out while MFA was off.
         # The same contract as the step-up doors.
-        raise HTTPException(status_code=400, detail="Invalid authenticator code")
+        raise HTTPException(status_code=400, detail=refusal)
     clear_totp_attempts(user["id"])
     clear_mfa_pending(user["id"])
     enable_mfa(current_user["id"])
