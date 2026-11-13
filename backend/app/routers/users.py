@@ -17,13 +17,14 @@ from pydantic import BaseModel
 
 from app.jwt_auth import (require_permission, hash_password, validate_password,
                           require_step_up, password_required_for_authority,
-                          require_code_to_unlock_yourself, lock_minutes_left)
+                          require_code_to_unlock_yourself, lock_minutes_left,
+                          username_refusal)
 from app.logger import log
 from app.permissions import PERMISSION_SCOPES, ROLE_PERMISSIONS
 from app.users import (create_user, list_users, deactivate_user, update_user_role,
                        update_user_department, update_user_permissions,
                        revoke_all_user_tokens, get_user_by_id, disable_mfa,
-                       unlock_user)
+                       unlock_user, get_user_by_id_any_status)
 
 router = APIRouter()
 
@@ -96,6 +97,9 @@ def add_user(request: CreateUserRequest, current_user: dict = Depends(require_pe
         raise HTTPException(status_code=403, detail="Only an Owner can create an Owner")
     if not is_owner(current_user):
         _refuse_create_beyond_creator(current_user, request.role, request.department)
+    refusal = username_refusal(request.username)
+    if refusal:
+        raise HTTPException(status_code=400, detail=refusal)
     errors = validate_password(request.password)
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))
@@ -331,7 +335,16 @@ def admin_unlock_user(user_id: int, body: UnlockRequest | None = Body(None),
       whose sign-in someone else keeps locking, has no other account that
       may unlock theirs. An account with no authenticator enrolled waits
       for the lock to end or asks another administrator of its tier, and
-      the refusal says so, with the minutes.
+      the refusal says so, with the minutes. ONCE PER LOCKOUT WINDOW
+      (security.count_own_unlock): a right code clears the lock and its
+      count of misses, so an own-account unlock that could be repeated
+      would hand the sign-in's guesses back without end to whoever holds a
+      session and the authenticator and not the password. The second one in
+      a window answers 429, a right code included.
+
+    An administrator's unlock of ANOTHER account is deliberately not
+    limited that way: it takes the administrator's own password every time,
+    and the party it would be limiting is the administrator.
 
     Neither proof clears the two counts that outlast an unlock: the
     passwords checked at the step-up doors (security.count_password_attempt)
@@ -364,8 +377,16 @@ def admin_unlock_user(user_id: int, body: UnlockRequest | None = Body(None),
                        f"minute(s).{own_way}")
         require_step_up(current_user, body.current_password if body else "",
                         "unlock an account")
-    target = get_user_by_id(user_id)
-    if target and target.get("role") == "owner" and not is_owner(current_user):
+    # The target is read AFTER the proof, so a caller who fails the proof
+    # learns nothing about which ids exist - and through the any-status
+    # reader, because the write below is by id alone: a deactivated row is
+    # still a row whose lock this would clear, so the ceiling applies to it
+    # as to an active one, and an id that names no account is a 404, not an
+    # "unlocked".
+    target = get_user_by_id_any_status(user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="No such user")
+    if target.get("role") == "owner" and not is_owner(current_user):
         raise HTTPException(status_code=403,
                             detail="Only an Owner can unlock an Owner's account")
     unlock_user(user_id)

@@ -311,7 +311,19 @@ def require_code_to_unlock_yourself(current_user: dict, code: str, who_else: str
 
     An account with no authenticator enrolled has no proof to give here. It
     is told to wait, with the minutes left, or to ask `who_else` - the route's
-    words for who else may unlock an account of this tier."""
+    words for who else may unlock an account of this tier.
+
+    ONCE PER LOCKOUT WINDOW. A right code here clears the lock and its
+    count of misses, so without a count of its own this door would hand the
+    sign-in's guesses back as often as it was asked: whoever holds a live
+    session and the authenticator, and not the password, could unlock, guess
+    until the lock landed, and unlock again. security.count_own_unlock takes
+    the window's one place BEFORE the code is read and refuses with 429 when
+    it is taken, a right code included; the place is handed back when no
+    unlock followed (the code was missing, wrong, or refused by the code
+    bound), so a mistyped code does not cost the account its remedy. Nothing
+    else ends that count before its window does."""
+    from app.security import count_own_unlock, release_own_unlock
     if not current_user.get("mfa_enabled"):
         minutes = lock_minutes_left(current_user)
         what_now = (f"Wait {minutes} minute(s) for the lock to end, or ask {who_else} "
@@ -320,7 +332,13 @@ def require_code_to_unlock_yourself(current_user: dict, code: str, who_else: str
             status_code=400,
             detail=f"Unlocking your own account takes a current authenticator code, "
                    f"and your account has no authenticator enrolled. {what_now}")
-    _check_current_code(current_user, code, "unlock your own account", lock_refuses=False)
+    count_own_unlock(current_user["id"], who_else)
+    try:
+        _check_current_code(current_user, code, "unlock your own account",
+                            lock_refuses=False)
+    except HTTPException:
+        release_own_unlock(current_user["id"])
+        raise
 
 
 def _check_current_code(current_user: dict, code: str, action: str, *,
@@ -352,7 +370,11 @@ def _check_current_code(current_user: dict, code: str, action: str, *,
         raise HTTPException(status_code=400,
                             detail=f"A current authenticator code is required to {action}")
     count_totp_attempt(current_user["id"])
-    if not pyotp.TOTP(current_user["mfa_secret"]).verify(code.strip(), valid_window=1):
+    # Text that cannot be encoded can match no code, and the comparison would
+    # raise on it: a server error, counted in the code bound and nowhere
+    # else. It is a wrong code like any other.
+    if not can_be_encoded(code) or not pyotp.TOTP(
+            current_user["mfa_secret"]).verify(code.strip(), valid_window=1):
         if lock_stands:
             # Reached only where the lock does not refuse. The code was
             # counted above; the lock is left exactly as it stands.
@@ -510,6 +532,29 @@ def validate_password(password: str) -> list[str]:
     if REQUIRE_SPECIAL_CHARS and not any(c in "!@#$%^&*()_+-=[]{}|;':\",./<>?" for c in password):
         errors.append("Password must contain at least one special character")
     return errors
+
+
+def can_be_encoded(text: str) -> bool:
+    """False for text that is not valid Unicode - JSON can carry half of a
+    surrogate pair. Such text can match no stored name, password or code,
+    and encoding it raises; every door that takes text from a request body
+    and compares or stores it asks this first."""
+    try:
+        text.encode()
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def username_refusal(username: str) -> str | None:
+    """Why this text cannot be an account's name, or None. One reason today:
+    text that cannot be encoded cannot be stored, and the write would raise.
+    Every route that creates an account or renames one asks this before it
+    writes."""
+    if not can_be_encoded(username):
+        return ("Username contains a character that cannot be stored. "
+                "Choose a different username")
+    return None
 
 
 def create_mfa_challenge_token(user_id: int) -> str:

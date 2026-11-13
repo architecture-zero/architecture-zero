@@ -36,7 +36,7 @@ from app.jwt_auth import (authenticate_user, create_access_token,
                           get_current_user, validate_password,
                           create_mfa_challenge_token, decode_mfa_challenge_token,
                           refuse_if_mfa_seed_stranded, require_step_up,
-                          require_totp_step_up,
+                          require_totp_step_up, can_be_encoded, username_refusal,
                           MAX_LOGIN_ATTEMPTS, LOCKOUT_DURATION_MINUTES)
 from app.logger import log, log_error
 from app.metrics import increment
@@ -315,7 +315,9 @@ def mfa_complete(request: MFACompleteRequest, req: Request):
 
     count_totp_attempt(user["id"])
     totp = pyotp.TOTP(user["mfa_secret"])
-    if not totp.verify(request.code, valid_window=1):
+    # A code that cannot be encoded can match nothing, and the comparison
+    # would raise on it: it is a wrong code, counted like one.
+    if not can_be_encoded(request.code) or not totp.verify(request.code, valid_window=1):
         record_mfa_failure(jti)
         increment("auth_failures_total")
         attempts = increment_failed_attempts(user["id"])
@@ -456,7 +458,7 @@ def mfa_enable(request: MFAEnableRequest, current_user: dict = Depends(get_curre
                    "POST /api/auth/mfa/setup.")
     count_totp_attempt(user["id"])
     totp = pyotp.TOTP(user["mfa_secret"])
-    if not totp.verify(request.code, valid_window=1):
+    if not can_be_encoded(request.code) or not totp.verify(request.code, valid_window=1):
         # 400, not 401 (2026-10-02): a signed-in client reads a 401 as an
         # expired session - refresh, retry, sign out - so a mistyped code in
         # the middle of a re-key signed the person out while MFA was off.
@@ -667,6 +669,9 @@ def change_username(request: ChangeUsernameRequest, current_user: dict = Depends
     new_username = request.new_username.strip()
     if not new_username or len(new_username) < 2:
         raise HTTPException(status_code=400, detail="Username must be at least 2 characters")
+    refusal = username_refusal(new_username)
+    if refusal:
+        raise HTTPException(status_code=400, detail=refusal)
     # T9: this route re-issues a token pair for any bearer - a mint like any
     # other (2026-09-09 review rider A2-2), so a stranded account is refused
     # here and not in get_current_user, where /me must keep REPORTING the
@@ -805,6 +810,9 @@ def setup_admin(request: ClaimDeploymentRequest, req: Request):
                    "the first Owner has no way to enroll a factor before their "
                    "first sign-in. Start with REQUIRE_MFA=false, claim the "
                    "deployment, enroll from Settings, then set it to true.")
+    refusal = username_refusal(request.username)
+    if refusal:
+        raise HTTPException(status_code=400, detail=refusal)
     errors = validate_password(request.password)
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))

@@ -69,6 +69,13 @@ def create_user(username: str, password_hash: str, role: str = "member",
 
 
 def get_user_by_username(username: str) -> dict | None:
+    # Text that cannot be encoded (JSON can carry half of a surrogate pair)
+    # names no account, and the query would raise on it. The sign-in then
+    # answers what it answers for any unknown name, at the same cost.
+    try:
+        username.encode()
+    except UnicodeEncodeError:
+        return None
     with get_session() as db:
         user = db.query(User).filter(User.username == username,
                                      User.is_active == True).first()  # noqa: E712
@@ -79,6 +86,16 @@ def get_user_by_id(user_id: int) -> dict | None:
     with get_session() as db:
         user = db.query(User).filter(User.id == user_id,
                                      User.is_active == True).first()  # noqa: E712
+        return _user_to_dict(user) if user else None
+
+
+def get_user_by_id_any_status(user_id: int) -> dict | None:
+    """The account's row whether it is active or deactivated. For a route
+    that writes by id: get_user_by_id hides a deactivated row and the write
+    does not, so a check made through it is skipped for exactly the rows it
+    cannot see."""
+    with get_session() as db:
+        user = db.query(User).filter(User.id == user_id).first()
         return _user_to_dict(user) if user else None
 
 

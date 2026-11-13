@@ -30,6 +30,18 @@ interface User {
 const mfaStranded = (u: { mfa_enabled: number; mfa_secret_unreadable?: boolean }) =>
   Boolean(u.mfa_enabled) && u.mfa_secret_unreadable === true
 
+// A lock stands until its time and no longer. The server leaves
+// locked_until on the row after that (it clears it when the account is next
+// looked at), so the Locked badge and the Unlock button go by the time, not
+// by the field being set: a click on a lock that had already ended asked for
+// proof to clear nothing. A value that does not parse reads as standing -
+// the server decides.
+const lockStands = (u: { locked_until: string | null }) => {
+  if (!u.locked_until) return false
+  const until = Date.parse(u.locked_until)
+  return Number.isNaN(until) || until > Date.now()
+}
+
 interface PermissionMeta {
   scopes: string[]
   presets: Record<string, string[]>
@@ -378,7 +390,7 @@ export function UsersTab({ api, headers, currentUser }: {
                   ) : u.mfa_enabled ? (
                     <span className="text-xs px-1.5 py-0.5 rounded bg-green-500/15 text-green-400 border border-green-500/30">MFA</span>
                   ) : null}
-                  {u.locked_until ? (
+                  {lockStands(u) ? (
                     <span className="text-xs px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/30">Locked</span>
                   ) : null}
                 </p>
@@ -412,7 +424,7 @@ export function UsersTab({ api, headers, currentUser }: {
                 >
                   {expandedUser === u.id ? '▲' : '▼'} perms
                 </button>
-                {u.locked_until && (
+                {lockStands(u) && (
                   <button
                     onClick={() => unlockUser(u)}
                     className="text-xs text-yellow-500 hover:text-yellow-400 transition-colors"

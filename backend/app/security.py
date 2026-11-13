@@ -500,6 +500,75 @@ def clear_password_attempts(user_id: int) -> None:
     state_store.delete(_password_key(user_id))
 
 
+# -- Unlocks of the caller's OWN account, per ACCOUNT -------------------------
+# Unlocking your own account takes a current authenticator code
+# (jwt_auth.require_code_to_unlock_yourself), and a right code clears the
+# sign-in's lock and its count of misses. Without a count of its own, whoever
+# holds a live session AND the account's authenticator - and not its password
+# - could unlock, guess at the sign-in until the lock landed, and unlock
+# again, as often as they liked. So own-account unlocks are counted: ONE per
+# lockout window. That keeps the remedy the door exists for (the one account
+# nobody else may unlock gets it once a window) and makes what a session plus
+# an authenticator adds a fixed number of sign-in guesses, not an open one.
+#
+# The shape of the two counts above: ONE versioned write (state_store.update)
+# BEFORE the code is read, a fixed window from the first attempt, and past
+# the limit a 429 that says so and gives the minutes - for a right code as
+# for a wrong one, since no code is read. What is counted is unlocks: a place
+# taken for a request whose code then turns out wrong (or is refused by the
+# code bound) is handed back, because nothing was unlocked - wrong codes have
+# their own count above. Nothing else ends the count before its window does:
+# not a right code, not an administrator's unlock of the same account, not an
+# MFA reset. An administrator's unlock of ANOTHER account is not counted here
+# at all: it takes the administrator's own password, and that party is the
+# administrator.
+OWN_UNLOCKS_PER_WINDOW = 1
+
+
+def _own_unlock_key(user_id: int) -> str:
+    return f"own_unlock:{user_id}"
+
+
+def count_own_unlock(user_id: int, who_else: str) -> None:
+    """Take this window's place for one unlock of the caller's own account,
+    or refuse with 429 when it is taken - before the code is read. The caller
+    hands the place back (release_own_unlock) if no unlock follows."""
+    from app import jwt_auth
+    window = jwt_auth.LOCKOUT_DURATION_MINUTES * 60
+    taken = []
+
+    def take(doc):
+        # Runs again if the write has to be retried, so the answer is reset.
+        taken.clear()
+        if int(doc.get("n", 0)) < OWN_UNLOCKS_PER_WINDOW:
+            doc["n"] = int(doc.get("n", 0)) + 1
+            taken.append(True)
+
+    doc = state_store.update(_own_unlock_key(user_id), take, window,
+                             default={"n": 0, "since": time.time()})
+    if not taken:
+        from app.logger import log
+        log("auth_own_unlock_refused", user_id=user_id, window_seconds=window)
+        left = doc.get("since", 0) + window - time.time()
+        remaining = max(1, int(-(-left // 60)))
+        raise HTTPException(
+            status_code=429,
+            detail=(f"Your account was already unlocked from its own session in this "
+                    f"lockout window, and that is allowed once per window. Try again "
+                    f"in {remaining} minute(s), or ask {who_else} to unlock it."))
+
+
+def release_own_unlock(user_id: int) -> None:
+    """Hand back a place count_own_unlock took, for a request that unlocked
+    nothing (its code was wrong, missing, or refused by the code bound). The
+    window is not moved."""
+    from app import jwt_auth
+    state_store.update(_own_unlock_key(user_id),
+                       lambda doc: doc.__setitem__("n", max(0, int(doc.get("n", 0)) - 1)),
+                       jwt_auth.LOCKOUT_DURATION_MINUTES * 60,
+                       default={"n": 0, "since": time.time()})
+
+
 
 # ── Daily global guest budget (public-demo wallet backstop) ───────────────────
 # Per-IP rate limits don't stop distributed traffic / a busy day; this caps total guest

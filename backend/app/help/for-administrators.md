@@ -36,7 +36,7 @@ Users, then create the account with a username, a password, a role and a departm
 
 ## Unlocking an account
 
-After too many wrong passwords an account locks for a while and then unlocks itself. To unlock it sooner: Users, then Unlock on the locked account. It asks for your own password. Unlocking your own account asks for a code from your authenticator app instead; if you have no authenticator set up, wait for the lock to end or ask another administrator.
+After too many wrong passwords an account locks for a while and then unlocks itself. To unlock it sooner: Users, then Unlock on the locked account. It asks for your own password. Unlocking your own account asks for a code from your authenticator app instead, and works once in each lockout period; if you have no authenticator set up, or have already unlocked yourself once, wait for the lock to end or ask another administrator.
 
 ## Adding documents
 

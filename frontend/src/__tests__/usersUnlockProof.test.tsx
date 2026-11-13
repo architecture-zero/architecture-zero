@@ -15,6 +15,10 @@
  * code and sends it; Cancel sends nothing.
  * PIN (through the prompt, so not runnable on the button as it was): a
  * refusal is shown; an accepted unlock shows no failure and re-reads the list.
+ *
+ * And the Locked badge and the Unlock button are drawn only while the lock
+ * stands: locked_until stays on the row after its time, and a click then
+ * asked for proof to clear a lock that had already ended.
  */
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
 import { describe, it, expect, vi, afterEach } from 'vitest'
@@ -146,5 +150,23 @@ describe('Users tab: the Unlock button asks for the proof', () => {
     await waitFor(() => expect(calls.userReads).toBeGreaterThanOrEqual(2))
     expect(calls.unlocks).toHaveLength(1)
     expect(screen.queryByText(/Unlocking account failed/)).toBeNull()
+  })
+})
+
+describe('Users tab: a lock is shown only while it stands', () => {
+  it('FIX: a lock whose time has passed draws no Locked badge and no Unlock button', async () => {
+    installFetch([{ ...account(2, 'pat', 0), locked_until: '2000-01-01T00:00:00+00:00' }],
+      () => json({ status: 'unlocked' }))
+    show()
+    expect(await screen.findByText('pat')).toBeInTheDocument()
+    expect(screen.queryByText('Locked')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Unlock' })).toBeNull()
+  })
+
+  it('CONTROL: a lock that stands draws both', async () => {
+    installFetch([account(2, 'pat', 0)], () => json({ status: 'unlocked' }))
+    show()
+    expect(await screen.findByText('Locked')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Unlock' })).toBeInTheDocument()
   })
 })

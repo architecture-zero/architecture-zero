@@ -238,16 +238,26 @@ Since v0.1.x, for a script or a client of your own:
   own lock. For the caller's own account send `mfa_code`, a current
   authenticator code, counted like every other code (a wrong one answers
   400 "Invalid authenticator code"); the password is not accepted there. An
+  account's own unlock is allowed once per lockout window
+  (`LOCKOUT_DURATION_MINUTES`): a second one in the window answers 429 with
+  the minutes left, a right code included, and nothing ends that wait early.
+  An administrator's unlock of another account is not limited that way. An
   account with no authenticator enrolled cannot unlock itself: the 400 says
   how many minutes the lock has left and to ask another Owner (for an
   Owner's account) or another administrator. A caller whose own account is
   locked cannot unlock anyone else with its password: 429, naming its own
   lock and the minutes left. Unlocking an Owner's account takes an Owner
-  (403 otherwise), as before.
+  (403 otherwise), as before, and that holds for a deactivated account too.
+  An id that names no account answers 404 "No such user" once the proof has
+  passed (it used to answer "unlocked").
 - At the sign-in, a password that is not valid text (it cannot be encoded)
   is a wrong password: 401, counted as one miss. A new password that is not
   valid text is refused with a plain 400 wherever a password is set. Both
-  used to answer 500.
+  used to answer 500. The same now holds for a username and for an
+  authenticator code: a username that is not valid text is an unknown
+  username at the sign-in (401) and a plain 400 where an account is created
+  or renamed, and a code that is not valid text is a wrong code wherever a
+  code is taken.
 - Sign-in attempts are bounded per address (429), a request over the input
   bound is refused before it is scanned, stored or billed (413), and a second
   message on a conversation that is still answering is refused (409).

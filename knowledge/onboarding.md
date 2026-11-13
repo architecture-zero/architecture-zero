@@ -72,9 +72,9 @@ admin can unlock it immediately from the Users tab, confirming with their
 own password (POST /api/admin/users/{id}/unlock with current_password; an
 Owner's account is unlocked by an Owner). An admin whose own account is
 locked can unlock it from a session they still have, with a current code
-from their authenticator app (mfa_code) - not with the password, and not at
-all without an authenticator enrolled: then they wait, or ask another admin
-(an Owner asks another Owner). Wrong
+from their authenticator app (mfa_code), once per lockout window - not with
+the password, and not at all without an authenticator enrolled: then they
+wait, or ask another admin (an Owner asks another Owner). Wrong
 passwords count wherever the account's own password is asked for, not only at
 sign-in: changing your password or your username, setting up two-factor, and
 the confirmations the admin panel asks for all count toward the same lock,

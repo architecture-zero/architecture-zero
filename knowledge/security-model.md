@@ -168,15 +168,29 @@ account is locked is refused (429, naming its own lock). Unlocking your own
 account takes a current authenticator code, counted before it is read in
 the bound every code door shares; the lock does not refuse that one door,
 because the lock is what a right code clears, and a wrong code while the
-lock stands leaves the lock exactly as it is. The password is not accepted
+lock stands leaves the lock exactly as it is. It is allowed once per
+lockout window: the unlock takes the window's one place before the code is
+read, and a second one in the window is refused (429, with the minutes),
+a right code included - otherwise whoever held a session and the
+authenticator, and not the password, could unlock, guess at the sign-in
+until the lock landed, and unlock again without end. A request whose code
+was wrong hands its place back, and nothing else ends the count before its
+window does. An administrator's unlock of another account is deliberately
+not limited that way: it takes the administrator's password each time. The
+password is not accepted
 for your own account - a locked account's password is not accepted
 anywhere - and the caller's own id is not simply refused, because a sole
 Owner whose sign-in someone else keeps locking has no other account that
 may unlock theirs. An account with no authenticator enrolled cannot unlock
 itself: it waits for the lock to end, or asks another Owner (an Owner's
 account) or another administrator, and the refusal says so with the minutes
-left. A password that cannot be encoded is a wrong password at the sign-in
-as well: the same 401, counted as one miss.
+left. The target is read after the proof and whatever its status: an id
+that names no account is a 404, and the Owner-only ceiling holds for a
+deactivated account as for an active one. A password that cannot be encoded
+is a wrong password at the sign-in as well: the same 401, counted as one
+miss. A username that cannot be encoded is an unknown username there, at
+the cost of one, and a code that cannot be encoded is a wrong code at every
+door that takes a code.
 
 The administrative MFA reset (`POST /api/admin/users/{id}/mfa-reset`)
 requires the manage_users scope, refuses Admin-on-Owner, and since

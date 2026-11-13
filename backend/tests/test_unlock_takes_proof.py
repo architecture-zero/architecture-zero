@@ -47,6 +47,19 @@ FIX (each fails on the route and the helpers as they were):
     other account
   - a sign-in password that cannot be encoded is a wrong password
   - a new password that cannot be encoded is refused in words
+  - an own-account unlock is allowed once per lockout window: the second
+    is refused, a right code included, before the code is read; the loop
+    of unlock-and-guess stops; a wrong code does not use the window's one
+    unlock up; after the window it works again; an administrator's unlock
+    of the same account is neither counted nor a way to clear the count
+  - a code that cannot be encoded is a wrong code at every door that takes
+    one: the own-account unlock, the sign-in's second step, the enrollment
+    confirm
+  - an id that names no account is a 404, after the proof; the ceiling
+    holds for a deactivated account
+  - a username that cannot be encoded is an unknown username at the
+    sign-in, at the cost of one, and is refused in words where an account
+    is created or renamed
 CONTROL (true before and after, by design):
   - an administrator with the right password unlocks another account, and
     that person signs in at once
@@ -55,6 +68,10 @@ CONTROL (true before and after, by design):
     password
   - an account without manage_users is refused as before
   - every function that hashes a new password asks the policy about it
+    first (read from the source)
+  - every function that clears a lock or its count of misses is on a short
+    list here, with the reason it may (read from the source)
+  - every function that creates or renames an account asks about the name
     first (read from the source)
 
 Every case drives the app's own routes through the suite's test client, on
@@ -181,6 +198,35 @@ def _codes_counted(account):
 def _passwords_counted(account):
     doc = state_store.get(f"pw_fail:{account['id']}")
     return 0 if doc is None else doc["n"]
+
+
+def _own_unlocks_counted(account):
+    doc = state_store.get(f"own_unlock:{account['id']}")
+    return 0 if doc is None else doc["n"]
+
+
+def _lock_of(account):
+    """The lock stored on the account's row whatever its status - _row reads
+    through get_user_by_id, which hides a deactivated account."""
+    from app.db import get_session
+    from app.models import User
+    with get_session() as db:
+        return db.query(User.locked_until).filter(User.id == account["id"]).one()[0]
+
+
+class _HashRounds:
+    """Counts the bcrypt rounds paid while it is installed: every check goes
+    through bcrypt.checkpw, whichever function asked for it."""
+
+    def __init__(self, monkeypatch):
+        self.paid = 0
+        real = jwt_auth.bcrypt.checkpw
+
+        def checkpw(password, hashed):
+            self.paid += 1
+            return real(password, hashed)
+
+        monkeypatch.setattr(jwt_auth.bcrypt, "checkpw", checkpw)
 
 
 _WAIT_OR_ASK = re.compile(r"Wait (\d+) minute\(s\) for the lock to end, or ask (.+) to unlock it\.")
@@ -407,12 +453,16 @@ def test_a_locked_caller_with_an_authenticator_unlocks_itself_first(client, acco
 
 # -- FIX: a password that cannot be encoded -----------------------------------
 
-def test_a_sign_in_password_that_cannot_be_encoded_is_a_wrong_password(client, accounts):
+def test_a_sign_in_password_that_cannot_be_encoded_is_a_wrong_password(client, accounts,
+                                                                       monkeypatch):
     """JSON can carry text that is not valid Unicode (half of a surrogate
     pair), and such text cannot be encoded for the hash. At the sign-in it is
     a wrong password: the same answer, one miss counted each time, the lock
-    at the limit - and the same answer for a username that does not exist."""
+    at the limit - and the same answer for a username that does not exist.
+    And the same COST: one hash round is paid for each of them, as for any
+    wrong password, so the answer's timing says nothing either."""
     member = accounts("member")
+    rounds = _HashRounds(monkeypatch)
     answers = []
     for name in [member["name"]] * LIMIT + ["utp_nobody"]:
         body = json.dumps({"username": name, "password": CANNOT_BE_ENCODED})
@@ -423,6 +473,8 @@ def test_a_sign_in_password_that_cannot_be_encoded_is_a_wrong_password(client, a
         except Exception as exc:          # the route raised: a server error
             answers.append(("error", type(exc).__name__))
     assert answers == [(401, SIGN_IN_REFUSED)] * (LIMIT + 1), answers
+    assert rounds.paid == LIMIT + 1, \
+        f"{rounds.paid} hash rounds were paid for {LIMIT + 1} sign-ins; one each is the rule"
     row = _row(member)
     assert row["failed_attempts"] == LIMIT and row["locked_until"]
 
@@ -528,9 +580,12 @@ class _Hashes(ast.NodeVisitor):
 
     def visit_Call(self, node):
         name = getattr(node.func, "id", getattr(node.func, "attr", None))
-        if name in ("validate_password", "hash_password") and node.args:
+        if name in ("validate_password", "hash_password"):
+            # The password, whether it was passed by position or by name.
+            given = node.args[0] if node.args else (
+                node.keywords[0].value if node.keywords else None)
             self.calls.setdefault(self.inside[-1], []).append(
-                (node.lineno, name, ast.unparse(node.args[0])))
+                (node.lineno, name, ast.unparse(given) if given is not None else ""))
         self.generic_visit(node)
 
 
@@ -559,3 +614,367 @@ def test_control_every_new_password_is_put_to_the_policy_before_it_is_hashed():
                         unasked.append((path.relative_to(app_dir).as_posix(), func, arg))
     assert hashed >= 3, "the scan found fewer hashes than the routes that set a password"
     assert unasked == [], unasked
+    # Two ways round the scan above, closed: a hash made by calling bcrypt
+    # directly, and one of these names imported under another. (Not closed:
+    # a function bound to a new name by assignment, or reached by getattr.)
+    direct = [(where, func) for where, func, name in _calls_under_app({"hashpw"})]
+    assert direct == [("jwt_auth.py", "hash_password")], direct
+    assert _aliases_under_app(_WATCHED_NAMES) == []
+
+
+_WATCHED_NAMES = {"hash_password", "validate_password", "hashpw", "unlock_user",
+                  "reset_failed_attempts", "clear_failed_attempts_unless_locked",
+                  "username_refusal"}
+
+
+def _calls_under_app(names):
+    """(module, function it is in, name called) for every call of one of
+    `names` under app/, by plain name or as an attribute."""
+    app_dir = Path(jwt_auth.__file__).resolve().parent
+    found = []
+
+    class Calls(ast.NodeVisitor):
+        def __init__(self):
+            self.inside = ["(module level)"]
+
+        def visit_FunctionDef(self, node):
+            self.inside.append(node.name)
+            self.generic_visit(node)
+            self.inside.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_Call(self, node):
+            name = getattr(node.func, "id", getattr(node.func, "attr", None))
+            if name in names:
+                found.append((where, self.inside[-1], name))
+            self.generic_visit(node)
+
+    for path in sorted(app_dir.rglob("*.py")):
+        where = path.relative_to(app_dir).as_posix()
+        Calls().visit(ast.parse(path.read_text(encoding="utf-8-sig")))
+    return found
+
+
+def _aliases_under_app(names):
+    """Every `import ... as` under app/ that gives one of `names` another
+    name - which the scans here, reading calls by name, would not see."""
+    app_dir = Path(jwt_auth.__file__).resolve().parent
+    found = []
+    for path in sorted(app_dir.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                found += [(path.relative_to(app_dir).as_posix(), alias.name, alias.asname)
+                          for alias in node.names
+                          if alias.asname and alias.name.split(".")[-1] in names]
+    return found
+
+
+# What may clear a lock, or the count of misses behind it, and why. A new
+# caller fails the case below until it is named here with its reason - and
+# its reason has to be a proof, or the passing of time.
+_MAY_CLEAR_A_LOCK = {
+    ("jwt_auth.py", "_lockout_check"): "a lock whose time has passed is cleared when it is next looked at",
+    ("jwt_auth.py", "require_step_up"): "after the account's own right password, at a step-up door",
+    ("jwt_auth.py", "_check_current_code"): "after a right authenticator code",
+    ("routers/auth.py", "login"): "a lock whose time has passed; and the count, after a whole sign-in",
+    ("routers/auth.py", "mfa_complete"): "the same, at the sign-in's second step, after a right code",
+    ("routers/users.py", "admin_unlock_user"): "after the proof the cases above pin",
+}
+
+
+def test_control_every_function_that_clears_a_lock_is_named_here_with_its_reason():
+    """Read from the source: the functions under app/ that call unlock_user,
+    reset_failed_attempts or clear_failed_attempts_unless_locked are exactly
+    the ones named above. The unlock route is pinned by its own cases; this
+    is what fails if a SECOND way to clear a lock appears beside it. And the
+    lock's two columns are written by app/users.py alone - a write made
+    around those three functions is refused here too."""
+    callers = {(where, func) for where, func, _ in _calls_under_app(
+        {"unlock_user", "reset_failed_attempts", "clear_failed_attempts_unless_locked"})}
+    assert callers == set(_MAY_CLEAR_A_LOCK), sorted(callers ^ set(_MAY_CLEAR_A_LOCK))
+    app_dir = Path(jwt_auth.__file__).resolve().parent
+    writes = []
+    for path in sorted(app_dir.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
+            if isinstance(node, ast.Call) and getattr(node.func, "attr", None) in ("update", "values"):
+                keys = {k.value for a in node.args if isinstance(a, ast.Dict)
+                        for k in a.keys if isinstance(k, ast.Constant)}
+                keys |= {kw.arg for kw in node.keywords}
+                if keys & {"locked_until", "failed_attempts"}:
+                    writes.append(path.relative_to(app_dir).as_posix())
+    assert set(writes) == {"users.py"}, sorted(set(writes))
+
+
+# What creates an account or renames one, and where the name is asked about.
+_NAME_WRITERS = {"create_user", "claim_first_owner", "update_user_username"}
+_NAME_ASKED_ELSEWHERE = {
+}
+
+
+def test_control_every_function_that_writes_a_username_asks_about_it_first():
+    """Read from the source: every function under app/ that creates an
+    account or renames one calls jwt_auth.username_refusal earlier in the same
+    function, or is named above with where the name is asked about instead.
+    So the refusal of a name that cannot be encoded reaches the first
+    Owner's claim too, which no case here can drive (it is closed
+    once that account exists)."""
+    asks = {"username_refusal"}
+    calls = _calls_under_app(_NAME_WRITERS | asks)
+    writers = {(where, func) for where, func, name in calls if name in _NAME_WRITERS
+               and not (where == "users.py")}
+    asked = {(where, func) for where, func, name in calls if name in asks}
+    assert len(writers) >= 3, writers
+    unasked = writers - asked - set(_NAME_ASKED_ELSEWHERE)
+    assert unasked == set(), sorted(unasked)
+    stale = set(_NAME_ASKED_ELSEWHERE) - writers
+    assert stale == set(), sorted(stale)
+
+
+# -- FIX: an own-account unlock is allowed once per lockout window ------------
+
+_ONCE = re.compile(r"Your account was already unlocked from its own session in this lockout "
+                   r"window, and that is allowed once per window\. Try again in (\d+) "
+                   r"minute\(s\), or ask (.+) to unlock it\.")
+
+
+def _is_once_per_window(response, who_else):
+    """The count's own refusal: 429, the reason in words, a whole number of
+    minutes no longer than the window, and whom to ask."""
+    detail = response.json().get("detail")
+    said = _ONCE.fullmatch(detail) if isinstance(detail, str) else None
+    return (response.status_code == 429 and said is not None
+            and 1 <= int(said.group(1)) <= LOCKOUT_DURATION_MINUTES
+            and said.group(2) == who_else)
+
+
+def _right_code(account):
+    return pyotp.TOTP(account["seed"]).now()
+
+
+def test_the_second_own_account_unlock_in_a_window_is_refused(client, accounts):
+    """One unlock of your own account per lockout window. The second is
+    refused - a right code, a wrong one and none at all alike - with 429, in
+    words, with the minutes and whom to ask. It is refused BEFORE the code is
+    read: nothing is counted in the code bound, and the lock stays."""
+    top = accounts("owner", mfa=True)
+    _lock(top)
+    r = _unlock(client, top, top, mfa_code=_right_code(top))
+    assert r.status_code == 200 and r.json() == UNLOCKED, r.text
+    assert _own_unlocks_counted(top) == 1
+    _lock(top)
+    for body in ({"mfa_code": _right_code(top)}, {"mfa_code": _wrong_code(top["seed"])}, {}):
+        r = _unlock(client, top, top, **body)
+        assert _is_once_per_window(r, "another Owner"), (body, r.status_code, r.text)
+    assert _codes_counted(top) == 0, "a code was counted for a request refused before it was read"
+    assert _own_unlocks_counted(top) == 1
+    row = _row(top)
+    assert row["locked_until"] and row["failed_attempts"] == LIMIT
+
+
+def test_the_loop_of_unlock_and_guess_is_bounded(client, accounts, monkeypatch):
+    """The party this count is for holds a live session and the account's
+    authenticator, and not its password: it guesses at the sign-in until the
+    lock lands, unlocks its own account with a right code, and guesses again.
+    One unlock per window makes that LIMIT guesses before the lock and LIMIT
+    after the one unlock, and then none. Counted here as the sign-ins sent
+    while no lock stood - each of those was checked - across four rounds,
+    with the per-address throttle taken out of the way so that what stops
+    the loop is the account's own bound."""
+    monkeypatch.setattr(security, "AUTH_MAX_ATTEMPTS", 100 * LIMIT)
+    top = accounts("owner", mfa=True)
+    checked, unlocks = 0, []
+    for _ in range(4):
+        while not _row(top)["locked_until"]:
+            assert checked < 4 * LIMIT, "the lock never landed"
+            r = _sign_in(client, top, NOT_IT)
+            assert r.status_code == 401 and r.json() == SIGN_IN_REFUSED, r.text
+            checked += 1
+        unlocks.append(_unlock(client, top, top, mfa_code=_right_code(top)).status_code)
+    assert unlocks == [200, 429, 429, 429], unlocks
+    assert checked == 2 * LIMIT, \
+        f"{checked} passwords were checked across the loop; the bound is {2 * LIMIT}"
+    r = _sign_in(client, top, PW)
+    assert r.status_code == 401 and r.json() == SIGN_IN_REFUSED, r.text
+
+
+def test_a_wrong_code_does_not_use_up_the_windows_one_unlock(client, accounts):
+    """What is counted is unlocks. A request whose code is wrong or missing
+    unlocked nothing, so the place it took is handed back, and the right
+    code after it still unlocks."""
+    top = accounts("owner", mfa=True)
+    _lock(top)
+    r = _unlock(client, top, top, mfa_code=_wrong_code(top["seed"]))
+    assert r.status_code == 400 and r.json() == WRONG_CODE, r.text
+    r = _unlock(client, top, top)
+    assert r.status_code == 400 and r.json() == CODE_REQUIRED, r.text
+    assert _own_unlocks_counted(top) == 0, "a request that unlocked nothing was counted as an unlock"
+    r = _unlock(client, top, top, mfa_code=_right_code(top))
+    assert r.status_code == 200 and r.json() == UNLOCKED, r.text
+    assert _own_unlocks_counted(top) == 1
+
+
+def test_a_request_refused_by_the_code_bound_does_not_use_the_unlock_up(client, accounts,
+                                                                        monkeypatch):
+    monkeypatch.setattr(security, "TOTP_MAX_FAILURES", 1)
+    top = accounts("owner", mfa=True)
+    _lock(top)
+    r = _unlock(client, top, top, mfa_code=_wrong_code(top["seed"]))
+    assert r.status_code == 400 and r.json() == WRONG_CODE, r.text
+    r = _unlock(client, top, top, mfa_code=_right_code(top))
+    assert r.status_code == 429, r.text
+    assert r.json()["detail"].startswith("Too many wrong authenticator codes on this account."), r.text
+    assert _own_unlocks_counted(top) == 0
+
+
+def test_after_the_window_an_own_account_unlock_works_again(client, accounts):
+    """The count ends with its window and with nothing else."""
+    top = accounts("owner", mfa=True)
+    _lock(top)
+    assert _unlock(client, top, top, mfa_code=_right_code(top)).status_code == 200
+    _lock(top)
+    assert _is_once_per_window(_unlock(client, top, top, mfa_code=_right_code(top)), "another Owner")
+    # The count's row as it reads once the lockout window has passed.
+    state_store.put(f"own_unlock:{top['id']}", {"n": 1, "since": 0.0}, ttl=-1)
+    r = _unlock(client, top, top, mfa_code=_right_code(top))
+    assert r.status_code == 200 and r.json() == UNLOCKED, r.text
+    assert not _row(top)["locked_until"]
+
+
+def test_an_administrators_unlock_of_the_same_account_is_not_counted(client, accounts):
+    """An administrator's unlock of ANOTHER account takes the administrator's
+    own password and is not limited: it is not counted in the own-account
+    count, however often it happens, and it does not clear that count
+    either."""
+    other, top = accounts("owner"), accounts("owner", mfa=True)
+    for _ in range(2):
+        _lock(top)
+        r = _unlock(client, other, top, current_password=PW)
+        assert r.status_code == 200 and r.json() == UNLOCKED, r.text
+    assert _own_unlocks_counted(top) == 0, "an administrator's unlock was counted as the account's own"
+    _lock(top)
+    assert _unlock(client, top, top, mfa_code=_right_code(top)).status_code == 200
+    _lock(top)
+    r = _unlock(client, other, top, current_password=PW)
+    assert r.status_code == 200 and r.json() == UNLOCKED, r.text
+    assert _own_unlocks_counted(top) == 1, "an administrator's unlock cleared the account's own count"
+    _lock(top)
+    assert _is_once_per_window(_unlock(client, top, top, mfa_code=_right_code(top)), "another Owner")
+
+
+# -- FIX: a code that cannot be encoded is a wrong code -----------------------
+
+CODE_CANNOT_BE_ENCODED = "12345" + chr(0xD800)
+
+
+def test_a_code_that_cannot_be_encoded_is_a_wrong_code_at_the_own_account_unlock(client, accounts):
+    """It can match no code, and the comparison raised on it: a server
+    error, counted in the code bound and nowhere else. It is a wrong code:
+    the same 400, a miss toward the lock when no lock stands, and with the
+    lock standing the lock left as it is."""
+    mid = accounts("admin", mfa=True)
+    path = f"/api/admin/users/{mid['id']}/unlock"
+    answer = _send(client, "POST", path, mid["headers"], {"mfa_code": CODE_CANNOT_BE_ENCODED})
+    assert answer == (400, WRONG_CODE), answer
+    assert _row(mid)["failed_attempts"] == 1 and _codes_counted(mid) == 1
+    _lock(mid)
+    locked = _row(mid)
+    answer = _send(client, "POST", path, mid["headers"], {"mfa_code": CODE_CANNOT_BE_ENCODED})
+    assert answer == (400, WRONG_CODE), answer
+    after = _row(mid)
+    assert (after["locked_until"], after["failed_attempts"]) == \
+        (locked["locked_until"], locked["failed_attempts"])
+    assert _codes_counted(mid) == 2 and _own_unlocks_counted(mid) == 0
+
+
+def test_a_code_that_cannot_be_encoded_is_a_wrong_code_at_the_sign_in(client, accounts):
+    low = accounts("member", mfa=True)
+    r = _sign_in(client, low, PW)
+    assert r.status_code == 200 and r.json().get("mfa_required"), r.text
+    answer = _send(client, "POST", "/api/auth/mfa/complete", {},
+                   {"mfa_token": r.json()["mfa_token"], "code": CODE_CANNOT_BE_ENCODED})
+    assert answer == (401, WRONG_CODE), answer
+    assert _row(low)["failed_attempts"] == 1 and _codes_counted(low) == 1
+
+
+def test_a_code_that_cannot_be_encoded_is_a_wrong_code_at_the_enrollment_confirm(client, accounts):
+    low = accounts("member")
+    r = client.post("/api/auth/mfa/setup", headers=low["headers"], json={"current_password": PW})
+    assert r.status_code == 200, r.text
+    answer = _send(client, "POST", "/api/auth/mfa/enable", low["headers"],
+                   {"code": CODE_CANNOT_BE_ENCODED})
+    assert answer == (400, WRONG_CODE), answer
+    assert not _row(low)["mfa_enabled"] and _codes_counted(low) == 1
+
+
+# -- FIX: the target is read after the proof, whatever its status -------------
+
+NO_SUCH_USER = {"detail": "No such user"}
+
+
+def test_an_id_that_names_no_account_is_a_404_after_the_proof(client, accounts):
+    """The unlock wrote by id and answered "unlocked" for an id that names
+    no account. It is a 404 - and only AFTER the proof, so a caller who
+    fails the proof learns nothing about which ids exist."""
+    mid = accounts("admin")
+    nobody = {"id": _row(mid)["id"] + 1_000_000}
+    r = _unlock(client, mid, nobody)
+    assert r.status_code == 400 and r.json() == PW_REQUIRED, r.text
+    r = _unlock(client, mid, nobody, current_password=NOT_IT)
+    assert r.status_code == 400 and r.json() == WRONG_PW, r.text
+    r = _unlock(client, mid, nobody, current_password=PW)
+    assert r.status_code == 404 and r.json() == NO_SUCH_USER, r.text
+
+
+def test_the_ceiling_holds_for_a_deactivated_account(client, accounts):
+    """The ceiling read the target through a reader that hides a deactivated
+    row, and the write did not: a caller below the top tier, with its own
+    password, cleared the lock on a deactivated top-tier account. The target
+    is read whatever its status, so the ceiling refuses it there too; the
+    top tier still unlocks it."""
+    top, other, mid = accounts("owner"), accounts("owner"), accounts("admin")
+    _lock(top)
+    deactivate_user(top["id"])
+    r = _unlock(client, mid, top, current_password=PW)
+    assert r.status_code == 403 and r.json() == {"detail": "Only an Owner can unlock an Owner's account"}, r.text
+    assert _lock_of(top), "a refused unlock cleared a deactivated account's lock"
+    r = _unlock(client, other, top, current_password=PW)
+    assert r.status_code == 200 and r.json() == UNLOCKED, r.text
+    assert not _lock_of(top)
+
+
+# -- FIX: a username that cannot be encoded -----------------------------------
+
+NAME_CANNOT_BE_ENCODED = "utp" + chr(0xD800)
+NAME_NOT_STORABLE = {"detail": "Username contains a character that cannot be stored. "
+                               "Choose a different username"}
+
+
+def test_a_sign_in_username_that_cannot_be_encoded_is_an_unknown_username(client, monkeypatch):
+    """Such a name can be no account's, and looking it up raised: a server
+    error, after the per-address count. It is an unknown username: the same
+    401, at the same cost - the one hash round the sign-in pays for a name
+    it does not know."""
+    rounds = _HashRounds(monkeypatch)
+    answer = _send(client, "POST", "/api/auth/login", {},
+                   {"username": NAME_CANNOT_BE_ENCODED, "password": NOT_IT})
+    assert answer == (401, SIGN_IN_REFUSED), answer
+    assert rounds.paid == 1, rounds.paid
+
+
+def test_a_new_username_that_cannot_be_encoded_is_refused_in_words(client, accounts):
+    """Creating an account under such a name, and renaming your own to it,
+    raised at the write. Both are a string 400 now and nothing is written.
+    (The first Owner's claim asks the same question; the control
+    above reads that from the source.)"""
+    assert jwt_auth.username_refusal(NAME_CANNOT_BE_ENCODED) == NAME_NOT_STORABLE["detail"]
+    assert jwt_auth.username_refusal("an-ordinary-name") is None
+    top = accounts("owner")
+    answer = _send(client, "POST", "/api/users", top["headers"],
+                   {"username": NAME_CANNOT_BE_ENCODED, "password": NEW_PW,
+                    "role": "member", "current_password": PW})
+    assert answer == (400, NAME_NOT_STORABLE), answer
+    answer = _send(client, "PATCH", "/api/auth/me/username", top["headers"],
+                   {"new_username": NAME_CANNOT_BE_ENCODED, "current_password": PW})
+    assert answer == (400, NAME_NOT_STORABLE), answer
+    assert _row(top)["username"] == top["name"]

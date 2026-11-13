@@ -177,6 +177,14 @@ account, another Owner). "Your own account is locked, so your password is
 not accepted to unlock another account" is the same rule from the other
 side: unlock your own account first, or wait.
 
+"Your account was already unlocked from its own session in this lockout
+window" means exactly that: an account may unlock itself once per lockout
+window, and a second time in the same window is refused even with a right
+code. The answer gives the minutes left; another administrator can still
+unlock the account with their own password in the meantime (for an Owner's
+account, another Owner). If the account keeps locking that quickly, someone
+is guessing at its password: review the audit log.
+
 ## Answers are slow
 
 Almost always the reranker: scoring the candidate pool with a

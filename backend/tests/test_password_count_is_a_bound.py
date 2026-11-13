@@ -303,14 +303,22 @@ def test_passwords_that_arrive_while_one_is_being_checked_find_it_counted(client
 
 # -- FIX: an unlock does not hand the guesses back ----------------------------
 
-def test_a_right_password_after_the_limit_and_an_unlock_is_still_refused(client, member, monkeypatch):
+def test_a_right_password_after_the_limit_and_an_unlock_is_still_refused(client, accounts, member,
+                                                                         monkeypatch):
     """The limit is reached and the account locks. An unlock then clears the
     lock - and the right password is still refused at the step-up door until
     the window ends: the answer says when, and nothing is hashed or changed."""
     for _ in range(LIMIT):
         _change(client, member, NOT_IT)
     assert _row(member)["locked_until"]
-    unlock_user(member["id"])                     # what an administrator's unlock does
+    # An administrator's unlock, through the ROUTE and on the administrator's
+    # own password - this called the function behind the route, so nothing
+    # here would have failed if the route also cleared the account's count
+    # of passwords along with its lock.
+    admin = accounts("admin")
+    r = client.post(f"/api/admin/users/{member['id']}/unlock", headers=admin["headers"],
+                    json={"current_password": PW})
+    assert r.status_code == 200 and r.json() == {"status": "unlocked"}, r.text
     before = _row(member)["password_hash"]
     checks = _Checks(monkeypatch)
     r = _change(client, member, PW)
@@ -339,12 +347,18 @@ def test_a_session_that_unlocks_itself_between_rounds_is_stopped_at_the_limit(cl
     before = _row(admin)["password_hash"]
     checks = _Checks(monkeypatch)
     answers = []
+    unlocks = []
     for _ in range(3):
         for _ in range(LIMIT - 1):
             answers.append(_change(client, admin, NOT_IT))
         r = client.post(f"/api/admin/users/{admin['id']}/unlock", headers=admin["headers"],
                         json={"mfa_code": pyotp.TOTP(seed).now()})
-        assert r.status_code == 200, r.text
+        unlocks.append(r.status_code)
+    # Re-pointed a second time: an own-account unlock is allowed once per
+    # lockout window (test_unlock_takes_proof.py), so the first is taken and
+    # the two after it are refused, right code and all. The count of
+    # passwords checked holds either way, which is what this case pins.
+    assert unlocks == [200, 429, 429], unlocks
     assert checks.count() == LIMIT, \
         f"{checks.count()} wrong passwords were checked across the rounds; the limit is {LIMIT}"
     assert [r.status_code for r in answers[:LIMIT]] == [400] * LIMIT
