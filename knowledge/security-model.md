@@ -250,8 +250,14 @@ plus "A code works once: wait for the next one your authenticator shows" -
 and it is counted like a wrong code: in the code bound, against the
 sign-in's challenge, toward the lock. The code that confirms a setup is
 recorded like any other, so the first sign-in takes the next one. The
-record goes when the seed goes: an administrator's MFA reset, and the new
-seed a setup stores.
+record is kept per seed, not per account, and nothing clears it: a new seed
+(a re-key, or enrolling again after an administrator's MFA reset) has a
+record of its own from its first code, and a request that matched a code
+against the seed it read before a re-key replaced it still meets that
+seed's record, so the code cannot be accepted there a second time. An old
+seed's record expires by itself after a few minutes. The record's key holds
+a short digest of the seed, which cannot be turned back into it; no answer
+or log line carries the key.
 
 Password logins carry per-account lockout after repeated failures. TOTP
 two-factor is built in, and REQUIRE_MFA=true refuses password logins for

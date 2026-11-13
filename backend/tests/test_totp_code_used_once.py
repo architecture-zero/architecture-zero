@@ -28,8 +28,11 @@ FIX (each fails on the doors as they were):
     bound, against the sign-in's challenge and toward the lock
   - the same right code sent by many requests at once is accepted once
     (every request has matched the code before any of them writes)
-  - the record goes when the seed goes: an operator's reset, and the new
-    seed a setup stores
+  - each seed has its own record and nothing clears it: a sign-in, or a
+    re-key, held after matching a code while a re-key with the same code
+    runs to the end is refused when it writes (the record per account was
+    cleared by that re-key, and the held request was accepted); after an
+    operator's reset or a re-key, the new seed's codes meet a fresh record
   - no door checks a code any other way (read from the source)
 CONTROL (true before and after, by design):
   - a right fresh code works at each door
@@ -152,8 +155,17 @@ def _codes_counted(account):
     return 0 if doc is None else doc["n"]
 
 
-def _step_recorded(account):
-    doc = state_store.get(f"totp_used:{account['id']}")
+def _step_recorded(account, seed=None):
+    """The newest step recorded as accepted for the account's seed (or the
+    one given): the record is kept per seed. The key is asked for the way the
+    helper as it was took its arguments too (one record per account), so a
+    case here fails there for what the code did, not for how it was called."""
+    import inspect
+    if "seed" in inspect.signature(security._used_code_key).parameters:
+        key = security._used_code_key(account["id"], seed or account["seed"])
+    else:
+        key = security._used_code_key(account["id"])
+    doc = state_store.get(key)
     return None if doc is None else doc["step"]
 
 
@@ -343,33 +355,145 @@ def test_the_same_right_code_sent_at_once_is_accepted_once(accounts, monkeypatch
     assert answers.count(USED) == BURST - 1, answers
 
 
-# -- FIX: the record goes when the seed goes -----------------------------------
+# -- FIX: one record per seed, and nothing clears it ---------------------------
+# A record per account had to be cleared when the seed changed, and a request
+# that had matched a code against the seed it read at its start then found
+# no record and was accepted: the same code twice. These two hold such a
+# request after its match, run the re-key with the same code to the end, and
+# only then let the held request write. Nothing is timed: the order is forced.
 
-def test_an_operators_reset_clears_the_record(client, accounts):
+def _hold_the_first_match(monkeypatch):
+    """The first code matched while this is installed is held - after it has
+    matched, before anything is written - until `release` is set."""
+    matched, release = threading.Event(), threading.Event()
+    real = security._matched_step
+    calls = []
+
+    def held(seed, sent):
+        step = real(seed, sent)
+        calls.append(step)
+        if len(calls) == 1:
+            matched.set()
+            release.wait(20)
+        return step
+
+    monkeypatch.setattr(security, "_matched_step", held)
+    return matched, release
+
+
+def _in_the_background(send):
+    box = {}
+    thread = threading.Thread(target=lambda: box.setdefault("answer", send()), daemon=True)
+    thread.start()
+    return thread, box
+
+
+def test_a_sign_in_held_across_a_rekey_with_the_same_code_is_refused(client, accounts,
+                                                                    monkeypatch):
+    """A sign-in matches code C against the seed it read, and is held. The
+    re-key, with the same C, is accepted and stores a new seed. The held
+    sign-in then writes: it meets its own seed's record and is refused as a
+    reuse - it used to find the record cleared and sign in."""
+    someone = accounts()
+    code = _code(someone["seed"])
+    r = client.post("/api/auth/login", json={"username": someone["name"], "password": PW})
+    assert r.status_code == 200 and r.json().get("mfa_required"), r.text
+    token = r.json()["mfa_token"]
+    matched, release = _hold_the_first_match(monkeypatch)
+    held, box = _in_the_background(lambda: client.post(
+        "/api/auth/mfa/complete", json={"mfa_token": token, "code": code}))
+    assert matched.wait(20), "the sign-in never matched its code"
+    rekey = _rekey(client, someone, code)
+    release.set()
+    held.join(30)
+    assert rekey.status_code == 200 and rekey.json().get("secret"), rekey.text
+    sign_in = box["answer"]
+    assert sign_in.status_code == 401 and sign_in.json() == {"detail": USED}, \
+        f"one code accepted twice: re-key 200, sign-in {sign_in.status_code} {sign_in.text}"
+
+
+def test_a_rekey_held_across_a_rekey_with_the_same_code_is_refused(client, accounts,
+                                                                  monkeypatch):
+    """Two re-keys with the same code, the first held after its match while
+    the second runs to the end. The held one is refused as a reuse; it used
+    to be accepted too, and to store a seed of its own."""
+    someone = accounts()
+    code = _code(someone["seed"])
+    matched, release = _hold_the_first_match(monkeypatch)
+    held, box = _in_the_background(lambda: _rekey(client, someone, code))
+    assert matched.wait(20), "the first re-key never matched its code"
+    second = _rekey(client, someone, code)
+    release.set()
+    held.join(30)
+    assert second.status_code == 200 and second.json().get("secret"), second.text
+    first = box["answer"]
+    assert first.status_code == 400 and first.json() == {"detail": USED}, \
+        f"one code accepted twice: {second.status_code}, {first.status_code} {first.text}"
+
+
+def _record_deletes(monkeypatch):
+    """Every key under totp_used: the store is asked to delete."""
+    deleted = []
+    real = state_store.delete
+
+    def delete(key):
+        if key.startswith("totp_used:"):
+            deleted.append(key)
+        return real(key)
+
+    monkeypatch.setattr(state_store, "delete", delete)
+    return deleted
+
+
+def test_after_an_operators_reset_a_new_seed_meets_a_fresh_record(client, accounts,
+                                                                 monkeypatch):
+    """The account signs in with the next step's code, an operator resets its
+    factor, and it enrolls again. The new seed's code for that very step is
+    accepted: its record is its own. Nothing was cleared, and the old seed's
+    record is still there until it expires."""
+    deleted = _record_deletes(monkeypatch)
     top, someone = accounts("owner"), accounts()
-    r, _ = _sign_in(client, someone, _code(someone["seed"]))
+    old_seed = someone["seed"]
+    r, _ = _sign_in(client, someone, _code(old_seed, 1))
     assert r.status_code == 200, r.text
-    assert _step_recorded(someone) is not None, "an accepted code left no record"
+    old_step = _step_recorded(someone, old_seed)
+    assert old_step is not None, "an accepted code left no record"
     r = client.post(f"/api/admin/users/{someone['id']}/mfa-reset", headers=top["headers"],
                     json={"current_password": PW})
     assert r.status_code == 200, r.text
-    assert _step_recorded(someone) is None, "the record outlived the seed it was kept for"
-
-
-def test_a_replacements_new_seed_starts_with_no_record(client, accounts):
-    """The re-key's proof is a code from the authenticator being replaced.
-    Accepting it records its step; the new seed's first code - which may
-    well be for the same step - is not a reuse of anything, so the record
-    goes when the new seed is stored and the confirm takes that code."""
-    someone = accounts()
-    r = _rekey(client, someone, _code(someone["seed"], 1))
+    r = client.post("/api/auth/mfa/setup", headers=someone["headers"],
+                    json={"current_password": PW})
     assert r.status_code == 200, r.text
-    assert _step_recorded(someone) is None, "the old seed's record was kept for the new one"
     new_seed = r.json()["secret"]
+    r = client.post("/api/auth/mfa/enable", headers=someone["headers"],
+                    json={"code": _code(new_seed, 1)})
+    assert r.status_code == 200 and r.json() == {"status": "MFA enabled"}, r.text
+    assert _step_recorded(someone, new_seed) == old_step
+    assert _step_recorded(someone, old_seed) == old_step, "the old seed's record was cleared"
+    assert deleted == [], deleted
+
+
+def test_a_replacements_new_seed_meets_a_fresh_record_and_nothing_is_cleared(client, accounts,
+                                                                           monkeypatch):
+    """The re-key's proof is the next step's code from the authenticator being
+    replaced, and it is recorded against that seed. The new seed's first code
+    is for the CURRENT step - older than the one just accepted - and is
+    accepted: it is judged against the new seed's own record. Nothing was
+    cleared on the way."""
+    deleted = _record_deletes(monkeypatch)
+    someone = accounts()
+    old_seed = someone["seed"]
+    r = _rekey(client, someone, _code(old_seed, 1))
+    assert r.status_code == 200, r.text
+    new_seed = r.json()["secret"]
+    old_step = _step_recorded(someone, old_seed)
+    assert old_step is not None, "the re-key's code was not recorded"
     r = client.post("/api/auth/mfa/enable", headers=someone["headers"],
                     json={"code": _code(new_seed, 0)})
     assert r.status_code == 200 and r.json() == {"status": "MFA enabled"}, r.text
-    assert _step_recorded(someone) is not None, "the confirm's code was not recorded"
+    assert _step_recorded(someone, new_seed) == old_step - 1
+    assert _step_recorded(someone, old_seed) == old_step
+    assert deleted == [], deleted
 
 
 # -- FIX: no door checks a code any other way ----------------------------------

@@ -1,3 +1,4 @@
+import hashlib
 import re
 import time
 import os
@@ -442,8 +443,17 @@ def clear_mfa_pending(user_id: int) -> None:
 # To the caller a refused reuse is a miss. Every door that takes a code asks
 # totp_code_refusal and treats what it answers as it treats a wrong code -
 # the same status, counted the same - and the sentence adds that a code
-# works once. The record goes when the seed goes (an operator's reset, a new
-# seed stored by a setup): one seed's steps say nothing about another's.
+# works once.
+#
+# ONE RECORD PER SEED, not per account, and nothing ever clears one. A
+# record per account had to be cleared when the seed changed (a re-key, an
+# operator's reset), and the clear opened a gap: a request that had already
+# matched a code against the seed it read at its start found the record gone
+# and was accepted - the same code twice, once at the re-key that replaced
+# the seed and once at the request held across it. Keyed by the seed, that
+# request meets its own seed's record whatever happened since, and a new
+# seed's first code meets a fresh record with nothing to clear. An old
+# seed's record expires by itself (_USED_CODE_TTL).
 CODE_WRONG = "Invalid authenticator code"
 CODE_USED = ("Invalid authenticator code. A code works once: wait for the next "
              "one your authenticator shows.")
@@ -453,8 +463,18 @@ CODE_USED = ("Invalid authenticator code. A code works once: wait for the next "
 _USED_CODE_TTL = 300  # seconds
 
 
-def _used_code_key(user_id: int) -> str:
-    return f"totp_used:{user_id}"
+def _used_code_key(user_id: int, seed: str) -> str:
+    """The record's key: the account and a digest of the seed, so each seed
+    has its own record. The digest is 64 bits of SHA-256 over a seed this
+    instance generated (160 random bits): it cannot be turned back into the
+    seed or into a code, and guessing a seed of that size is out of reach
+    whatever a guess is checked against. A collision between two seeds of one
+    account could only make the newer seed's first codes meet the older
+    seed's record - a refusal for at most a few minutes, never an
+    acceptance. The key is internal: no answer carries it, and the store
+    names only a key's namespace when it fails, so it reaches no log line."""
+    digest = hashlib.sha256(("totp-used:" + seed).encode()).hexdigest()[:16]
+    return f"totp_used:{user_id}:{digest}"
 
 
 def _matched_step(seed: str, code: str) -> int | None:
@@ -496,17 +516,9 @@ def totp_code_refusal(user_id: int, seed: str, code: str) -> str | None:
             doc["step"] = step
             accepted.append(True)
 
-    state_store.update(_used_code_key(user_id), take, _USED_CODE_TTL,
+    state_store.update(_used_code_key(user_id, seed), take, _USED_CODE_TTL,
                        default={"step": -1}, keep_expiry=False)
     return None if accepted else CODE_USED
-
-
-def clear_used_code(user_id: int) -> None:
-    """The seed the record was kept for is gone - an operator reset the
-    factor, or a setup stored a new seed - so the record goes with it. Called
-    where the code count is cleared for the same reason, and nowhere else: a
-    right code moves the record, it never clears it."""
-    state_store.delete(_used_code_key(user_id))
 
 
 # -- Password attempts at the step-up doors, per ACCOUNT ----------------------

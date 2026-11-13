@@ -44,6 +44,13 @@ from sqlalchemy.exc import IntegrityError
 from app.db import engine, get_session
 from app.models import SecurityState
 
+
+def _named(key: str) -> str:
+    """How a failure names a key: its namespace only. A key can carry what
+    must not reach a log line - an address, a digest of an account's
+    authenticator seed - and a failure here is logged with its message."""
+    return key.split(":", 1)[0] + ":..."
+
 _SWEEP_EVERY = 200          # bump_window calls between opportunistic sweeps
 # Optimistic-concurrency attempts before giving up. Correctness never depends
 # on this number - the version stamp does that - only liveness under a burst:
@@ -188,7 +195,7 @@ def bump_window(key: str, window: float, limit: int) -> tuple[int, bool]:
         except (IntegrityError, _Conflict):
             _backoff(attempt)
             continue
-    raise RuntimeError(f"state store: could not settle {key!r} after {_RETRIES} attempts")
+    raise RuntimeError(f"state store: could not settle a {_named(key)} key after {_RETRIES} attempts")
 
 
 def bump_counter(key: str, ttl: float) -> int:
@@ -221,7 +228,7 @@ def bump_counter(key: str, ttl: float) -> int:
         except (IntegrityError, _Conflict):
             _backoff(attempt)
             continue
-    raise RuntimeError(f"state store: could not settle {key!r} after {_RETRIES} attempts")
+    raise RuntimeError(f"state store: could not settle a {_named(key)} key after {_RETRIES} attempts")
 
 
 def update(key: str, mutate, ttl: float, *, default: dict,
@@ -260,7 +267,7 @@ def update(key: str, mutate, ttl: float, *, default: dict,
         except (IntegrityError, _Conflict):
             _backoff(attempt)
             continue
-    raise RuntimeError(f"state store: could not settle {key!r} after {_RETRIES} attempts")
+    raise RuntimeError(f"state store: could not settle a {_named(key)} key after {_RETRIES} attempts")
 
 
 def sweep(now: float | None = None) -> int:

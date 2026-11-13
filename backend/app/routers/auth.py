@@ -45,7 +45,7 @@ from app.security import (check_setup_rate_limit, check_auth_rate_limit,
                           check_mfa_challenge,
                           record_mfa_failure, burn_mfa_challenge,
                           count_totp_attempt, clear_totp_attempts,
-                          totp_code_refusal, clear_used_code,
+                          totp_code_refusal,
                           mark_mfa_pending, mfa_pending_live, clear_mfa_pending,
                           client_ip_from_request, verify_setup_claim_code,
                           burn_setup_claim_code)
@@ -395,9 +395,10 @@ def mfa_setup(request: MFASetupRequest | None = None,
             username=current_user["username"])
     secret = pyotp.random_base32()
     set_mfa_secret(current_user["id"], secret)
-    # The record of the last code accepted was kept for the seed this one
-    # replaces; the new seed's first code is not a reuse of anything.
-    clear_used_code(current_user["id"])
+    # Nothing to clear for the code that was just accepted: the record of
+    # accepted codes is kept per seed (security._used_code_key), so the new
+    # seed's codes meet a fresh one, and a request still holding the old
+    # seed meets the old seed's record.
     # The new seed may be confirmed for MFA_PENDING_TTL, then setup starts
     # again (2026-10-02): the confirm takes a session alone, so a pending seed
     # that waited forever was a door that stayed open forever.
