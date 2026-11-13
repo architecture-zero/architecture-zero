@@ -200,7 +200,8 @@ _BLOCKLIST             = build_blocklist(os.getenv("CONTENT_SAFETY_BLOCKLIST", "
 PII_OUTPUT_MODE        = normalize_output_mode(os.getenv("PII_OUTPUT_MODE"))
 if (os.getenv("PII_OUTPUT_MODE") or "off").strip().lower() != PII_OUTPUT_MODE:
     from app.logger import log_error as _log_error
-    _log_error("pii_output_mode_invalid", value=os.getenv("PII_OUTPUT_MODE"),
+    _log_error("pii_output_mode_invalid", variable="PII_OUTPUT_MODE",
+               takes="off|warn|redact",
                using=PII_OUTPUT_MODE)
 PII_OUTPUT_REDACT_TYPES, _unknown_pii_types = parse_redact_types(
     os.getenv("PII_OUTPUT_REDACT_TYPES"))
@@ -217,7 +218,8 @@ if _unknown_pii_types:
 COMP_FIGURE_GUARD = normalize_comp_mode(os.getenv("COMP_FIGURE_GUARD"))
 if (os.getenv("COMP_FIGURE_GUARD") or "redact").strip().lower() != COMP_FIGURE_GUARD:
     from app.logger import log_error as _log_error
-    _log_error("comp_figure_guard_invalid", value=os.getenv("COMP_FIGURE_GUARD"),
+    _log_error("comp_figure_guard_invalid", variable="COMP_FIGURE_GUARD",
+               takes="off|redact",
                using=COMP_FIGURE_GUARD)
 
 

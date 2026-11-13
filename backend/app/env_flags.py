@@ -36,7 +36,8 @@ WHAT THIS MODULE MAY IMPORT: the standard library's os and sys, and nothing
 of the app. It is the first thing the backend runs (app/main.py calls
 check_all before it builds anything), so it must not open the database, the
 vector store, a socket or a file - a start that is going to be refused must
-be refused with nothing written.
+be refused having written nothing but the interpreter's own bytecode cache
+(the .pyc Python keeps for each module it compiles, this one included).
 
     python -m app.env_flags
 

@@ -12,7 +12,9 @@ routers and the shared modules; nothing under app/ imports main.
 # all of them), and a value that is neither of a setting's two words stops
 # the start HERE - before the database module, the vector store's client,
 # the logger's file or the app object exist. A start that is going to be
-# refused has then imported nothing and written nothing. Each module below
+# refused has then imported nothing and written nothing but the interpreter's
+# own bytecode cache (the .pyc of this file and of app/env_flags.py, compiled
+# before this line runs). Each module below
 # still reads its own setting through the same table; this is what makes
 # the refusal come first, and what reaches a setting that is only read when
 # it is used. tests/test_env_flags_before_any_write.py pins the order and
@@ -109,9 +111,12 @@ app.add_middleware(
 # And AHEAD of the schema step below. The auth router refuses at import on a
 # value of its two-factor switch that is neither of the switch's two words
 # (routers/auth.py, _require_mfa_from_env), and a boot that is going to refuse
-# must refuse before the schema step has created or seeded anything (the
-# vector store's client is opened by an import above this one: an open and
-# no write).
+# must refuse before the schema step has created or seeded anything. (The
+# vector store's client is opened by an import above this one, and on a
+# path that holds no store yet that open makes the store's directory and
+# its database file. The two-factor switch is one of the on/off settings,
+# and the check at the top of this file reads every one of them before
+# that import, so a refused value never reaches it.)
 # tests/test_require_mfa_flag.py pins that the refusal finds no table made.
 from app.routers import (  # noqa: E402  (app must exist first)
     system as system_router,

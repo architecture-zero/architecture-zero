@@ -107,6 +107,8 @@ RUNBOOKS = ("docs/runbook.md",)
 # Settings that are not on/off and whose read has an on/off shape.
 NOT_ON_OFF = {
     "REDIS_URL": "bool() of a URL: whether a store is configured, not a switch",
+    "_HOSTED[vendor]['key_env']": "a hosted reranker's API key, named by the vendor: "
+                                   "whether one is set (the hosted lane needs it), not a switch",
     "PII_OUTPUT_MODE": "a mode of three words (off, warn, redact); the comparison "
                        "only decides whether to log that the value was not one of them",
 }
@@ -398,11 +400,17 @@ def _probe(tmp_path, values: dict) -> dict:
 def test_every_setting_written_as_a_word_is_what_its_module_holds(tmp_path, word, on):
     """CONTROL: holds on the code from before the table too. Every row set
     to the same word, and every module's constant is that word's meaning -
-    so a name misspelt in the table, or a row wired to the wrong constant,
-    fails here and not in production. And the three behaviours follow: with
-    sign-in on a request with no credential is refused, with the audit log on
-    the start purges it, with the injection scan on a planted instruction is
-    refused - and with each off, not."""
+    so a name misspelt in the table fails here and not in production (the
+    module that reads it cannot import). And the three behaviours follow:
+    with sign-in on a request with no credential is refused, with the audit
+    log on the start purges it, with the injection scan on a planted
+    instruction is refused - and with each off, not.
+
+    What it does NOT see: a constant read through the wrong row. Every row
+    holds the same word here, so ENABLE_WRITE_TOOLS = flag("ENABLE_SHELL_TOOLS")
+    holds the right answer in all three legs (the security read's mutant h
+    passed this file and the whole suite). That is pinned from the source,
+    row by row, by test_each_rows_constant_is_read_through_that_row below."""
     said = _probe(tmp_path, {name: word for name in ROWS})
     assert said["held"] == {name: on for name in ROWS}
     assert said["layer_refused"] is on
@@ -449,19 +457,144 @@ def test_a_value_that_is_neither_word_stops_the_start(tmp_path, name, value):
     assert MARKER.lower() not in (done.stdout + done.stderr).lower()
 
 
+# -- each row's constant is read through that row -----------------------------
+#
+# Read from the source, because a constant read through ANOTHER row with the
+# same default behaves identically until the day the two rows are set apart:
+# no run that sets every row alike can tell them apart, and a run per row
+# would start the app once per row. For every row: the assignment of that
+# row's attribute in that row's module is exactly flag("<that row's name>").
+#
+# Two shapes are not one assignment, each named here with its reason:
+#   - an attribute written `name()` is a function read when the setting is
+#     used, not at import (the boot sync's switch is read by a startup hook,
+#     so a test can opt back in with monkeypatch.setenv). Its body is pinned
+#     instead: a docstring and `return flag("<that row's name>")`, nothing else.
+#   - VIA_A_READER: a constant bound to a no-argument function of its own
+#     module, whose body is pinned the same way. REQUIRE_MFA is that: the
+#     router's _require_mfa_from_env is its reader's name, and the switch's
+#     own tests call it by that name.
+
+VIA_A_READER = {
+    "REQUIRE_MFA": "routers/auth.py binds REQUIRE_MFA = _require_mfa_from_env(), and "
+                   "that function is one call of the table (test_require_mfa_flag.py "
+                   "pins the binding; this pins the function's body)",
+}
+
+
+def _module_tree(module: str):
+    path = BACKEND.joinpath(*module.split(".")).with_suffix(".py")
+    return ast.parse(path.read_text(encoding="utf-8"))
+
+
+def _reads_only_the_row(fn, name: str) -> bool:
+    """A function whose body is an optional docstring and `return flag(name)`."""
+    body = [node for node in fn.body
+            if not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+                    and isinstance(node.value.value, str))]
+    return [ast.unparse(node) for node in body] == [ast.unparse(
+        ast.Return(ast.Call(ast.Name("flag"), [ast.Constant(name)], [])))]
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_each_rows_constant_is_read_through_that_row(name):
+    """FIX for the class the security read named (its mutant h): a constant
+    wired to another row with the same default passed every other test. Here
+    each row's own constant, in its own module, reads that row and no other."""
+    module, attribute = ROWS[name][1], ROWS[name][2]
+    tree = _module_tree(module)
+    functions = {fn.name: fn for fn in tree.body
+                 if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    if attribute.endswith("()"):
+        fn = functions[attribute[:-2]]
+        assert _reads_only_the_row(fn, name), ast.unparse(fn)
+        return
+    assigned = [node for node in tree.body if isinstance(node, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == attribute for t in node.targets)]
+    assert len(assigned) == 1, [node.lineno for node in assigned]
+    value = assigned[0].value
+    if ast.unparse(value) == ast.unparse(ast.Call(ast.Name("flag"), [ast.Constant(name)], [])):
+        return
+    assert name in VIA_A_READER, f"{module}.{attribute} = {ast.unparse(value)}"
+    assert (isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
+            and not value.args and not value.keywords), ast.unparse(value)
+    assert _reads_only_the_row(functions[value.func.id], name), value.func.id
+
+
+def _flag_bindings(app_dir: Path):
+    """(file, line, target, row) for every module-level `target = flag("row")`
+    under app_dir, outside the table module."""
+    out = []
+    for path in sorted(app_dir.rglob("*.py")):
+        rel = path.relative_to(app_dir).as_posix()
+        if "__pycache__" in path.parts or rel == TABLE_MODULE:
+            continue
+        for node in ast.parse(path.read_text(encoding="utf-8")).body:
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and isinstance(node.value, ast.Call)
+                    and isinstance(node.value.func, ast.Name) and node.value.func.id == "flag"
+                    and node.value.args and isinstance(node.value.args[0], ast.Constant)):
+                out.append((rel, node.lineno, node.targets[0].id, node.value.args[0].value))
+    return out
+
+
+def test_every_module_level_copy_reads_the_row_it_is_named_for():
+    """FIX. The pin above checks each row's own module. A second copy of a
+    setting elsewhere (a router keeping its own ENABLE_X) is checked here: a
+    module-level name bound to flag() is a row's name or a row's attribute,
+    and the call names THAT row."""
+    named_for = {}
+    for name, row in ROWS.items():
+        named_for[name] = name
+        if not row[2].endswith("()"):
+            named_for.setdefault(row[2], name)
+    wrong = [f"{rel}:{line}: {target} = flag({row!r})"
+             for rel, line, target, row in _flag_bindings(APP)
+             if named_for.get(target) != row]
+    assert wrong == []
+
+
+def test_the_pin_sees_a_constant_read_through_another_row(tmp_path):
+    """The control for the two tests above, on a planted module: the
+    security read's mutant h is found, and its right form is not."""
+    (tmp_path / "agent.py").write_text(
+        'from app.env_flags import flag\n'
+        'ENABLE_SHELL_TOOLS = flag("ENABLE_SHELL_TOOLS")\n'
+        'ENABLE_WRITE_TOOLS = flag("ENABLE_SHELL_TOOLS")\n', encoding="utf-8")
+    bound = _flag_bindings(tmp_path)
+    assert [(target, row) for _, _, target, row in bound] == [
+        ("ENABLE_SHELL_TOOLS", "ENABLE_SHELL_TOOLS"), ("ENABLE_WRITE_TOOLS", "ENABLE_SHELL_TOOLS")]
+    good = ast.parse('def f():\n    """doc"""\n    return flag("ENABLE_WRITE_TOOLS")\n').body[0]
+    bad = ast.parse('def f():\n    return flag("ENABLE_SHELL_TOOLS")\n').body[0]
+    assert _reads_only_the_row(good, "ENABLE_WRITE_TOOLS")
+    assert not _reads_only_the_row(bad, "ENABLE_WRITE_TOOLS")
+
+
 # -- no on/off read of the environment outside the table ----------------------
 #
 # Read from the source, because a reader that is never exercised by a test is
-# exactly the one that drifts. Four shapes, each a way the old reads were
+# exactly the one that drifts. Six shapes, each a way the old reads were
 # written or could be written again:
 #   1. reading a ROW's variable directly, in any form - the table reads its
 #      rows, a module asks the table;
 #   2. comparing what the environment holds with an on/off word (== "true",
 #      != "false", in ("1", "true", "yes"));
 #   3. wrapping an environment read in bool();
-#   4. handing a row's name to anything but the table's readers.
+#   4. handing a row's name to anything but the table's readers;
+#   5. the same comparison in two steps: the read kept in a name (through
+#      .lower() / .strip() or an `or` default) and that name compared with an
+#      on/off word - anywhere in the module for a module-level name, inside
+#      the function for a local one. One module at a time: a module-level
+#      read compared in ANOTHER module after an import is not seen;
+#   6. a read used as a truth value: the test of an if, a while, an assert
+#      or a conditional expression, the operand of `not`, or an operand of
+#      and/or that is itself used so (or beside True or False). An and/or
+#      whose VALUE is kept - `os.getenv("X") or "default"` - is a fallback
+#      for a value and not a switch, and is left.
 # A name in NOT_ON_OFF (with this deployment's rows, above) is a setting that
-# is not on/off and trips shape 2 or 3 by its form; each says why.
+# is not on/off and trips one of these by its form; each says why. A read
+# whose name is computed is keyed by its expression's source text.
 
 ON_OFF_WORDS = {"true", "false", "1", "0", "yes", "no", "on", "off", "y", "n",
                 "t", "f", "enabled", "disabled"}
@@ -469,15 +602,87 @@ TABLE_READERS = {"flag", "stated", "default", "_get_runtime_bool"}
 
 
 def _env_reads(tree):
-    """(node, name or None) for every read of the process environment."""
+    """(node, name or None, key) for every read of the process environment.
+    The key is the name, or for a computed name its expression's source."""
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and ast.unparse(node.func) in (
                 "os.getenv", "getenv", "os.environ.get", "environ.get"):
             arg = node.args[0] if node.args else None
-            yield node, (arg.value if isinstance(arg, ast.Constant) else None)
         elif isinstance(node, ast.Subscript) and ast.unparse(node.value) in (
                 "os.environ", "environ"):
-            yield node, (node.slice.value if isinstance(node.slice, ast.Constant) else None)
+            arg = node.slice
+        else:
+            continue
+        name = arg.value if isinstance(arg, ast.Constant) else None
+        yield node, name, (name if name is not None else
+                           (ast.unparse(arg) if arg is not None else ""))
+
+
+_TEXT_METHODS = {"lower", "upper", "strip", "lstrip", "rstrip", "casefold"}
+
+
+def _climb(node, up):
+    """Step from a read up through what keeps it the same value: a text
+    method called on it (.lower(), .strip()), an and/or, a `not`. Returns the
+    nodes passed and the first node that is none of those."""
+    passed, cur = [], node
+    while cur in up:
+        par = up[cur]
+        if isinstance(par, ast.Attribute) and par.attr in _TEXT_METHODS and par.value is cur \
+                and isinstance(up.get(par), ast.Call) and up[par].func is par:
+            passed.append(par)
+            cur = up[par]
+            passed.append(cur)
+            continue
+        if isinstance(par, (ast.BoolOp, ast.UnaryOp)) and not (
+                isinstance(par, ast.UnaryOp) and not isinstance(par.op, ast.Not)):
+            passed.append(par)
+            cur = par
+            continue
+        return passed, cur, par
+    return passed, cur, None
+
+
+def _is_truth_read(node, up) -> bool:
+    passed, cur, par = _climb(node, up)
+    if any(isinstance(p, ast.UnaryOp) for p in passed):
+        return True
+    if any(isinstance(p, ast.BoolOp) and any(
+            isinstance(v, ast.Constant) and isinstance(v.value, bool) for v in p.values)
+           for p in passed):
+        return True
+    if isinstance(par, (ast.If, ast.While, ast.IfExp, ast.Assert)) and par.test is cur:
+        return True
+    if isinstance(par, ast.comprehension) and cur in par.ifs:
+        return True
+    return False
+
+
+def _kept_in(node, up):
+    """The name a read is kept in (`x = os.getenv(...).lower()`), or None."""
+    passed, cur, par = _climb(node, up)
+    if any(isinstance(p, ast.UnaryOp) for p in passed):
+        return None
+    if isinstance(par, ast.Assign) and par.value is cur and len(par.targets) == 1 \
+            and isinstance(par.targets[0], ast.Name):
+        return par.targets[0].id
+    if isinstance(par, ast.AnnAssign) and par.value is cur and isinstance(par.target, ast.Name):
+        return par.target.id
+    return None
+
+
+def _scope_of(node, up):
+    cur = node
+    while cur in up:
+        cur = up[cur]
+        if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            return cur
+    return None
+
+
+def _has_on_off_word(compare) -> bool:
+    return any(isinstance(c, ast.Constant) and isinstance(c.value, str)
+               and c.value.strip().lower() in ON_OFF_WORDS for c in ast.walk(compare))
 
 
 def _loose_reads(app_dir: Path, rows) -> list[str]:
@@ -490,24 +695,44 @@ def _loose_reads(app_dir: Path, rows) -> list[str]:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         up = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
-        for node, name in _env_reads(tree):
+        kept = []                                  # (name, scope, read's key, line)
+        for node, name, key in _env_reads(tree):
             if name in rows:
                 found.append(f"{rel}:{node.lineno}: reads the row {name} itself")
                 continue
-            if name in NOT_ON_OFF:
+            if key in NOT_ON_OFF:
                 continue
+            said = None
             cur = node
             while cur in up and not isinstance(cur, ast.stmt):
                 cur = up[cur]
-                if isinstance(cur, ast.Compare) and any(
-                        isinstance(c, ast.Constant) and isinstance(c.value, str)
-                        and c.value.strip().lower() in ON_OFF_WORDS for c in ast.walk(cur)):
-                    found.append(f"{rel}:{node.lineno}: compares {name or 'a variable'} "
-                                 "with an on/off word")
+                if isinstance(cur, ast.Compare) and _has_on_off_word(cur):
+                    said = f"compares {key} with an on/off word"
                     break
                 if isinstance(cur, ast.Call) and ast.unparse(cur.func) == "bool":
-                    found.append(f"{rel}:{node.lineno}: bool() of {name or 'a variable'}")
+                    said = f"bool() of {key}"
                     break
+            if said is None and _is_truth_read(node, up):
+                said = f"reads {key} as a truth value"
+            if said is not None:
+                found.append(f"{rel}:{node.lineno}: {said}")
+                continue
+            target = _kept_in(node, up)
+            if target is not None:
+                kept.append((target, _scope_of(node, up), key, node.lineno))
+        for target, scope, key, line in kept:
+            where = scope if scope is not None else tree
+            for cmp in ast.walk(where):
+                if not (isinstance(cmp, ast.Compare) and _has_on_off_word(cmp)):
+                    continue
+                if scope is None and _scope_of(cmp, up) is not None and any(
+                        isinstance(n, ast.Name) and n.id == target and isinstance(n.ctx, ast.Store)
+                        for n in ast.walk(_scope_of(cmp, up))):
+                    continue                       # a local of the same name
+                if any(isinstance(n, ast.Name) and n.id == target and isinstance(n.ctx, ast.Load)
+                       for n in ast.walk(cmp)):
+                    found.append(f"{rel}:{cmp.lineno}: compares {target} (read from {key} "
+                                 f"on line {line}) with an on/off word")
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -538,6 +763,17 @@ _PLANTED = {
     "a_row.py": 'import os\nX = os.getenv("ENABLE_AUTH")\n',
     "a_row_by_hand.py": 'from app.providers import _get_runtime\nX = _get_runtime("k", "ENABLE_AUTH", "true") == "true"\n',
     "routers/deep.py": 'import os\nX = os.getenv("ENABLE_NEW_THING", "0") == "1"\n',
+    # shape 5 - the security read's mutant k, and its form inside a function
+    "two_step.py": 'import os\n_x = os.getenv("NEW_SWITCH", "false").lower()\nNEW = _x == "true"\n',
+    "two_step_local.py": ('import os\n\ndef on():\n    x = (os.environ.get("NEW_SWITCH") or "").strip()\n'
+                          '    return x.lower() in ("1", "yes")\n'),
+    # shape 6 - the security read's mutant l, and the other truth positions
+    "truthy_ifexp.py": 'import os\nNEW = True if os.getenv("NEW_SWITCH") else False\n',
+    "truthy_if.py": 'import os\nif os.getenv("NEW_SWITCH"):\n    X = 1\n',
+    "truthy_not.py": 'import os\nNEW = not os.getenv("NEW_SWITCH", "").strip()\n',
+    "truthy_and.py": 'import os\nY = 1\nX = 2 if os.getenv("NEW_SWITCH") and Y else 3\n',
+    "truthy_or_false.py": 'import os\nNEW = os.getenv("NEW_SWITCH") or False\n',
+    "truthy_assert.py": 'import os\nassert os.environ.get("NEW_SWITCH"), "set it"\n',
 }
 _CLEAN = {
     "env_flags.py": 'import os\nX = os.environ.get("ENABLE_AUTH", "").lower() == "true"\n',
@@ -545,14 +781,22 @@ _CLEAN = {
     "a_number.py": 'import os\nX = int(os.getenv("RATE_LIMIT_REQUESTS", "20"))\n',
     "a_name.py": 'import os\nX = os.getenv("DEFAULT_MODEL", "") or "a-model"\n',
     "a_presence.py": 'import os\nX = bool(os.getenv("REDIS_URL", "").strip())\n',
+    "a_presence_if.py": 'import os\nif os.getenv("REDIS_URL"):\n    X = 1\n',
+    "a_fallback.py": 'import os\nX = (os.getenv("DEFAULT_MODEL") or "a-model").strip()\n',
+    "a_kept_number.py": ('import os\nraw = os.getenv("RATE_LIMIT_REQUESTS", "")\n'
+                         'X = int(raw) if raw.strip() != "" else 20\n'),
+    "a_local_of_the_same_name.py": ('import os\nx = os.getenv("DEFAULT_MODEL", "")\n\n'
+                                    'def f(word):\n    x = word\n    return x == "true"\n'),
 }
 
 
 def test_the_scan_sees_each_shape_of_a_loose_read(tmp_path):
     """The control for the test above: a guard that cannot fail is not one.
     Every planted shape is found, by file, and the clean ones beside them -
-    the table module itself, a caller of the table, a number, a name, the one
-    presence test - are not."""
+    the table module itself, a caller of the table, a number, a name kept and
+    compared with something that is not an on/off word, a fallback kept as a
+    value, the presence test this deployment names, a local that shares a
+    kept name - are not."""
     (tmp_path / "routers").mkdir()
     for name, text in {**_PLANTED, **_CLEAN}.items():
         (tmp_path / name).write_text(text, encoding="utf-8")

@@ -1,4 +1,5 @@
-"""A start that is going to be refused is refused before anything is written.
+"""A start that is going to be refused is refused before it writes anything
+but the interpreter's own bytecode cache.
 
 Every on/off setting is read by one rule (app/env_flags.py; the rule itself
 is pinned in test_env_flags_strict.py), and a value that is neither of a
@@ -13,9 +14,13 @@ backend came up and the refusal waited for the first call.
 
 NOW the backend's first act is check_all(): every row of the table, whether
 or not any module has asked for it yet, before app/main.py imports anything
-else. A refused start has imported nothing, opened nothing and written
-nothing. `python -m app.env_flags` is the same check by itself, for an
-entrypoint that does work before the app is imported.
+else. A refused start has imported nothing, opened nothing, and written
+nothing but the interpreter's own bytecode cache: Python compiles each module
+it imports and, where it may write there, keeps the result as a .pyc under
+__pycache__ beside the code - app/main.py's and app/env_flags.py's included,
+since both are compiled before the check runs. The images leave those writes
+on. `python -m app.env_flags` is the same check by itself, for an entrypoint
+that does work before the app is imported.
 
 Each test says whether it is a FIX (it fails on the commit before this file)
 or a CONTROL (it holds on both).
@@ -26,6 +31,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -112,6 +118,13 @@ def _host_env(tmp_path, values: dict) -> dict:
     env["HISTORY_DB_PATH"] = str(host / "history.db")
     env["JWT_SECRET_KEY"] = "a-secret-for-the-fresh-start-probe-only"
     env["SELF_CHECK_INTERVAL_SECONDS"] = "0"
+    # LEFT OUT, with its reason: the bytecode cache. Python keeps a .pyc for
+    # each module it compiles, under __pycache__ beside the code, and the
+    # images do not turn that off - so a real refused start can write
+    # app/__pycache__/main.*.pyc and env_flags.*.pyc. Off here so what a test
+    # reads is the app's own writes, and the code directory of the suite is
+    # not written by its probes; test_a_refused_start_writes_only_bytecode
+    # turns it back on and shows it is the only thing such a start writes.
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env.update(values)
     return env
@@ -154,13 +167,16 @@ def test_the_check_by_itself_exits_0_and_says_nothing(tmp_path, values):
     assert _left_behind(tmp_path) == []
 
 
-# -- a refused start has imported nothing and written nothing ------------------
+# -- a refused start imports nothing and writes nothing but bytecode -----------
 #
 # The whole app, as a start imports it, in a fresh interpreter. The child
 # records what a start does to the world as it happens - every file opened
 # for writing, every directory made, every database and socket connection -
 # through the interpreter's own audit events, so a write is seen wherever it
-# lands and not only where this test thought to look. It then reports which
+# lands and not only where this test thought to look. Its `events` leave out
+# a write inside a __pycache__ directory, for the reason _host_env gives;
+# `written` keeps every write's path, those included, for the test that
+# turns bytecode back on. It then reports which
 # of the app's modules were imported, and the test reads what was left in
 # the one directory every path setting points into. The vector store is the
 # REAL one on the refused start: its client is opened by an import, and
@@ -172,16 +188,23 @@ _START = "\n".join((
     "import json, os, sqlite3, sys",
     "events = []",
     "WRITE = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC",
+    "written = []",
     "def hook(name, args):",
     "    try:",
     "        if name == 'open':",
     "            path, mode, flags = args",
     "            wrote = ((isinstance(mode, str) and set(mode) & set('wax+'))",
     "                     or (isinstance(flags, int) and flags & WRITE))",
+    "            if wrote and not isinstance(path, int):",   # a descriptor: its open was an event
+    "                written.append(os.path.abspath(str(path)))",
     "            if wrote and '__pycache__' not in str(path):",
     "                events.append('open-for-write')",
     "        elif name in ('os.mkdir', 'os.rename', 'os.remove', 'os.rmdir',",
-    "                      'os.truncate', 'sqlite3.connect', 'socket.connect'):",
+    "                      'os.truncate'):",
+    "            written.append(os.path.abspath(str(args[0])))",
+    "            if '__pycache__' not in str(args[0]):",
+    "                events.append(name)",
+    "        elif name in ('sqlite3.connect', 'socket.connect'):",
     "            events.append(name)",
     "    except Exception:",
     "        pass",
@@ -199,6 +222,7 @@ _START = "\n".join((
     "said['app_modules'] = sorted(m for m in sys.modules if m.startswith('app.')",
     "                             and m not in ('app.main', 'app.env_flags'))",
     "said['events'] = sorted(set(events))",
+    "said['written'] = sorted(set(written))",
     "path = os.environ['DATABASE_URL'].replace('sqlite:///', '')",
     "said['tables'] = 0",
     "if os.path.exists(path) and os.path.getsize(path):",
@@ -210,10 +234,13 @@ _START = "\n".join((
 ))
 
 
-def _start(tmp_path, values: dict, stand_in: bool = False):
+def _start(tmp_path, values: dict, stand_in: bool = False, bytecode_to=None):
     env = _host_env(tmp_path, values)
     if stand_in:
         env["VECTOR_STORE_STAND_IN"] = "yes"
+    if bytecode_to is not None:
+        env.pop("PYTHONDONTWRITEBYTECODE", None)
+        env["PYTHONPYCACHEPREFIX"] = str(bytecode_to)
     done = subprocess.run([sys.executable, "-c", _START], capture_output=True, text=True,
                           env=env, cwd=str(BACKEND), timeout=600)
     assert done.returncode == 0, done.stderr[-3000:]
@@ -222,12 +249,14 @@ def _start(tmp_path, values: dict, stand_in: bool = False):
 
 
 @pytest.mark.parametrize("name", REFUSED_FIRST)
-def test_a_refused_start_has_imported_nothing_and_written_nothing(tmp_path, name):
+def test_a_refused_start_imports_nothing_and_writes_nothing_but_bytecode(tmp_path, name):
     """FIX. One setting with a value that is neither word. The start is
     refused with that setting's name; not one other module of the app was
-    imported; no file was opened for writing, no directory made, no database
-    or socket connected; the database file does not exist; and the directory
-    every path setting points into is as empty as it began.
+    imported; no file was opened for writing and no directory made outside
+    the bytecode cache (left out here, and shown to be the only write by the
+    test below), no database or socket connected; the database file does not
+    exist; and the directory every path setting points into is as empty as
+    it began.
 
     On the commit before, the same value was refused only when the module
     that owns the setting was imported - after the database module, the
@@ -248,8 +277,8 @@ def test_a_refused_start_has_imported_nothing_and_written_nothing(tmp_path, name
 def test_a_start_that_is_not_refused_is_seen_writing(tmp_path):
     """CONTROL, and the control OF the test above: the same child with every
     setting recognised starts, imports the app, makes its tables and is seen
-    doing it - so 'no event, no file' above is a start that wrote nothing,
-    not an instrument that cannot see a write."""
+    doing it - so 'no event, no file' above is a start that wrote nothing
+    outside the bytecode cache, not an instrument that cannot see a write."""
     said, _ = _start(tmp_path, {"ENABLE_AUTH": "true", "ENABLE_AUDIT_LOG": "false"},
                      stand_in=True)
     assert said["result"] == "STARTED", said
@@ -257,6 +286,45 @@ def test_a_start_that_is_not_refused_is_seen_writing(tmp_path):
     assert said["tables"] > 0
     assert "sqlite3.connect" in said["events"]
     assert _left_behind(tmp_path) != []
+
+
+def _inside(path: str, folder) -> bool:
+    folder = os.path.normcase(os.path.abspath(str(folder)))
+    return os.path.normcase(os.path.abspath(path)).startswith(folder + os.sep)
+
+
+def test_a_refused_start_writes_only_bytecode(tmp_path):
+    """CONTROL (it holds on the commit before this test too: what it pins is
+    the claim, made exact). The two things left out above, turned back on:
+    bytecode writes allowed, and every write recorded, __pycache__ included.
+    The cache is sent to a prefix of its own (PYTHONPYCACHEPREFIX) so each
+    .pyc is a fresh write the instrument must see, rather than one the suite
+    already left beside the code. The prefix is a short directory of the
+    system's temp, not tmp_path: under it Python mirrors the code's whole
+    path, and on Windows a deep checkout below pytest's deep tmp_path passes
+    the 260-character limit - the interpreter then drops the write in silence
+    and there is nothing to see. A refused start writes, and every write it
+    makes is inside that cache: Python's own bytecode, and nothing else."""
+    cache = Path(tempfile.mkdtemp(prefix="bc"))
+    try:
+        said, done = _start(tmp_path, {REFUSED_FIRST[0]: MARKER}, bytecode_to=cache)
+    finally:
+        shutil.rmtree(cache, ignore_errors=True)
+    assert said["result"] == "REFUSED", said
+    assert any(".pyc" in w for w in said["written"]), said["written"]
+    assert [w for w in said["written"] if not _inside(w, cache)] == []
+    assert said["tables"] == 0
+    assert _left_behind(tmp_path) == []
+    assert MARKER.lower() not in (done.stdout + done.stderr).lower()
+
+
+def test_main_says_what_the_vector_store_open_writes():
+    """FIX where main.py carried the sentence, CONTROL elsewhere. A comment
+    said the vector store's client is opened by an import 'an open and no
+    write'. A real open on a path that holds no store yet makes the store's
+    directory and its database file; the comment says so now."""
+    text = " ".join((APP / "main.py").read_text(encoding="utf-8").replace("#", " ").split())
+    assert "an open and no write" not in text
 
 
 # -- what starts the backend ---------------------------------------------------
@@ -357,11 +425,13 @@ def _one_line(path: Path) -> str:
 
 
 @pytest.mark.parametrize("name", RUNBOOKS)
-def test_the_runbook_says_a_refused_start_wrote_nothing_and_reads_red(name):
+def test_the_runbook_says_what_a_refused_start_wrote_and_that_it_reads_red(name):
     """FIX. Where an operator reads about a start that did not come up: the
-    check runs before anything is written, the health wait after a deploy
-    fails on it, and the line to look for in the log."""
+    check runs before the backend writes anything but Python's own bytecode
+    cache, the health wait after a deploy fails on it, and the line to look
+    for in the log."""
     text = _one_line(REPO / name)
-    assert "before anything is written" in text
+    assert "anything but Python's own bytecode cache" in text
+    assert "before anything is written" not in text
     assert "wait_backend_healthy.sh" in text
     assert "is set to a value that is neither true nor false" in text

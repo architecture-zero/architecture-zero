@@ -143,10 +143,12 @@ now leaves it on, so write `false` where off is what you mean. A backend that
 starts says how it read all of them in one log line named `on_off_settings`:
 each setting's name with the word on or off.
 
-That check is the first thing the backend does, before anything is written:
-before it opens the database, the vector store or its log file, and before
-any step that changes what is stored. So a start refused over one of these
-settings has changed nothing, and the fix is the one line the log names. The
+That check is the first thing the backend does, before it writes anything
+but Python's own bytecode cache (the `.pyc` files kept in `__pycache__`
+beside the code): before it opens the database, the vector store or its log
+file, and before any step that changes what is stored. So a start refused
+over one of these settings has changed nothing of yours, and the fix is the
+one line the log names. The
 line reads `RuntimeError: SECURITY: <NAME> is set to a value that is neither
 true nor false. Refusing to start ...`, and it is the last line of
 `docker compose logs --tail 50 backend`. `wait_backend_healthy.sh` above
