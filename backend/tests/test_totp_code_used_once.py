@@ -26,14 +26,19 @@ FIX (each fails on the doors as they were):
   - a reused code is a miss: the door's own status, the wrong code's
     sentence plus the clause that a code works once, counted in the code
     bound, against the sign-in's challenge and toward the lock
-  - the same right code sent by many requests at once is accepted once
-    (every request has matched the code before any of them writes)
+  - the same right code sent by many requests at once is accepted once:
+    every request has read the record before any of them writes, on every
+    run, and the record is read and written only through the store's one
+    versioned write (a record written apart from the accept fails here
+    every time, not when the timing allows)
   - each seed has its own record and nothing clears it: a sign-in, or a
     re-key, held after matching a code while a re-key with the same code
     runs to the end is refused when it writes (the record per account was
     cleared by that re-key, and the held request was accepted); after an
     operator's reset or a re-key, the new seed's codes meet a fresh record
-  - no door checks a code any other way (read from the source)
+  - no door checks a code any other way (read from the source): not by
+    .verify(), and not by .now(), .at(), .generate_otp() or .timecode()
+    on a one-time-password object built anywhere but the helper
 CONTROL (true before and after, by design):
   - a right fresh code works at each door
   - the next step's code works after a used one, and the step before's
@@ -321,36 +326,85 @@ def test_reused_codes_at_the_sign_in_lock_the_account_as_wrong_codes_do(client, 
 # -- FIX: the same right code, sent by many requests at once --------------------
 
 BURST = 8
+_STORE_READS_AND_WRITES = ("get", "put", "put_if_absent", "delete", "bump_counter",
+                           "bump_window")
+
+
+def _every_caller_reads_before_any_writes(monkeypatch):
+    """Installs two things on the store, for keys under totp_used:.
+
+    A barrier inside update(): each caller's first mutation of the record -
+    which runs after the record has been read and before anything is
+    written - waits until all BURST callers have read it. So every caller has
+    seen the record unmoved before any of them writes, on every run.
+
+    And a log of every store call on such a key: which thread called
+    update(), and every other call. The record moves in the same write that
+    accepts the code, so each caller makes exactly ONE update() and no other
+    call. A read with get() and a write with put(), or a read in one update()
+    and a write in a second, is the record moved in a write apart from the
+    accept - which a burst catches only when the timing happens to line up.
+
+    Returns (the update callers, the other calls)."""
+    updaters, others = [], []
+    first_read = threading.Barrier(BURST, timeout=20)
+    seen = threading.local()
+    real_update = state_store.update
+
+    def update(key, mutate, ttl, **kw):
+        if not key.startswith("totp_used:"):
+            return real_update(key, mutate, ttl, **kw)
+        updaters.append(threading.get_ident())
+
+        def held(doc):
+            if not getattr(seen, "read", False):
+                seen.read = True
+                first_read.wait()
+            return mutate(doc)
+
+        return real_update(key, held, ttl, **kw)
+
+    monkeypatch.setattr(state_store, "update", update)
+    for name in _STORE_READS_AND_WRITES:
+        real = getattr(state_store, name)
+
+        def logged(key, *args, _name=name, _real=real, **kw):
+            if str(key).startswith("totp_used:"):
+                others.append((_name, key))
+            return _real(key, *args, **kw)
+
+        monkeypatch.setattr(state_store, name, logged)
+    return updaters, others
 
 
 def test_the_same_right_code_sent_at_once_is_accepted_once(accounts, monkeypatch):
-    """Eight callers hand the helper the same right code. Each is held after
-    its code has been matched and before anything is written, until all
-    eight are there - so every one of them has seen a right code and an
-    unmoved record. Then they write. One is accepted; seven are told the
-    code was used. Nothing here is timed: the count is the proof."""
+    """Eight callers hand the helper the same right code. Each reads the
+    record and is held, before it writes, until all eight have read it. Then
+    they write. One is accepted; seven are told the code was used - every
+    run, not when the timing allows. Each caller reads and moves the record
+    in exactly one versioned write and touches it no other way. Nothing here
+    is timed: the count is the proof."""
     someone = accounts()
     code = _code(someone["seed"])
-    real = security._matched_step
-    matched = threading.Barrier(BURST, timeout=20)
-
-    def held(seed, sent):
-        step = real(seed, sent)
-        matched.wait()
-        return step
-
-    monkeypatch.setattr(security, "_matched_step", held)
-    answers = []
+    updaters, others = _every_caller_reads_before_any_writes(monkeypatch)
+    answers, raised = [], []
 
     def ask():
-        answers.append(security.totp_code_refusal(someone["id"], someone["seed"], code))
+        try:
+            answers.append(security.totp_code_refusal(someone["id"], someone["seed"], code))
+        except Exception as exc:   # a barrier that never filled, or a write that failed
+            raised.append(type(exc).__name__)
 
     threads = [threading.Thread(target=ask, daemon=True) for _ in range(BURST)]
     for t in threads:
         t.start()
     for t in threads:
-        t.join(30)
-    assert len(answers) == BURST, "a caller did not come back"
+        t.join(40)
+    assert others == [], f"the record was read or written outside the versioned write: {others}"
+    per_caller = sorted(updaters.count(t) for t in set(updaters))
+    assert per_caller == [1] * BURST, \
+        f"each caller must move the record in ONE versioned write; writes per caller: {per_caller}"
+    assert raised == [] and len(answers) == BURST, (raised, answers)
     assert answers.count(None) == 1, f"{answers.count(None)} callers had the same code accepted"
     assert answers.count(USED) == BURST - 1, answers
 
@@ -505,29 +559,58 @@ _DOORS = {
     ("routers/auth.py", "mfa_enable"),           # the enrollment confirm
 }
 
+# Every function under app/ that builds a one-time-password object, with why.
+_MAKERS = {
+    ("security.py", "_matched_step"): "the one comparison, inside the helper",
+    ("routers/auth.py", "mfa_setup"): "the provisioning address for a new seed - "
+                                      "provisioning_uri only, never a comparison",
+}
+
+# What the library offers to check or produce a code with. Only the helper's
+# own comparison may call these on a one-time-password object.
+_COMPARES = {"verify", "now", "at", "generate_otp", "timecode"}
+_COMPARER = ("security.py", "_matched_step")
+
 
 def test_every_door_asks_the_one_helper_and_none_verifies_a_code_itself():
-    """Read from the source. No function under app/ calls a .verify() - the
-    one-time-password library's own check, which accepts a right code as
-    often as it is sent - and the functions that ask the helper are exactly
-    the doors named above. A new door that checks a code itself, or one that
-    is not named here, fails."""
+    """Read from the source. The functions that ask the helper are exactly
+    the doors named above. No function builds a one-time-password object
+    (TOTP or HOTP, however it is imported) unless it is named above with its
+    reason, and only the helper's own comparison calls .verify(), .now(),
+    .at(), .generate_otp() or .timecode() in a function that builds one. No
+    function anywhere calls .verify(), .generate_otp() or .timecode() at all,
+    outside that comparison. A new door that checks a code itself - by any of
+    the library's ways - fails here."""
     app_dir = Path(jwt_auth.__file__).resolve().parent
-    verifies, asks = [], set()
+    asks, makers, compares = set(), set(), []
     for path in sorted(app_dir.rglob("*.py")):
         rel = path.relative_to(app_dir).as_posix()
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and any(a.name in ("TOTP", "HOTP")
+                                                        for a in node.names):
+                makers.add((rel, "<import of TOTP or HOTP>"))
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
+            where = (rel, node.name)
+            makes = any((isinstance(n, ast.Attribute) and n.attr in ("TOTP", "HOTP"))
+                        or (isinstance(n, ast.Name) and n.id in ("TOTP", "HOTP"))
+                        for n in ast.walk(node))
+            if makes:
+                makers.add(where)
             for call in ast.walk(node):
                 if not isinstance(call, ast.Call):
                     continue
-                if isinstance(call.func, ast.Attribute) and call.func.attr == "verify":
-                    verifies.append((rel, node.name))
                 if getattr(call.func, "id", "") == "totp_code_refusal":
-                    asks.add((rel, node.name))
-    assert verifies == [], verifies
+                    asks.add(where)
+                attr = call.func.attr if isinstance(call.func, ast.Attribute) else None
+                if where == _COMPARER or attr is None:
+                    continue
+                if attr in ("verify", "generate_otp", "timecode") or (makes and attr in _COMPARES):
+                    compares.append((rel, node.name, attr))
     assert asks == _DOORS, asks ^ _DOORS
+    assert makers == set(_MAKERS), makers ^ set(_MAKERS)
+    assert compares == [], compares
 
 
 # -- CONTROL -------------------------------------------------------------------
