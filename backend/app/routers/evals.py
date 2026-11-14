@@ -107,9 +107,15 @@ def seed_eval_questions(current_user: dict = Depends(require_owner)):
         raw, rule = _read_seed_file(EVAL_SEED_PATH)
         if rule:
             raise HTTPException(status_code=400, detail=rule)
-        questions = [(q["category"], q["question"], q.get("notes", ""), q.get("expected_source"),
-                      q.get("as_level"), 1 if q.get("holdout") else 0) for q in raw]
+        # Each row is read by the sync's own rules (eval_runner._seed_rows):
+        # a row the sync would refuse is named in the answer and skipped -
+        # never a KeyError - and a kept row is stored as the sync stores it.
+        from app.eval_runner import _seed_rows
+        rows, refused = _seed_rows(raw)
+        questions = [(r["category"], r["question"], r["notes"], r["expected_source"],
+                      r["as_level"], r["holdout"]) for r in rows]
     else:
+        refused = []
         questions = [(c, q, n, None, None, 0) for (c, q, n) in _DEFAULT_EVAL_QUESTIONS]
 
     with get_session() as db:
@@ -126,7 +132,10 @@ def seed_eval_questions(current_user: dict = Depends(require_owner)):
             db.add(EvalQuestion(question=question, category=category, notes=notes,
                                 expected_source=expected_source, as_level=as_level,
                                 holdout=holdout, created_at=now))
-    return {"seeded": len(seen)}
+    answer = {"seeded": len(seen)}
+    if refused:
+        answer["refused"] = refused
+    return answer
 @router.post("/api/admin/evals/questions/sync")
 def sync_eval_questions(current_user: dict = Depends(require_owner)):
     """On-demand reconcile of the DB question set from the seed file. A file

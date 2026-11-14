@@ -84,13 +84,9 @@ def sync_eval_questions_from_seed() -> dict:
             # something in it, is refused and named - never skipped in
             # silence, and never a reason to stop the sync (it raised at
             # q.get or at strip() and ended the whole sync).
-            if not isinstance(q, dict):
-                _refuse(i, None, None, SEED_ROW_RULE)
-                continue
-            question = q.get("question")
-            text = question.strip() if isinstance(question, str) else ""
-            if not text:
-                _refuse(i, None, None, SEED_EMPTY_QUESTION_RULE)
+            text, rule = _seed_question(q)
+            if rule:
+                _refuse(i, None, None, rule)
                 continue
             # A question listed twice in the file is synced once (its first
             # entry) and named in the result. by_text never gains the rows
@@ -108,14 +104,10 @@ def sync_eval_questions_from_seed() -> dict:
             if problem:
                 _refuse(i, row, text, problem)
                 continue
-            category = (q.get("category") or "general").strip()
-            notes = (q.get("notes") or "").strip()
-            expected = q.get("expected_source") or None
-            # NOT `or None`: as_level 0 is Guest, a real value, not "unset".
-            as_level = q.get("as_level")
-            # Normalized both sides (older rows hold null) so an unchanged
-            # file never reports a spurious update.
-            holdout = 1 if q.get("holdout") else 0
+            values = _seed_values(q)
+            category, notes, expected = (values["category"], values["notes"],
+                                         values["expected_source"])
+            as_level, holdout = values["as_level"], values["holdout"]
             # Multi-turn setup: stored as a canonical JSON string; None when
             # absent so single-turn questions stay untouched.
             setup = q.get("setup_turns") or []
@@ -172,6 +164,8 @@ SETUP_NO_GOOD_TURN_RULE = "setup_turns holds no well-formed turn; " + SETUP_TURN
 # file can hold anything, and a log line or a 400 is not where to quote it.
 SEED_FILE_NOT_JSON_RULE = "the seed file is not valid JSON: it must hold a JSON list of questions"
 SEED_FILE_NOT_A_LIST_RULE = "the seed file must hold a JSON list of questions"
+SEED_FILE_UNREADABLE_RULE = ("the seed file cannot be read: it must be a readable file "
+                             "holding a JSON list of questions")
 # The fields the sync reads as text. Anything else stopped the sync at
 # strip() (category, notes) or a run later (expected_source).
 _SEED_TEXT_FIELDS = ("category", "notes", "expected_source")
@@ -179,13 +173,16 @@ _SEED_TEXT_FIELDS = ("category", "notes", "expected_source")
 
 def _read_seed_file(path: str):
     """The seed file's rows, or the rule it breaks: (rows, None) for a JSON
-    list; (None, rule) for a file that is not JSON (a byte that is not UTF-8
-    included) or whose top level is not a list. A refusal is said once, as
-    an error line naming the rule and nothing of the file. The sync and the
-    seed route both read through here."""
+    list; (None, rule) for a file that cannot be read (permissions, a
+    directory at the path, any error at open or read), is not JSON (a byte
+    that is not UTF-8 included) or whose top level is not a list. A refusal
+    is said once, as an error line naming the rule and nothing of the file
+    or of the error. The sync and the seed route both read through here."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
+    except OSError:
+        rule = SEED_FILE_UNREADABLE_RULE
     except ValueError:
         rule = SEED_FILE_NOT_JSON_RULE
     else:
@@ -220,6 +217,54 @@ def _seed_row_problem(q: dict) -> str | None:
     if setup and not _well_formed_turns(setup):
         return SETUP_NO_GOOD_TURN_RULE
     return None
+
+
+def _seed_question(q) -> tuple[str, str | None]:
+    """A seed row's question text, or the rule the row breaks before its
+    question can be read: not an object, or no question text with something
+    in it. The sync and the seed route both ask here first."""
+    if not isinstance(q, dict):
+        return "", SEED_ROW_RULE
+    question = q.get("question")
+    text = question.strip() if isinstance(question, str) else ""
+    return (text, None) if text else ("", SEED_EMPTY_QUESTION_RULE)
+
+
+def _seed_values(q: dict) -> dict:
+    """The stored values of a seed row _seed_row_problem passed: the sync's
+    reading of each field, and the seed route's - one reading."""
+    return {"category": (q.get("category") or "general").strip(),
+            "notes": (q.get("notes") or "").strip(),
+            "expected_source": q.get("expected_source") or None,
+            # NOT `or None`: as_level 0 is Guest, a real value, not "unset".
+            "as_level": q.get("as_level"),
+            # Normalized both sides (older rows hold null) so an unchanged
+            # file never reports a spurious update.
+            "holdout": 1 if q.get("holdout") else 0}
+
+
+def _seed_rows(raw: list) -> tuple[list, list]:
+    """The rows of a seed file the seed route stores, read by the sync's own
+    rules: (rows, refused). A row the sync would refuse is skipped and named
+    in refused - its place in the file, its text (null when it has none) and
+    the rule - with an eval_seed_row_refused error line; a question listed
+    twice is kept once, its first entry. Each kept row is {"question": its
+    text} plus _seed_values. Nothing is written here."""
+    rows, refused, seen = [], [], set()
+    for i, q in enumerate(raw):
+        text, rule = _seed_question(q)
+        if not rule:
+            if text in seen:
+                continue
+            seen.add(text)
+            rule = _seed_row_problem(q)
+        if rule:
+            refused.append({"index": i, "id": None, "question": text[:120] if text else None,
+                            "rule": rule})
+            log_error("eval_seed_row_refused", index=i, question_id=None, rule=rule)
+            continue
+        rows.append({"question": text, **_seed_values(q)})
+    return rows, refused
 
 
 def _setup_turns(raw) -> list:
