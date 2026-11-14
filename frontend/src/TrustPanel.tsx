@@ -35,8 +35,23 @@ interface TrustData {
   freshness?: Band | null
   retrieval?: ({ pct: number } & Counts) | null
   measured_at?: string | null
+  judged_measured_at?: string | null
   corpus_fingerprint_short?: string | null
   cross_family_judging?: boolean
+}
+
+// The day each kind of tile was measured. `measured_at` is the newest run's,
+// the run retrieval reads; the judged tiles read the newest JUDGED run, whose
+// day `judged_measured_at` names. After a retrieval-only run those are two
+// runs, so one "Last measured" date named a day the judged numbers were not
+// measured on. Both dates where they differ; one where they agree or nothing
+// was judged.
+export function measuredText(d: { measured_at?: string | null; judged_measured_at?: string | null }): string {
+  const judged = d.judged_measured_at
+  if (judged && judged !== d.measured_at) {
+    return `Judged tiles measured ${judged}; retrieval measured ${d.measured_at}`
+  }
+  return `Last measured ${d.measured_at}`
 }
 
 // The gap is a difference in points, not a percentage; a positive value means
@@ -229,7 +244,7 @@ export default function TrustPanel() {
             </div>
 
             <p className="text-slate-500 text-xs mt-8">
-              Last measured {data.measured_at}
+              {measuredText(data)}
               {data.corpus_fingerprint_short &&
                 ` - knowledge base fingerprint ${data.corpus_fingerprint_short}`}
               .{' '}

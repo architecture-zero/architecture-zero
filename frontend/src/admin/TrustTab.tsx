@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { actionError, emitError, guardedPoll } from '../errorSurface'
 import { PRIMARY_COLOR } from '../theme'
+import { measuredText } from '../TrustPanel'
 
 // ── Tab: Trust ─────────────────────────────────────────────────────────────
 
@@ -24,6 +25,7 @@ interface AdminTrustData {
   freshness?: TrustBand | null
   retrieval?: ({ pct: number } & TrustCounts) | null
   measured_at?: string | null
+  judged_measured_at?: string | null
   corpus_fingerprint_short?: string | null
   cross_family_judging?: boolean
   provenance?: {
@@ -270,7 +272,9 @@ export function TrustTab({ api, headers, currentUser }: {
           )}
         </div>
         <p className="text-xs text-gray-500 mt-3">
-          Last measured {data.measured_at}.{' '}
+          {/* The public panel's sentence: both dates where the judged tiles
+              and retrieval come from different runs. */}
+          {measuredText(data)}.{' '}
           {bandN > 1
             ? 'Spreads are low-high bands across identical runs, never one lucky point.'
             : 'Values are from a single run at the current configuration so far; repeat runs at the same configuration widen them into low-high bands rather than one lucky point.'}

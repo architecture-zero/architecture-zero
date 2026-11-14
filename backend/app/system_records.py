@@ -428,11 +428,21 @@ def build_measurement(snap: dict) -> str:
         lines.append("- Retrieval hit rate: " + _num(ret.get("pct")) + " percent"
                      + rows(ret))
 
+    # The judged scores read the newest JUDGED run and retrieval the newest
+    # run, so after a retrieval-only run they are two runs on two days: one
+    # date says both, two dates say which is which. Compared before either is
+    # rendered, so a withheld value never decides the shape.
+    measured, judged = panel.get("measured_at"), panel.get("judged_measured_at")
+    if judged is not None and judged != measured:
+        dates = ["- Judged scores last measured: " + _safe_token(judged),
+                 "- Retrieval last measured: " + _safe_token(measured)]
+    else:
+        dates = ["- Last measured: " + _safe_token(measured)]
     lines += [
         "",
         "## Comparability",
         "",
-        "- Last measured: " + _safe_token(panel.get("measured_at")),
+        *dates,
         "- Corpus at measurement time: "
         + _safe_token(panel.get("corpus_fingerprint_short")),
         "",

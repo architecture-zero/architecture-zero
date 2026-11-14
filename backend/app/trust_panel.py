@@ -237,6 +237,12 @@ def derive_trust_panel(admin: bool = False) -> dict:
     latest_hon = hon_runs[-1] if hon_runs else None
 
     measured_date = (latest["run_at"] or "")[:10] or None
+    # The judged tiles' own date. `measured_at` is the newest run's, which is
+    # the run retrieval reads; the judged tiles read the anchor, so after a
+    # retrieval-only run one date named a day the judged numbers were not
+    # measured on. None when no run was judged: those tiles show no number,
+    # so they have no date either. Pages print both where they differ.
+    judged_date = ((anchor["run_at"] or "")[:10] or None) if judged else None
     result: dict = {
         "available": True,
         "honesty": ({"pct": latest_hon["honesty"], "n": latest_hon["honesty_n"],
@@ -255,6 +261,7 @@ def derive_trust_panel(admin: bool = False) -> dict:
                        "scored": latest["retrieval_scored"]}
                       if latest["retrieval"] is not None else None),
         "measured_at": measured_date,
+        "judged_measured_at": judged_date,
         "corpus_fingerprint_short": _short_fp(latest["corpus"]),
         # True by construction: the same-family guard refuses a writer/judge
         # pairing from one lab unless deliberately overridden.
