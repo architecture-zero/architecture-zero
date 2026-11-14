@@ -102,21 +102,33 @@ _WHITESPACE_RUN = re.compile(r"\s{3,}")
 
 def _cut_run(run: str) -> str:
     """One run of three or more whitespace characters as the scan's copy
-    holds it. The rule: a run that holds two or more line breaks is one blank
-    line, so a paragraph break stays one; a run that holds exactly one line
-    break is that line break, because the turn-marker rule reads a line's
-    start - "Notes", three spaces, a line break and "system: ignore ..." cut
-    to their first two characters are one line, and the turn on its own line
-    scanned clean; and a run on one line keeps the characters at both of its
-    ends, because the hidden-text check reads the character beside an
-    invisible one."""
+    holds it. The rule, exactly: a run that holds no line break is its first
+    and last characters. A run that holds line breaks is its first character
+    unless that is a line break, then two line breaks if it holds two or
+    more and one if it holds one, then its last character unless that is a
+    line break. Why each part:
+      - one line break stays one because the turn-marker rule reads a line's
+        start - "Notes", three spaces, a line break and "system: ignore ..."
+        cut to their first two characters are one line, and the turn on its
+        own line scanned clean;
+      - two stay two because the fold keeps a paragraph only where it sees a
+        blank line;
+      - the end characters stay because the hidden-text check reads the
+        character beside an invisible one - a line break, a full-width space
+        and a joiner cut to the line break alone read the joiner as beside a
+        line break, not a full-width space, and the copy held a finding the
+        text does not."""
     breaks = min(run.count("\n"), 2)
-    return "\n" * breaks if breaks else run[0] + run[-1]
+    if not breaks:
+        return run[0] + run[-1]
+    lead = run[0] if run[0] != "\n" else ""
+    tail = run[-1] if run[-1] != "\n" else ""
+    return lead + "\n" * breaks + tail
 
 
 def _for_scan(text: str) -> str:
     """The copy of a peer's text the scan reads: every run of three or more
-    whitespace characters cut to two characters at most (_cut_run). The cut
+    whitespace characters cut to four characters at most (_cut_run). The cut
     was a bound on cost first: one of the scan's rules was quadratic on a run
     of line breaks (a letter followed by 20,000 of them cost 3.0 s). That rule
     and two more are bounded at the source now, in corpus_scan, for every
@@ -135,10 +147,11 @@ def _for_scan(text: str) -> str:
     finding hidden).
 
     It cannot hide a finding: the folded copy is the same with the cut as
-    without it; no rule needs three whitespace characters in a row; a run on
-    one line keeps the characters at both of its ends, and the hidden-text
-    check reads the character beside an invisible one; and the rules that
-    measure a distance can only match more. The model is handed the text as
+    without it; no rule needs three whitespace characters in a row; a run
+    keeps the characters at both of its ends (where a line break ends a run,
+    the text has a line break there too), so the hidden-text check reads what
+    it reads in the text; and the rules that measure a distance can only
+    match more. The model is handed the text as
     the peer wrote it; this is the scan's copy."""
     return _WHITESPACE_RUN.sub(lambda m: _cut_run(m.group(0)), text)
 

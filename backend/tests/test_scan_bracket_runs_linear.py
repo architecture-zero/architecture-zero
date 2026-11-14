@@ -11,18 +11,13 @@ reading to the end), and a URL holding a run of ?, & or placeholders with no
 opening repeated as well, the cost was n * n * n: an image opening and a ?
 repeated to 80,000 characters took 215 s.
 
-What these pin: each rule matches exactly the texts its old form matched (the
-old forms are here), and the shapes that cost n * n cost the scan less than
+What these pin: the shapes that cost n * n cost the scan less than
 CEILING_S. CONTROL: a run of ( with no ), an image URL with no ? (neither was
-slow before), and what the four rules found, they still find.
-
-Not pinned, because it is not fixed: an opening repeated many times with no )
-anywhere after it still costs each opening one read to the end, as before
-(about 0.9 s at 80,000 characters for the worst rule). A backtracking pattern
-cannot know that an earlier opening already read the same tail.
+slow before), and what the four rules found, they still find. The rules are
+read in one pass now; the old forms, the check that the rules match exactly
+what they matched, and the opening repeated with no ) after it (which this
+file left open) are in tests/test_scan_markdown_one_pass.py.
 """
-import random
-import re
 import time
 
 import pytest
@@ -37,24 +32,6 @@ N = 100000
 # 0.5 s leaves six times that for a slow shared runner and is still under
 # half the fastest case before.
 CEILING_S = 0.5
-
-OLD = {
-    "image query": r"!\[[^\]]*\]\(https?://[^)]*[?&][^)]*\)",
-    "image placeholder": r"!\[[^\]]*\]\(https?://[^)]*(?:\{\{|\$\{|%7b)[^)]*\)",
-    "link placeholder": r"\[[^\]]*\]\(https?://[^)]*(?:\{\{|\$\{|%7b)[^)]*\)",
-    "any image": r"!\[[^\]]*\]\(https?://[^)]+\)",
-}
-
-
-def _now(name):
-    """The rule as corpus_scan holds it today, found by what it ends with."""
-    pats = corpus_scan._EXFIL + corpus_scan._EXFIL_MEDIUM
-    if name == "any image":
-        return next(p for p in pats if p.endswith(r"[^)]+\)"))
-    if name == "image query":
-        return next(p for p in pats if p.startswith("!") and "?&" in p)
-    image = name == "image placeholder"
-    return next(p for p in pats if p.startswith("!") == image and "%7b" in p)
 
 
 # -- FIX ----------------------------------------------------------------------
@@ -73,8 +50,7 @@ SHAPES = {
     "a link URL then a run of ${": "[a](http://x" + _rep("${"),
     "a link URL then a run of %7b": "[a](http://x" + _rep("%7b", 2 * N),
     # n * n * n before, so kept short: 16,000 and 20,000 characters, where the
-    # old forms took about 2 and 4 s. The image opening keeps the cost the
-    # module comment names (each opening reads to the end): about 0.08 s here.
+    # old forms took about 2 and 4 s.
     "an image opening with a ? repeated": _rep("![a](http://x?", 16000),
     "a link opening with a {{ repeated": _rep("[a](http://{{", 20000),
 }
@@ -103,38 +79,6 @@ def test_a_shape_that_was_not_slow_is_not_slow(name):
     t0 = time.perf_counter()
     corpus_scan.scan(text)
     assert time.perf_counter() - t0 < CEILING_S
-
-
-_PIECES = ["!", "[", "]", "(", ")", "![", "](", "http://", "https://", "](http://",
-           "](https://", "?", "&", "{", "{{", "$", "${", "%", "%7b", "%7B", "7b", "a", "x",
-           " ", chr(10), ".", "/"]
-_SLOTS = [["", "x", "![", "[", "]", ")"], ["![", "[", "!", "!!["],
-          ["", "a", "a[b", "a![b", "a)b", "a]b", "!", "a!"], ["](", "] (", "]("],
-          ["http://", "https://", "htp://", "http:/"],
-          ["", "x", "x?", "x&y", "a{{b", "a${b", "a%7Bb", "a{b", "a$b", "a%7", "?{{",
-           "![c](http://d?"],
-          ["", "y", "?", "{{", ")", "z)", "]"], [")", "", " )", "x"]]
-
-
-def _texts(n, seed=1729):
-    rnd = random.Random(seed)
-    for i in range(n):
-        if i % 2:
-            yield "".join(rnd.choice(_PIECES) for _ in range(rnd.randint(1, 18)))
-        else:
-            yield "".join(rnd.choice(slot) for slot in _SLOTS)
-
-
-@pytest.mark.parametrize("name", list(OLD))
-def test_each_rule_matches_exactly_what_its_old_form_matched(name):
-    old = re.compile(OLD[name], re.IGNORECASE)
-    new = re.compile(_now(name), re.IGNORECASE)
-    hits = 0
-    for text in _texts(20000):
-        hit = old.search(text) is not None
-        assert (new.search(text) is not None) == hit, repr(text)
-        hits += hit
-    assert hits > 500           # the check reads texts that match, not only misses
 
 
 FOUND = {

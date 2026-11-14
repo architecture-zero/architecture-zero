@@ -173,7 +173,7 @@ def _injection_flag(text: str, source: str) -> bool:
     INJECTION_SCAN_MODE says, because the workspace is the operator's own
     repo (the curated tier's rule at the ingest gate). "off" switches the
     scan off here as it does there. The scan reads peer_boundary's copy of
-    the text, every whitespace run cut to two characters at most with its
+    the text, every whitespace run cut to four characters at most with its
     line breaks kept (a paragraph break stays one): one of its rules was
     quadratic on a run of line breaks (a file of 24000 newlines cost 5 s;
     corpus_scan bounds it at the source now), and no rule needs three in a

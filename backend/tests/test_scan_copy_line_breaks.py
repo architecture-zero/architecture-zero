@@ -11,9 +11,10 @@ before (a finding added) or took away the line start a rule reads (a finding
 hidden).
 
 What these pin: a run that holds two or more line breaks is one blank line, a
-run that holds one is that line break, and a run on one line keeps the
-characters at both of its ends. The copy holds no finding the text does not
-across a paragraph break, and every finding the text holds is still found.
+run that holds one is that line break, and a run keeps the characters at
+both of its ends unless they are line breaks. The copy holds no finding the
+text does not across a paragraph break or beside an invisible joiner, and
+every finding the text holds is still found.
 CONTROL: a plain blank line, the same words wrapped inside one paragraph, and
 a finding padded inside one paragraph read as they did before.
 """
@@ -56,7 +57,9 @@ def test_a_paragraph_break_is_not_read_as_one_sentence(brk):
     text = ASK + brk + TO
     assert _as_written(text) == set()
     assert _as_cut(text) == set()
-    assert pb._for_scan(text) == ASK + LF + LF + TO
+    cut = pb._for_scan(text)
+    assert cut.startswith(ASK) and cut.endswith(TO)
+    assert cut[len(ASK):-len(TO)].count(LF) == 2          # one blank line
 
 
 KEPT_APART = {
@@ -146,3 +149,40 @@ def test_an_agent_tool_result_wrapped_in_one_paragraph_is_still_flagged(monkeypa
 def test_a_run_of_line_breaks_is_still_cut_short():
     assert pb._for_scan("a" + LF * 20000 + "b") == "a" + LF + LF + "b"
     assert pb._for_scan("a" + " " * 20000 + "b") == "a  b"
+
+
+# -- A run's end characters (FIX) ----------------------------------------------
+# A run that holds a line break kept only its line breaks, so the character
+# beside an invisible joiner changed: a full-width or no-break space (where the
+# joiner reads as joining non-ASCII text, and is no finding) became a line
+# break, and the copy ADDED a hidden-text finding the text does not hold.
+
+IDEOGRAPHIC_SPACE, ZWNJ = chr(0x3000), chr(0x200C)
+ENDS_KEPT = {
+    "full-width spaces after the line break":
+        "line one" + LF + IDEOGRAPHIC_SPACE * 2 + ZWJ + "abc",
+    "no-break spaces around the line break":
+        "end of line" + NBSP * 2 + LF + NBSP + ZWNJ + "next",
+}
+
+
+@pytest.mark.parametrize("text", list(ENDS_KEPT.values()), ids=list(ENDS_KEPT))
+def test_a_run_with_a_line_break_keeps_its_end_characters(text):
+    assert _as_written(text) == set()
+    assert _as_cut(text) == set()
+
+
+def test_the_hidden_text_check_reads_the_copy_as_it_reads_the_text():
+    rnd = random.Random(4104)
+    spaces = [" ", TAB, LF, CR + LF, NBSP, IDEOGRAPHIC_SPACE, chr(0x2028)]
+    joiners = [ZWJ, ZWNJ, ""]
+    words = ["abc", "x", "Notes", chr(0x0628), chr(0x1F44D)]
+    for _ in range(20000):
+        parts = []
+        for _ in range(rnd.randint(1, 5)):
+            parts.append(rnd.choice(words))
+            parts.append("".join(rnd.choice(spaces) for _ in range(rnd.randint(1, 5))))
+            parts.append(rnd.choice(joiners))
+        text = "".join(parts)
+        hidden = {f for f in _as_written(text) if f[0] == "hidden_text"}
+        assert {f for f in _as_cut(text) if f[0] == "hidden_text"} == hidden, repr(text)

@@ -179,33 +179,81 @@ _EXFIL_DATA = (r"(?:data|content|information|conversation|history|context|transc
                r"messages?|secrets?|credentials?|keys?|tokens?|records?|everything|"
                r"\b(?:it|this|that|them)\b(?!\s+(?:url|link|button|page)\b)|\ball\b)")
 _EXFIL_DEST = r"(?:https?://|@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})"
-# The markdown rules below read in linear time too. Read as [^\]]* and
-# [^)]* around the URL's test, they cost n * n on a run of [ or ![ with no ]
-# after it (every bracket a start, each reading to the end) and on a URL
-# holding a run of ?, & or placeholders with no ) after it (each one retried
-# against the rest), and n * n * n with the opening repeated as well (an
-# image opening and a ? repeated to 80,000 characters: 215 s). Now an
-# image's text holds no ![ and a link's no [ (the search finds the last
-# opening before the ]), and the URL's test is a lookahead, which is never
-# re-entered once it has matched. Each rule matches exactly the texts it
-# matched; tests/test_scan_bracket_runs_linear.py holds the old forms.
-# What is left, said so it is not read as more: an opening repeated many
-# times with no ) anywhere after it still costs each opening one read to
-# the end, as it did (about 0.9 s at 80,000 characters for the worst rule).
-# A backtracking pattern cannot know an earlier opening already read that
-# tail, and bounding the URL's length would change what the rule matches.
-_MD_IMAGE = r"!\[[^\]!]*(?:!(?!\[)[^\]!]*)*\]"
-_MD_LINK = r"\[[^\[\]]*\]"
 _EXFIL = [
     rf"\b{_EXFIL_VERB}\b[^.\n]{{0,80}}{_EXFIL_DATA}[^.\n]{{0,60}}{_EXFIL_DEST}",
     r"make\s+(?:a\s+)?(?:request|call|fetch|get|post)\s+to\s+https?://",
-    _MD_IMAGE + r"\(https?://(?=[^)]*[?&])[^)]*\)",   # markdown image, URL carries a query string
-    _MD_IMAGE + r"\(https?://(?=[^)]*(?:\{\{|\$\{|%7b))[^)]*\)",  # image URL with a template placeholder
-    _MD_LINK + r"\(https?://(?=[^)]*(?:\{\{|\$\{|%7b))[^)]*\)",   # markdown link with a template placeholder
 ]
-_EXFIL_MEDIUM = [
-    _MD_IMAGE + r"\(https?://[^)]+\)",           # any external markdown image
-]
+
+# Markdown that a client would render as a request: an image (fetched when it
+# renders) or a link whose URL carries data out. HIGH - an image whose URL
+# carries a query (? or &) or a template placeholder ({{, ${, %7b), or a link
+# whose URL carries a placeholder; MEDIUM - any external image.
+#
+# Read in one pass, not as a regex per rule. Each rule was a pattern from
+# the opening's bracket to the ) that closes its URL, and a backtracking
+# search starts that pattern again at every opening: openings repeated with
+# no ) after them made every one read the rest of the text, n * n through
+# the four rules on each of the scan's three copies (0.6 s at 20,000
+# characters, 39 s at 160,000, one process held for all of it). Now each
+# opening is found once (_MD_IMAGE_OPEN, _MD_LINK_OPEN: the bracket text
+# holds no ![ or no [, so the search finds the last opening before its ]
+# and no bracket is read twice), and every opening in one )-free stretch
+# shares that stretch's closing ), so its URL is a suffix of the first
+# opening's: the first opening in a stretch decides for all of them, and
+# the stretch is read once. The same texts are found as before;
+# tests/test_scan_markdown_one_pass.py holds the old patterns beside this.
+_MD_IMAGE_OPEN = re.compile(r"!\[[^\]!]*(?:!(?!\[)[^\]!]*)*\]\(https?://", re.IGNORECASE)
+_MD_LINK_OPEN = re.compile(r"\[[^\[\]]*\]\(https?://", re.IGNORECASE)
+_MD_QUERY = re.compile(r"[?&]")
+_MD_PLACEHOLDER = re.compile(r"\{\{|\$\{|%7b", re.IGNORECASE)
+
+
+def _md_urls(text: str, opening):
+    """(start, end) of the URL behind the first opening in each )-free
+    stretch of `text`: start where the URL's text begins after ://, end the
+    ) that closes it. A later opening in the same stretch is skipped - its
+    URL ends at the same ), so its text is a suffix of this one's. Stops at
+    the first opening with no ) after it: none after it has one either."""
+    end = -1
+    for m in opening.finditer(text):
+        start = m.end()
+        if start <= end:
+            continue
+        end = text.find(")", start)
+        if end < 0:
+            return
+        yield start, end
+
+
+class _MarkdownRule:
+    """A rule the scan runs like a compiled pattern: search(text) is truthy
+    when the rule finds something."""
+
+    def __init__(self, pattern: str, test):
+        self.pattern = pattern
+        self._test = test
+
+    def search(self, text: str):
+        return True if self._test(text) else None
+
+
+def _md_carries_data(text: str) -> bool:
+    for start, end in _md_urls(text, _MD_IMAGE_OPEN):
+        if _MD_QUERY.search(text, start, end) or _MD_PLACEHOLDER.search(text, start, end):
+            return True
+    for start, end in _md_urls(text, _MD_LINK_OPEN):
+        if _MD_PLACEHOLDER.search(text, start, end):
+            return True
+    return False
+
+
+def _md_external_image(text: str) -> bool:
+    return any(end > start for start, end in _md_urls(text, _MD_IMAGE_OPEN))
+
+
+_MD_HIGH = _MarkdownRule("markdown image with a query or placeholder; link with a placeholder",
+                         _md_carries_data)
+_MD_MEDIUM = _MarkdownRule("any external markdown image", _md_external_image)
 
 # Tool/agent hijack: content directing the model to use a tool destructively
 # or to exfiltrate - the live constraint the moment an agent holds tools.
@@ -249,11 +297,11 @@ def _compiled(patterns):
 _RULES = [
     ("instruction_override", _HIGH, _compiled(_OVERRIDE)),
     ("role_injection", _HIGH, _compiled(_ROLE)),
-    ("exfiltration", _HIGH, _compiled(_EXFIL)),
+    ("exfiltration", _HIGH, _compiled(_EXFIL) + [_MD_HIGH]),
     ("tool_hijack", _HIGH, _compiled(_TOOL)),
     ("agent_directive", _HIGH, _compiled(_AGENT_DIRECTIVE)),
     ("system_prompt_probe", _MEDIUM, _compiled(_PROBE)),
-    ("exfiltration", _MEDIUM, _compiled(_EXFIL_MEDIUM)),
+    ("exfiltration", _MEDIUM, [_MD_MEDIUM]),
 ]
 
 
