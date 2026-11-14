@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { actionError, emitError, guardedPoll } from '../errorSurface'
 import { PRIMARY_COLOR } from '../theme'
-import { measuredText } from '../TrustPanel'
+import { honestyDay, measuredText } from '../TrustPanel'
 
 // ── Tab: Trust ─────────────────────────────────────────────────────────────
 
@@ -27,6 +27,7 @@ interface AdminTrustData {
   measured_at?: string | null
   judged_measured_at?: string | null
   corpus_fingerprint_short?: string | null
+  judged_fingerprint_short?: string | null
   cross_family_judging?: boolean
   provenance?: {
     writer: string | null
@@ -242,7 +243,7 @@ export function TrustTab({ api, headers, currentUser }: {
           {data.honesty && (
             <TrustTile value={`${data.honesty.pct}%`} good={data.honesty.pct === 100}
               label="Honesty under pressure"
-              note={`${data.honesty.n} demands for records that do not exist - refused or corrected, none invented`} />
+              note={`${data.honesty.n} demands for records that do not exist - refused or corrected, none invented${honestyDay(data)}`} />
           )}
           <TrustTile value={trustBandText(data.correctness)}
             label="Answer correctness"
@@ -272,8 +273,9 @@ export function TrustTab({ api, headers, currentUser }: {
           )}
         </div>
         <p className="text-xs text-gray-500 mt-3">
-          {/* The public panel's sentence: both dates where the judged tiles
-              and retrieval come from different runs. */}
+          {/* The public panel's sentence: both dates, and both fingerprints,
+              where the judged tiles and retrieval come from different runs.
+              The provenance below is the judged run's alone. */}
           {measuredText(data)}.{' '}
           {bandN > 1
             ? 'Spreads are low-high bands across identical runs, never one lucky point.'

@@ -418,33 +418,49 @@ def build_measurement(snap: dict) -> str:
         row = band(key, label)
         if row:
             lines.append(row)
-    hon = panel.get("honesty")
-    if isinstance(hon, dict) and hon.get("pct") is not None:
-        lines.append("- Honesty (declining to answer what is not in the corpus): "
-                     + _num(hon.get("pct")) + " percent over "
-                     + _num(hon.get("n")) + " question(s)")
-    ret = panel.get("retrieval")
-    if isinstance(ret, dict) and ret.get("pct") is not None:
-        lines.append("- Retrieval hit rate: " + _num(ret.get("pct")) + " percent"
-                     + rows(ret))
-
     # The judged scores read the newest JUDGED run and retrieval the newest
     # run, so after a retrieval-only run they are two runs on two days: one
     # date says both, two dates say which is which. Compared before either is
     # rendered, so a withheld value never decides the shape.
     measured, judged = panel.get("measured_at"), panel.get("judged_measured_at")
+    hon = panel.get("honesty")
+    if isinstance(hon, dict) and hon.get("pct") is not None:
+        # Honesty reads the newest run that HAS honesty rows - which can be a
+        # third run, older than the judged scores' - so its line names its own
+        # day where that differs from theirs.
+        hon_at = hon.get("measured_at")
+        own_day = (" (measured " + _safe_token(hon_at) + ")"
+                   if hon_at is not None and hon_at != (judged or measured) else "")
+        lines.append("- Honesty (declining to answer what is not in the corpus): "
+                     + _num(hon.get("pct")) + " percent over "
+                     + _num(hon.get("n")) + " question(s)" + own_day)
+    ret = panel.get("retrieval")
+    if isinstance(ret, dict) and ret.get("pct") is not None:
+        lines.append("- Retrieval hit rate: " + _num(ret.get("pct")) + " percent"
+                     + rows(ret))
+
     if judged is not None and judged != measured:
         dates = ["- Judged scores last measured: " + _safe_token(judged),
                  "- Retrieval last measured: " + _safe_token(measured)]
     else:
         dates = ["- Last measured: " + _safe_token(measured)]
+    # The corpus the same way: the judged scores were measured on the
+    # judged run's corpus and retrieval on the newest run's, and a corpus
+    # change between them is two corpora - each line says which run it
+    # describes. One line where they agree.
+    fp, judged_fp = (panel.get("corpus_fingerprint_short"),
+                     panel.get("judged_fingerprint_short"))
+    if judged_fp is not None and judged_fp != fp:
+        corpus = ["- Corpus of the judged scores: " + _safe_token(judged_fp),
+                  "- Corpus of the retrieval run: " + _safe_token(fp)]
+    else:
+        corpus = ["- Corpus at measurement time: " + _safe_token(fp)]
     lines += [
         "",
         "## Comparability",
         "",
         *dates,
-        "- Corpus at measurement time: "
-        + _safe_token(panel.get("corpus_fingerprint_short")),
+        *corpus,
         "",
         "A range rather than one number is deliberate. Runs are grouped only "
         "when the writer model, the corpus fingerprint, the judging instrument "

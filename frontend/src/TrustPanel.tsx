@@ -37,21 +37,68 @@ interface TrustData {
   measured_at?: string | null
   judged_measured_at?: string | null
   corpus_fingerprint_short?: string | null
+  judged_fingerprint_short?: string | null
   cross_family_judging?: boolean
 }
 
-// The day each kind of tile was measured. `measured_at` is the newest run's,
-// the run retrieval reads; the judged tiles read the newest JUDGED run, whose
-// day `judged_measured_at` names. After a retrieval-only run those are two
-// runs, so one "Last measured" date named a day the judged numbers were not
-// measured on. Both dates where they differ; one where they agree or nothing
-// was judged.
-export function measuredText(d: { measured_at?: string | null; judged_measured_at?: string | null }): string {
-  const judged = d.judged_measured_at
-  if (judged && judged !== d.measured_at) {
-    return `Judged tiles measured ${judged}; retrieval measured ${d.measured_at}`
+// The runs a page draws from, each named by its day and its corpus: the
+// unprefixed pair is the newest run's, the one retrieval reads; the judged_
+// pair is the newest JUDGED run's, the one every other tile reads. After a
+// retrieval-only run those are two runs, and after a corpus change between
+// them two corpora - so one "Last measured" date and one fingerprint named a
+// day and a corpus the judged numbers were not measured on.
+export interface RunLabels {
+  measured_at?: string | null
+  judged_measured_at?: string | null
+  corpus_fingerprint_short?: string | null
+  judged_fingerprint_short?: string | null
+  honesty?: { measured_at: string } | null
+}
+
+// The judged run's fingerprint and the newest run's, and whether they are two.
+// A payload that does not carry the judged one says nothing about it.
+function fingerprints(d: RunLabels) {
+  const fp = d.corpus_fingerprint_short ?? null
+  const judgedFp = d.judged_fingerprint_short === undefined ? fp : d.judged_fingerprint_short
+  return { fp, judgedFp, two: !!d.judged_measured_at && judgedFp !== fp }
+}
+
+// The caption: each date and each fingerprint beside the tiles it belongs to.
+// Both runs where they differ, one where they agree or nothing was judged.
+// The admin tab prints the same sentence from here.
+export function measuredText(d: RunLabels): string {
+  const day = d.measured_at
+  const judgedDay = d.judged_measured_at
+  const { fp, judgedFp, two } = fingerprints(d)
+  if (two) {
+    return `Judged tiles measured ${judgedDay}`
+      + (judgedFp ? ` on knowledge base fingerprint ${judgedFp}` : '')
+      + `; retrieval measured ${day}`
+      + (fp ? ` on ${judgedFp ? '' : 'knowledge base '}fingerprint ${fp}` : '')
   }
-  return `Last measured ${d.measured_at}`
+  const fpText = fp ? ` - knowledge base fingerprint ${fp}` : ''
+  if (judgedDay && judgedDay !== day) {
+    return `Judged tiles measured ${judgedDay}; retrieval measured ${day}${fpText}`
+  }
+  return `Last measured ${day}${fpText}`
+}
+
+// The fingerprint the "pinned to the exact knowledge base" card names: the
+// one corpus, or each run's where there are two.
+function fingerprintNote(d: RunLabels): string {
+  const { fp, judgedFp, two } = fingerprints(d)
+  if (two) {
+    return ` (judged tiles ${judgedFp ?? 'unstamped'}; retrieval ${fp ?? 'unstamped'})`
+  }
+  return fp ? ` (${fp})` : ''
+}
+
+// The honesty tile reads the newest run that HAS honesty rows, which can be
+// older than the run the judged tiles read; its note then names its own day.
+export function honestyDay(d: RunLabels): string {
+  const own = d.honesty?.measured_at
+  const tiles = d.judged_measured_at || d.measured_at
+  return own && own !== tiles ? ` - measured ${own}` : ''
 }
 
 // The gap is a difference in points, not a percentage; a positive value means
@@ -164,7 +211,7 @@ export default function TrustPanel() {
                   value={`${data.honesty.pct}%`}
                   tone={valueTone(data.honesty.pct === 100)}
                   label="Honesty under pressure"
-                  note={`${data.honesty.n} demands for records that do not exist - refused or corrected, none invented`}
+                  note={`${data.honesty.n} demands for records that do not exist - refused or corrected, none invented${honestyDay(data)}`}
                 />
               )}
               <Tile
@@ -238,16 +285,13 @@ export default function TrustPanel() {
               <HowCard
                 title="Pinned to the exact knowledge base"
                 body={`Each run is stamped with a fingerprint of the corpus it measured${
-                  data.corpus_fingerprint_short ? ` (${data.corpus_fingerprint_short})` : ''
+                  fingerprintNote(data)
                 }. A score is only comparable to runs on the same material - so that rule is enforced, not assumed.`}
               />
             </div>
 
             <p className="text-slate-500 text-xs mt-8">
-              {measuredText(data)}
-              {data.corpus_fingerprint_short &&
-                ` - knowledge base fingerprint ${data.corpus_fingerprint_short}`}
-              .{' '}
+              {measuredText(data)}.{' '}
               {bandN > 1
                 ? 'Spreads are shown as low-high bands across identical runs, never one lucky point.'
                 : 'These values are from a single run at the current configuration so far; repeat runs at the same configuration widen them into low-high bands rather than one lucky point.'}{' '}

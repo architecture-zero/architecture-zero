@@ -243,6 +243,13 @@ def derive_trust_panel(admin: bool = False) -> dict:
     # measured on. None when no run was judged: those tiles show no number,
     # so they have no date either. Pages print both where they differ.
     judged_date = ((anchor["run_at"] or "")[:10] or None) if judged else None
+    # The same pair for the corpus: `corpus_fingerprint_short` is the newest
+    # run's, the corpus retrieval was measured on, and the judged tiles were
+    # measured on the anchor's - which a retrieval-only run after a corpus
+    # change does not share. Each field names one run: the unprefixed pair
+    # (measured_at, corpus_fingerprint_short) the newest, the judged_ pair
+    # the anchor. None when no run was judged, like the date.
+    judged_fp = _short_fp(anchor["corpus"]) if judged else None
     result: dict = {
         "available": True,
         "honesty": ({"pct": latest_hon["honesty"], "n": latest_hon["honesty_n"],
@@ -263,16 +270,22 @@ def derive_trust_panel(admin: bool = False) -> dict:
         "measured_at": measured_date,
         "judged_measured_at": judged_date,
         "corpus_fingerprint_short": _short_fp(latest["corpus"]),
+        "judged_fingerprint_short": judged_fp,
         # True by construction: the same-family guard refuses a writer/judge
         # pairing from one lab unless deliberately overridden.
         "cross_family_judging": True,
     }
     if admin:
         from app.config import get_config
+        # One run's provenance: the writer and the corpus are the anchor's,
+        # the run the bands form around (band_run_ids and run_setup below
+        # already were). They read the newest run, so after a retrieval-only
+        # run the operator view named that run's writer and corpus beside the
+        # judged run's band ids.
         result["provenance"] = {
-            "writer": latest["writer"],
+            "writer": anchor["writer"],
             "judge": get_config("eval_judge_model", ""),
-            "corpus_fingerprint": latest["corpus"],
+            "corpus_fingerprint": anchor["corpus"],
             "band_run_ids": [c["run_id"] for c in band_runs],
             "run_setup": anchor["setup"],
             "question_set": {"total": n_other_q + n_honesty_q,
