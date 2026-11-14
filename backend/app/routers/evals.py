@@ -113,10 +113,10 @@ def seed_eval_questions(current_user: dict = Depends(require_owner)):
         from app.eval_runner import _seed_rows
         rows, refused = _seed_rows(raw)
         questions = [(r["category"], r["question"], r["notes"], r["expected_source"],
-                      r["as_level"], r["holdout"]) for r in rows]
+                      r["as_level"], r["holdout"], r["setup_turns"]) for r in rows]
     else:
         refused = []
-        questions = [(c, q, n, None, None, 0) for (c, q, n) in _DEFAULT_EVAL_QUESTIONS]
+        questions = [(c, q, n, None, None, 0, None) for (c, q, n) in _DEFAULT_EVAL_QUESTIONS]
 
     with get_session() as db:
         existing = db.query(EvalQuestion).count()
@@ -125,13 +125,14 @@ def seed_eval_questions(current_user: dict = Depends(require_owner)):
         now = _dt.datetime.utcnow().isoformat()
         # A question listed twice is seeded once, as the startup sync does.
         seen: set[str] = set()
-        for category, question, notes, expected_source, as_level, holdout in questions:
+        for category, question, notes, expected_source, as_level, holdout, setup_turns in questions:
             if question.strip() in seen:
                 continue
             seen.add(question.strip())
             db.add(EvalQuestion(question=question, category=category, notes=notes,
                                 expected_source=expected_source, as_level=as_level,
-                                holdout=holdout, created_at=now))
+                                holdout=holdout, setup_turns=setup_turns,
+                                created_at=now))
     answer = {"seeded": len(seen)}
     if refused:
         answer["refused"] = refused

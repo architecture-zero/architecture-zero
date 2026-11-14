@@ -110,20 +110,19 @@ def sync_eval_questions_from_seed() -> dict:
             as_level, holdout = values["as_level"], values["holdout"]
             # Multi-turn setup: stored as a canonical JSON string; None when
             # absent so single-turn questions stay untouched.
-            setup = q.get("setup_turns") or []
-            # Only the well-formed turns are stored (_well_formed_turns, the
-            # read's own rule), and a row that loses any is named with how
-            # many, so a bad seed is loud here and not silent at read. A list
-            # of good turns is stored byte for byte as before.
-            good = _well_formed_turns(setup)
-            if len(good) < len(setup):
+            # Only the well-formed turns are stored (_seed_turns, through
+            # _seed_values - the seed route stores them the same way), and a
+            # row that loses any is named with how many, so a bad seed is loud
+            # here and not silent at read. A list of good turns is stored byte
+            # for byte as before.
+            setup_turns = values["setup_turns"]
+            dropped = _seed_turns(q)[1]
+            if dropped:
                 qid = row.id if row is not None else None
                 turns_dropped.append({"index": i, "id": qid, "question": text[:120],
-                                      "dropped": len(setup) - len(good),
-                                      "rule": SETUP_TURNS_RULE})
+                                      "dropped": dropped, "rule": SETUP_TURNS_RULE})
                 log_error("eval_seed_turns_dropped", index=i, question_id=qid,
-                          dropped=len(setup) - len(good), rule=SETUP_TURNS_RULE)
-            setup_turns = json.dumps(good) if good else None
+                          dropped=dropped, rule=SETUP_TURNS_RULE)
             if row is None:
                 db.add(EvalQuestion(question=text, category=category, notes=notes,
                                     expected_source=expected, as_level=as_level,
@@ -240,7 +239,20 @@ def _seed_values(q: dict) -> dict:
             "as_level": q.get("as_level"),
             # Normalized both sides (older rows hold null) so an unchanged
             # file never reports a spurious update.
-            "holdout": 1 if q.get("holdout") else 0}
+            "holdout": 1 if q.get("holdout") else 0,
+            # The well-formed turns as a JSON string, or None (_seed_turns).
+            "setup_turns": _seed_turns(q)[0]}
+
+
+def _seed_turns(q: dict) -> tuple[str | None, int]:
+    """A seed row's setup_turns as stored - its well-formed turns
+    (_well_formed_turns, the read's own rule) as a JSON string, None when it
+    has none - and how many items were dropped to get there. A list of good
+    turns is stored byte for byte as json.dumps of the list. The sync and the
+    seed route store through here, and both name a row that lost items."""
+    setup = q.get("setup_turns") or []
+    good = _well_formed_turns(setup)
+    return (json.dumps(good) if good else None), len(setup) - len(good)
 
 
 def _seed_rows(raw: list) -> tuple[list, list]:
@@ -249,7 +261,9 @@ def _seed_rows(raw: list) -> tuple[list, list]:
     in refused - its place in the file, its text (null when it has none) and
     the rule - with an eval_seed_row_refused error line; a question listed
     twice is kept once, its first entry. Each kept row is {"question": its
-    text} plus _seed_values. Nothing is written here."""
+    text} plus _seed_values, setup_turns included; a row that lost turn items
+    is said as an eval_seed_turns_dropped error line, as the sync says it.
+    Nothing is written here."""
     rows, refused, seen = [], [], set()
     for i, q in enumerate(raw):
         text, rule = _seed_question(q)
@@ -263,6 +277,10 @@ def _seed_rows(raw: list) -> tuple[list, list]:
                             "rule": rule})
             log_error("eval_seed_row_refused", index=i, question_id=None, rule=rule)
             continue
+        dropped = _seed_turns(q)[1]
+        if dropped:
+            log_error("eval_seed_turns_dropped", index=i, question_id=None,
+                      dropped=dropped, rule=SETUP_TURNS_RULE)
         rows.append({"question": text, **_seed_values(q)})
     return rows, refused
 
