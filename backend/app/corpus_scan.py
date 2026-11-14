@@ -110,15 +110,31 @@ _STANDS_ALONE = re.compile(r"#{1,6}\s|//\s|```|~~~")
 _FENCE = ("```", "~~~")
 _HANDS_OFF = re.compile(r"\b(?:to|at|via|into):?$", re.IGNORECASE)
 
+# Linear time on a run of whitespace. The ingest gate scans text as it was
+# written, a run of any length included, so no rule may cost more than one
+# pass over a run. Three did, at n * n steps for a run of n characters (a
+# letter and 20,000 line breaks: about 3 s; "disregard" and as many: about
+# 10 s):
+#   - the turn marker's line start, (?:^|\n)\s* - every line break in a run
+#     was a line start, and from each one \s* read to the end of the run. It
+#     reads [^\S\n]* now, whitespace that is not a line break, so the search
+#     finds a run's last line start and reads past it once;
+#   - \s+ then an optional word then \s*, in two override rules - with the
+#     word absent, the two quantifiers tried every split of one run. The
+#     optional word carries its own \s* inside its group now.
+# Each rule matches exactly the texts it matched before.
+# tests/test_scan_whitespace_runs_linear.py holds the old forms beside the
+# new, and times every shape of run that cost n * n.
+
 # Instruction-override: the classic "ignore/disregard/forget your
 # instructions" family, phrased for CONTENT (a document telling the model
 # what to do), broader than a user-prompt injection check.
 _OVERRIDE = [
     r"ignore\s+(?:all\s+|any\s+|the\s+)?(?:previous|prior|above|earlier|preceding|foregoing)\s+(?:instructions?|context|messages?|rules?|prompts?)",
-    r"disregard\s+(?:all\s+|any\s+|your\s+|the\s+)?(?:previous|prior|above|system|safety)?\s*(?:instructions?|rules?|guidelines?|training|prompt|context)",
+    r"disregard\s+(?:all\s+|any\s+|your\s+|the\s+)?(?:(?:previous|prior|above|system|safety)\s*)?(?:instructions?|rules?|guidelines?|training|prompt|context)",
     r"forget\s+(?:everything|all\s+(?:previous|prior)|your\s+(?:instructions?|rules?|training))",
     r"override\s+(?:your\s+)?(?:system\s+prompt|instructions?|safety\s+(?:rules?|guidelines?)|guardrails?)",
-    r"do\s+not\s+(?:follow|obey)\s+(?:your|the|any)\s+(?:previous|prior|system|safety)?\s*(?:instructions?|rules?)",
+    r"do\s+not\s+(?:follow|obey)\s+(?:your|the|any)\s+(?:(?:previous|prior|system|safety)\s*)?(?:instructions?|rules?)",
     r"from\s+now\s+on[, ]+(?:you\s+(?:will|must|should|are)|ignore|disregard)",
     r"new\s+(?:system\s+)?(?:instructions?|rules?|directives?|prompt)\s*:",
 ]
@@ -126,7 +142,7 @@ _OVERRIDE = [
 # Role-injection: content that opens a fake system/assistant turn or
 # redefines the model's identity ("you are now an unrestricted AI...").
 _ROLE = [
-    r"(?:^|\n)\s*(?:system|assistant|developer)\s*:\s*(?:you\s+are|ignore|from\s+now)",
+    r"(?:^|\n)[^\S\n]*(?:system|assistant|developer)\s*:\s*(?:you\s+are|ignore|from\s+now)",
     r"you\s+are\s+now\s+(?:a\s+|an\s+)?(?:different|new|unrestricted|unfiltered|jailbroken|evil|dan\b)",
     r"\bact\s+as\s+(?:if\s+you\s+are\s+)?(?:an?\s+)?(?:unrestricted|unfiltered|jailbroken|evil|developer\s+mode)",
     r"pretend\s+(?:you\s+(?:are|have)|that\s+you)",

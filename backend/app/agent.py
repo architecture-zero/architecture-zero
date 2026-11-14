@@ -174,10 +174,11 @@ def _injection_flag(text: str, source: str) -> bool:
     repo (the curated tier's rule at the ingest gate). "off" switches the
     scan off here as it does there. The scan reads peer_boundary's copy of
     the text, every whitespace run cut to two characters at most with its
-    line breaks kept (a paragraph break stays one): one of its rules is
-    quadratic on a run of line breaks (a file of 24000 newlines cost 5 s),
-    and no rule needs three in a row. The log carries `source` cut to 200 and
-    the finding types, never the text."""
+    line breaks kept (a paragraph break stays one): one of its rules was
+    quadratic on a run of line breaks (a file of 24000 newlines cost 5 s;
+    corpus_scan bounds it at the source now), and no rule needs three in a
+    row. The log carries `source` cut to 200 and the finding types, never the
+    text."""
     from app import corpus_scan
     from app.logger import log
     from app.peer_boundary import _for_scan, scan_mode

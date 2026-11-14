@@ -3,7 +3,7 @@
 Peer pieces arrive over HTTP at chat time and never pass the add_document choke
 point, so the ingest-side injection gate never sees them. Until 2026-09-30 the
 boundary scanned a piece's text but read text of any size (one of the scan's
-rules is quadratic on a run of line breaks), never read the piece's NAME (which
+rules was quadratic on a run of line breaks), never read the piece's NAME (which
 is written into the prompt beside the text), tagged the peer's own dict in
 place, and let a malformed piece - a list where an object belongs, a score that
 is not a number - raise inside the answer.
@@ -111,10 +111,12 @@ def _cut_run(run: str) -> str:
 
 def _for_scan(text: str) -> str:
     """The copy of a peer's text the scan reads: every run of three or more
-    whitespace characters cut to two characters at most (_cut_run). ONE of
-    the scan's rules is quadratic on a run of line breaks (measured
-    2026-09-28: a letter followed by line breaks cost 3.0 s at 20,000
-    characters; cut first, the worst of fifteen shapes is 0.009 s).
+    whitespace characters cut to two characters at most (_cut_run). The cut
+    was a bound on cost first: one of the scan's rules was quadratic on a run
+    of line breaks (a letter followed by 20,000 of them cost 3.0 s). That rule
+    and two more are bounded at the source now, in corpus_scan, for every
+    caller (tests/test_scan_whitespace_runs_linear.py); the cut stays as this
+    path's second line.
 
     The cut keeps the lines the scan reads. The folded copy
     (corpus_scan._fold_wrapped) joins two lines only where no blank line lies
