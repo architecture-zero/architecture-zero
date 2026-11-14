@@ -113,6 +113,27 @@ def sync_eval_questions_from_seed() -> dict:
     return result
 
 
+def _setup_turns(raw) -> list:
+    """A question's scripted earlier turns, read from its stored setup_turns.
+
+    Only a JSON list is a history. Anything else - nothing stored, text that
+    is not JSON, or JSON that is not a list (a number, a string, true, an
+    object) - is an empty history, and the question is asked as a single
+    turn. That is what retrieval already made of a string: none of its
+    characters is a user turn, so the resolver fell back to the question. A
+    number or true stopped the run there instead, and in answer mode a
+    string or an object stopped it where each item is read as a turn. The
+    run job and scripts/eval_retrieval.py both read through here, so one
+    stored value cannot be read two ways."""
+    if not raw:
+        return []
+    try:
+        turns = json.loads(raw)
+    except Exception:
+        return []
+    return turns if isinstance(turns, list) else []
+
+
 def _needles(expected_source: str | None) -> list[str]:
     """A question's expected_source as the needles every scorer matches.
 
@@ -343,13 +364,9 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                     log("eval_injection_plant_error", run_id=run_id, error=f"{type(e).__name__}: {e}"[:300])
             question_text = q["question"]
             # Multi-turn cohort: scripted prior turns replayed as history.
-            # setup None = single-turn, byte-identical behavior.
-            setup_turns: list = []
-            if q.get("setup_turns"):
-                try:
-                    setup_turns = json.loads(q["setup_turns"]) or []
-                except Exception:
-                    setup_turns = []
+            # setup None = single-turn, byte-identical behavior; a stored
+            # value that is not a JSON list is no history (_setup_turns).
+            setup_turns: list = _setup_turns(q.get("setup_turns"))
             # Measure at the question's tier - a non-owner (as_level below
             # Owner) gets the answer-layer non-owner gate, exactly as the
             # chat path applies it by the caller's real clearance. as_level

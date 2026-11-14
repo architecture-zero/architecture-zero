@@ -94,7 +94,8 @@ def _acquire_lock() -> bool:
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app.eval_runner import (  # noqa: E402  (module init is idempotent)
-    RETIRED_SOURCES, _needles, _retired_ruling, _score_retrieval, _source_matches)
+    RETIRED_SOURCES, _needles, _retired_ruling, _score_retrieval, _setup_turns,
+    _source_matches)
 from app.db import get_session          # noqa: E402
 from app.models import EvalQuestion     # noqa: E402
 from app.rerank import retrieve         # noqa: E402
@@ -470,15 +471,12 @@ def run_cohort(questions, top_k, misses_only, label="", stamp=False):
     try:
         for q in questions:
             query = q.question
-            if getattr(q, "setup_turns", None):
-                import json as _json
+            # The run job's own read of the stored turns: a value that is
+            # not a JSON list is no history.
+            setup = _setup_turns(getattr(q, "setup_turns", None))
+            if setup:
                 from app.routing import resolve_followup
-                try:
-                    setup = _json.loads(q.setup_turns) or []
-                except Exception:
-                    setup = []
-                if setup:
-                    query = resolve_followup(q.question, setup)
+                query = resolve_followup(q.question, setup)
 
             slice_ms.pop("last", None)
             t0 = time.time()
