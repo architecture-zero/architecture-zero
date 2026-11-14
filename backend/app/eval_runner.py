@@ -63,14 +63,30 @@ def sync_eval_questions_from_seed() -> dict:
     added = updated = unchanged = 0
     repeated: list[str] = []
     refused: list[dict] = []
+    turns_dropped: list[dict] = []
+
+    def _refuse(i, row, text, rule):
+        qid = row.id if row is not None else None
+        refused.append({"index": i, "id": qid, "question": text[:120] if text else None,
+                        "rule": rule})
+        log_error("eval_seed_row_refused", index=i, question_id=qid, rule=rule)
     with get_session() as db:
         rows = db.query(EvalQuestion).all()
         by_text = {r.question.strip(): r for r in rows}
         seen: set[str] = set()
         now = _dt.datetime.utcnow().isoformat()
         for i, q in enumerate(raw):
-            text = (q.get("question") or "").strip()
+            # A row that is not an object, or whose question is not text with
+            # something in it, is refused and named - never skipped in
+            # silence, and never a reason to stop the sync (it raised at
+            # q.get or at strip() and ended the whole sync).
+            if not isinstance(q, dict):
+                _refuse(i, None, None, SEED_ROW_RULE)
+                continue
+            question = q.get("question")
+            text = question.strip() if isinstance(question, str) else ""
             if not text:
+                _refuse(i, None, None, SEED_EMPTY_QUESTION_RULE)
                 continue
             # A question listed twice in the file is synced once (its first
             # entry) and named in the result. by_text never gains the rows
@@ -79,6 +95,15 @@ def sync_eval_questions_from_seed() -> dict:
                 repeated.append(text)
                 continue
             seen.add(text)
+            row = by_text.get(text)
+            # A field the sync reads as text that is not text, a setup_turns
+            # that is not a list, or a list with no well-formed turn: the row
+            # is refused, named with its id when the question is already
+            # stored, and nothing of it is written.
+            problem = _seed_row_problem(q)
+            if problem:
+                _refuse(i, row, text, problem)
+                continue
             category = (q.get("category") or "general").strip()
             notes = (q.get("notes") or "").strip()
             expected = q.get("expected_source") or None
@@ -89,22 +114,20 @@ def sync_eval_questions_from_seed() -> dict:
             holdout = 1 if q.get("holdout") else 0
             # Multi-turn setup: stored as a canonical JSON string; None when
             # absent so single-turn questions stay untouched.
-            setup = q.get("setup_turns")
-            row = by_text.get(text)
-            if setup is not None and not isinstance(setup, list):
-                # A setup_turns that is not a list is refused and never
-                # stored, the way a repeated question is handled above: the
-                # row is skipped, named in the result and the sync's log
-                # line, and the rest of the file syncs. Named by its place
-                # in the file and, when the question is already in the
-                # table, its id - and said as an error, with the rule.
+            setup = q.get("setup_turns") or []
+            # Only the well-formed turns are stored (_well_formed_turns, the
+            # read's own rule), and a row that loses any is named with how
+            # many, so a bad seed is loud here and not silent at read. A list
+            # of good turns is stored byte for byte as before.
+            good = _well_formed_turns(setup)
+            if len(good) < len(setup):
                 qid = row.id if row is not None else None
-                refused.append({"index": i, "id": qid, "question": text[:120],
-                                "rule": SETUP_TURNS_RULE})
-                log_error("eval_seed_row_refused", index=i, question_id=qid,
-                          rule=SETUP_TURNS_RULE)
-                continue
-            setup_turns = json.dumps(setup) if setup else None
+                turns_dropped.append({"index": i, "id": qid, "question": text[:120],
+                                      "dropped": len(setup) - len(good),
+                                      "rule": SETUP_TURNS_RULE})
+                log_error("eval_seed_turns_dropped", index=i, question_id=qid,
+                          dropped=len(setup) - len(good), rule=SETUP_TURNS_RULE)
+            setup_turns = json.dumps(good) if good else None
             if row is None:
                 db.add(EvalQuestion(question=text, category=category, notes=notes,
                                     expected_source=expected, as_level=as_level,
@@ -123,7 +146,7 @@ def sync_eval_questions_from_seed() -> dict:
         db_only = sorted(r.question for r in rows if r.question.strip() not in seen)
     result = {"status": "ok", "added": added, "updated": updated,
               "unchanged": unchanged, "db_only": db_only, "repeated": repeated,
-              "refused": refused}
+              "refused": refused, "turns_dropped": turns_dropped}
     log("eval_seed_sync", **{k: v for k, v in result.items() if k != "status"})
     return result
 
@@ -135,6 +158,41 @@ _SETUP_ROLES = ("user", "assistant")
 # What a seed row's setup_turns must be, said where a row is refused.
 SETUP_TURNS_RULE = ("setup_turns must be a JSON list of turns, each "
                     "{\"role\": \"user\" or \"assistant\", \"content\": text}, or absent")
+
+
+# Why a seed row is refused, said in the sync's result and its error line.
+SEED_ROW_RULE = "a seed row must be a JSON object"
+SEED_EMPTY_QUESTION_RULE = "empty question: a seed row needs its question as non-empty text"
+SETUP_NO_GOOD_TURN_RULE = "setup_turns holds no well-formed turn; " + SETUP_TURNS_RULE
+# The fields the sync reads as text. Anything else stopped the sync at
+# strip() (category, notes) or a run later (expected_source).
+_SEED_TEXT_FIELDS = ("category", "notes", "expected_source")
+
+
+def _well_formed_turns(items: list) -> list:
+    """The items of a list that are well-formed turns: an object whose role
+    is one the chat's history takes and whose content is text, in order and
+    whole. The read (_setup_turns) and the seed sync both keep exactly
+    these, so what the sync stores is what a run reads."""
+    return [t for t in items if isinstance(t, dict)
+            and t.get("role") in _SETUP_ROLES and isinstance(t.get("content"), str)]
+
+
+def _seed_row_problem(q: dict) -> str | None:
+    """Why a seed row (an object with a question) cannot be synced, or None.
+    Checked before anything of the row is written."""
+    for key in _SEED_TEXT_FIELDS:
+        if q.get(key) is not None and not isinstance(q[key], str):
+            return f"{key} must be text"
+    level = q.get("as_level")
+    if level is not None and (isinstance(level, bool) or not isinstance(level, int)):
+        return "as_level must be an integer"
+    setup = q.get("setup_turns")
+    if setup is not None and not isinstance(setup, list):
+        return SETUP_TURNS_RULE
+    if setup and not _well_formed_turns(setup):
+        return SETUP_NO_GOOD_TURN_RULE
+    return None
 
 
 def _setup_turns(raw) -> list:
@@ -160,8 +218,7 @@ def _setup_turns(raw) -> list:
         return []
     if not isinstance(turns, list):
         return []
-    return [t for t in turns if isinstance(t, dict)
-            and t.get("role") in _SETUP_ROLES and isinstance(t.get("content"), str)]
+    return _well_formed_turns(turns)
 
 
 def _needles(expected_source: str | None) -> list[str]:
