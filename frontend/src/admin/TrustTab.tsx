@@ -31,7 +31,9 @@ interface AdminTrustData {
   cross_family_judging?: boolean
   provenance?: {
     writer: string | null
-    judge: string
+    // The judge that graded the judged run, as that run recorded it; null
+    // when the run recorded none ("not recorded" - never today's setting).
+    judge: string | null
     corpus_fingerprint: string | null
     band_run_ids: string[]
     question_set: { total: number; honesty: number }
@@ -290,7 +292,7 @@ export function TrustTab({ api, headers, currentUser }: {
             <div className="flex gap-3"><dt className="w-40 text-gray-500 flex-shrink-0">Answers written by</dt>
               <dd className="text-gray-300 font-mono text-xs pt-0.5">{data.provenance.writer || 'unknown'}</dd></div>
             <div className="flex gap-3"><dt className="w-40 text-gray-500 flex-shrink-0">Graded by</dt>
-              <dd className="text-gray-300 font-mono text-xs pt-0.5">{data.provenance.judge || 'unknown'}</dd></div>
+              <dd className="text-gray-300 font-mono text-xs pt-0.5">{data.provenance.judge || 'not recorded'}</dd></div>
             <div className="flex gap-3"><dt className="w-40 text-gray-500 flex-shrink-0">Corpus fingerprint</dt>
               <dd className="text-gray-300 font-mono text-xs pt-0.5 break-all">{data.provenance.corpus_fingerprint || 'unstamped'}</dd></div>
             <div className="flex gap-3"><dt className="w-40 text-gray-500 flex-shrink-0">Band run ids</dt>

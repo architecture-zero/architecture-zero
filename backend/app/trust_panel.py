@@ -276,15 +276,21 @@ def derive_trust_panel(admin: bool = False) -> dict:
         "cross_family_judging": True,
     }
     if admin:
-        from app.config import get_config
         # One run's provenance: the writer and the corpus are the anchor's,
         # the run the bands form around (band_run_ids and run_setup below
         # already were). They read the newest run, so after a retrieval-only
         # run the operator view named that run's writer and corpus beside the
         # judged run's band ids.
+        #
+        # The judge is the anchor's too: its instrument stamp IS the judge
+        # model that graded it (eval_runner stamps the resolved judge once per
+        # run). This read today's configured judge, so after a judge change
+        # with no new judged run "Graded by" named a model that graded none of
+        # the numbers shown. A run with no stamp answers None - the page says
+        # "not recorded" - never today's setting in its place.
         result["provenance"] = {
             "writer": anchor["writer"],
-            "judge": get_config("eval_judge_model", ""),
+            "judge": anchor["instrument"],
             "corpus_fingerprint": anchor["corpus"],
             "band_run_ids": [c["run_id"] for c in band_runs],
             "run_setup": anchor["setup"],
