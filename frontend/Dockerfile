@@ -19,7 +19,12 @@ ENV VITE_API_URL=__RT_VITE_API_URL__ \
 RUN npm run build
 
 # Runtime stage: serve the static bundle with nginx (no dev server).
-FROM nginx:alpine
+# A STABLE nginx branch (an even minor), named by its branch, so a rebuild
+# takes its patch releases and nothing else. A floating nginx:alpine is
+# whatever image of that name the build host pulled last, and a host that
+# never pulls again keeps building on it. A stable branch ends when the
+# next is cut (about once a year): check nginx.org when you touch this.
+FROM nginx:1.30-alpine
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 # The shared /api proxy directives, included by both API locations. Not a
