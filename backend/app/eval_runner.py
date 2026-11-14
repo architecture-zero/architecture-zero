@@ -652,8 +652,11 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
                     from app.eval_judge import (judge_answer, judge_faithfulness,
                                                 judge_freshness, judge_honesty,
                                                 judge_retired)
-                    judge_model = model_catalog.resolve(_config_or_default(
-                        "eval_judge_model", EVAL_JUDGE_MODEL_DEFAULT))
+                    # The judge the run stamped at its start, not the setting
+                    # read again here: a setting changed mid-run would grade
+                    # the later rows with a judge the run's stamp does not
+                    # name, and the trust panel's "Graded by" reads that stamp.
+                    judge_model = run_judge_instrument
                     if retired:
                         # Fifth rubric: the key describes DELETED data, so
                         # correctness would demand the deleted answer and fail
