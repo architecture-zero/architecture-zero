@@ -100,16 +100,40 @@ def _short(value, n: int = 200) -> str:
 _WHITESPACE_RUN = re.compile(r"\s{3,}")
 
 
+def _cut_run(run: str) -> str:
+    """One run of three or more whitespace characters as the scan's copy
+    holds it: a run that holds two or more line breaks is one blank line (a
+    paragraph break), a run that holds one is that line break, and a run on
+    one line keeps the characters at both of its ends."""
+    breaks = min(run.count("\n"), 2)
+    return "\n" * breaks if breaks else run[0] + run[-1]
+
+
 def _for_scan(text: str) -> str:
     """The copy of a peer's text the scan reads: every run of three or more
-    whitespace characters cut to its first two. ONE of the scan's rules is
-    quadratic on a run of line breaks (measured 2026-09-28: a letter followed
-    by line breaks cost 3.0 s at 20,000 characters; cut first, the worst of
-    fifteen shapes is 0.009 s). It cannot hide a finding: no rule
-    needs three whitespace characters in a row, and the rules that measure a
-    distance can only match more. The model is handed the text as the peer
-    wrote it; this is the scan's copy."""
-    return _WHITESPACE_RUN.sub(lambda m: m.group(0)[:2], text)
+    whitespace characters cut to two characters at most (_cut_run). ONE of
+    the scan's rules is quadratic on a run of line breaks (measured
+    2026-09-28: a letter followed by line breaks cost 3.0 s at 20,000
+    characters; cut first, the worst of fifteen shapes is 0.009 s).
+
+    The cut keeps the lines the scan reads. The folded copy
+    (corpus_scan._fold_wrapped) joins two lines only where no blank line lies
+    between them, and the turn-marker rule reads a line's start. A cut that
+    kept a run's first two characters, whatever they were, made one line
+    break of a paragraph break written with CRLF line ends or with a space on
+    its blank line, so two paragraphs could fold into one sentence and the
+    scan ADD a finding the text does not hold; and it made spaces alone of
+    the spaces before a line break, so a line of its own read as the tail of
+    the line before (a finding added) or lost the line start a rule reads (a
+    finding hidden).
+
+    It cannot hide a finding: the folded copy is the same with the cut as
+    without it; no rule needs three whitespace characters in a row; a run on
+    one line keeps the characters at both of its ends, and the hidden-text
+    check reads the character beside an invisible one; and the rules that
+    measure a distance can only match more. The model is handed the text as
+    the peer wrote it; this is the scan's copy."""
+    return _WHITESPACE_RUN.sub(lambda m: _cut_run(m.group(0)), text)
 
 
 def _findings(chunk: dict) -> list[dict]:
