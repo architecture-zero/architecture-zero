@@ -58,8 +58,12 @@ def sync_eval_questions_from_seed() -> dict:
     from app.models import EvalQuestion
     if not (EVAL_SEED_PATH and os.path.exists(EVAL_SEED_PATH)):
         return {"status": "skipped", "reason": "no seed file configured"}
-    with open(EVAL_SEED_PATH, "r", encoding="utf-8") as f:
-        raw = json.load(f)
+    # A file that is not JSON, or whose top level is not a list, is refused
+    # whole: nothing is written, one error line names the rule, and the
+    # caller - the boot or the admin route - is answered, not raised at.
+    raw, rule = _read_seed_file(EVAL_SEED_PATH)
+    if rule:
+        return {"status": "refused", "rule": rule}
     added = updated = unchanged = 0
     repeated: list[str] = []
     refused: list[dict] = []
@@ -164,9 +168,32 @@ SETUP_TURNS_RULE = ("setup_turns must be a JSON list of turns, each "
 SEED_ROW_RULE = "a seed row must be a JSON object"
 SEED_EMPTY_QUESTION_RULE = "empty question: a seed row needs its question as non-empty text"
 SETUP_NO_GOOD_TURN_RULE = "setup_turns holds no well-formed turn; " + SETUP_TURNS_RULE
+# Why a whole seed file is refused. Said without the file's content: a seed
+# file can hold anything, and a log line or a 400 is not where to quote it.
+SEED_FILE_NOT_JSON_RULE = "the seed file is not valid JSON: it must hold a JSON list of questions"
+SEED_FILE_NOT_A_LIST_RULE = "the seed file must hold a JSON list of questions"
 # The fields the sync reads as text. Anything else stopped the sync at
 # strip() (category, notes) or a run later (expected_source).
 _SEED_TEXT_FIELDS = ("category", "notes", "expected_source")
+
+
+def _read_seed_file(path: str):
+    """The seed file's rows, or the rule it breaks: (rows, None) for a JSON
+    list; (None, rule) for a file that is not JSON (a byte that is not UTF-8
+    included) or whose top level is not a list. A refusal is said once, as
+    an error line naming the rule and nothing of the file. The sync and the
+    seed route both read through here."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except ValueError:
+        rule = SEED_FILE_NOT_JSON_RULE
+    else:
+        if isinstance(raw, list):
+            return raw, None
+        rule = SEED_FILE_NOT_A_LIST_RULE
+    log_error("eval_seed_file_refused", rule=rule)
+    return None, rule
 
 
 def _well_formed_turns(items: list) -> list:
