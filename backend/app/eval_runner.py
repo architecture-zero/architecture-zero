@@ -62,12 +62,13 @@ def sync_eval_questions_from_seed() -> dict:
         raw = json.load(f)
     added = updated = unchanged = 0
     repeated: list[str] = []
+    refused: list[dict] = []
     with get_session() as db:
         rows = db.query(EvalQuestion).all()
         by_text = {r.question.strip(): r for r in rows}
         seen: set[str] = set()
         now = _dt.datetime.utcnow().isoformat()
-        for q in raw:
+        for i, q in enumerate(raw):
             text = (q.get("question") or "").strip()
             if not text:
                 continue
@@ -89,8 +90,21 @@ def sync_eval_questions_from_seed() -> dict:
             # Multi-turn setup: stored as a canonical JSON string; None when
             # absent so single-turn questions stay untouched.
             setup = q.get("setup_turns")
-            setup_turns = json.dumps(setup) if setup else None
             row = by_text.get(text)
+            if setup is not None and not isinstance(setup, list):
+                # A setup_turns that is not a list is refused and never
+                # stored, the way a repeated question is handled above: the
+                # row is skipped, named in the result and the sync's log
+                # line, and the rest of the file syncs. Named by its place
+                # in the file and, when the question is already in the
+                # table, its id - and said as an error, with the rule.
+                qid = row.id if row is not None else None
+                refused.append({"index": i, "id": qid, "question": text[:120],
+                                "rule": SETUP_TURNS_RULE})
+                log_error("eval_seed_row_refused", index=i, question_id=qid,
+                          rule=SETUP_TURNS_RULE)
+                continue
+            setup_turns = json.dumps(setup) if setup else None
             if row is None:
                 db.add(EvalQuestion(question=text, category=category, notes=notes,
                                     expected_source=expected, as_level=as_level,
@@ -108,9 +122,19 @@ def sync_eval_questions_from_seed() -> dict:
                 unchanged += 1
         db_only = sorted(r.question for r in rows if r.question.strip() not in seen)
     result = {"status": "ok", "added": added, "updated": updated,
-              "unchanged": unchanged, "db_only": db_only, "repeated": repeated}
+              "unchanged": unchanged, "db_only": db_only, "repeated": repeated,
+              "refused": refused}
     log("eval_seed_sync", **{k: v for k, v in result.items() if k != "status"})
     return result
+
+
+# The roles a scripted turn may carry: the ones the chat's own history takes
+# (routers/chat.py, Message), so the writer is never sent a turn the chat
+# would have refused.
+_SETUP_ROLES = ("user", "assistant")
+# What a seed row's setup_turns must be, said where a row is refused.
+SETUP_TURNS_RULE = ("setup_turns must be a JSON list of turns, each "
+                    "{\"role\": \"user\" or \"assistant\", \"content\": text}, or absent")
 
 
 def _setup_turns(raw) -> list:
@@ -119,19 +143,25 @@ def _setup_turns(raw) -> list:
     Only a JSON list is a history. Anything else - nothing stored, text that
     is not JSON, or JSON that is not a list (a number, a string, true, an
     object) - is an empty history, and the question is asked as a single
-    turn. That is what retrieval already made of a string: none of its
-    characters is a user turn, so the resolver fell back to the question. A
-    number or true stopped the run there instead, and in answer mode a
-    string or an object stopped it where each item is read as a turn. The
-    run job and scripts/eval_retrieval.py both read through here, so one
-    stored value cannot be read two ways."""
+    turn. Of a list, only the well-formed turns are kept: an object whose
+    role is one the chat's history takes (user or assistant) and whose
+    content is text. Any other item - a number, a string, an object without
+    content or with content that is not text, another role - is dropped, so
+    a list of good turns comes back as it was stored. Read whole, a number
+    or true stopped the run in the resolver's walk, and in answer mode a
+    string, an object or an item that is not a turn stopped it where each
+    item is read as a turn. The run job and scripts/eval_retrieval.py
+    both read through here, so one stored value cannot be read two ways."""
     if not raw:
         return []
     try:
         turns = json.loads(raw)
     except Exception:
         return []
-    return turns if isinstance(turns, list) else []
+    if not isinstance(turns, list):
+        return []
+    return [t for t in turns if isinstance(t, dict)
+            and t.get("role") in _SETUP_ROLES and isinstance(t.get("content"), str)]
 
 
 def _needles(expected_source: str | None) -> list[str]:

@@ -181,7 +181,12 @@ def _last_topic_text(history) -> str:
         if role != "user":
             continue
         content = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
-        text = (content or "").strip()
+        # A turn whose content is not text is skipped. The chat's history is
+        # text by its model and a stored eval turn is read through
+        # eval_runner._setup_turns, but the walk must not raise on either.
+        if not isinstance(content, str):
+            continue
+        text = content.strip()
         if text and not is_followup(text):
             return text
     return ""
