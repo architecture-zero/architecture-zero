@@ -32,8 +32,11 @@ DIM = 8
 
 
 def _vec(seed: float) -> list[float]:
-    """Exact in float32, so a round-trip comparison can be equality rather than
-    a tolerance - the point of the preservation test is that nothing changed."""
+    """Small values on a quarter-step grid. A cosine collection hands a stored
+    vector back through its normalisation (7.0 can read back as 7.0000005), so
+    an exact compare after a round trip holds only for the values these tests
+    chose - the preservation test's point is that nothing changed, and these
+    survive it; compare any other value with a tolerance (pytest.approx)."""
     return [seed + i * 0.25 for i in range(DIM)]
 
 
