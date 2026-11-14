@@ -94,6 +94,15 @@ def add_user(request: CreateUserRequest, current_user: dict = Depends(require_pe
     # resolves through the same machinery. Refused at both department doors.
     from app.help_docs import refuse_reserved_department
     refuse_reserved_department(request.department)
+    # A department the knowledge base can never hold is refused here as at
+    # the write doors, in their sentence: the store takes a department of at
+    # most 60 characters that ends in a letter or a digit, and an account
+    # created in any other name had every later write for it refused there.
+    # Judged on the name as it is stored.
+    from app.database import department_name_refusal
+    refusal = department_name_refusal(request.department)
+    if refusal:
+        raise HTTPException(status_code=400, detail=refusal)
     if request.role not in ("owner", "admin", "member"):
         raise HTTPException(status_code=400, detail="role must be 'owner', 'admin', or 'member'")
     # Only an Owner can mint another Owner - an Admin holds manage_users but
@@ -235,6 +244,10 @@ def change_department(user_id: UserId, body: dict, current_user: dict = Depends(
         raise HTTPException(status_code=400, detail=refusal)
     from app.help_docs import refuse_reserved_department
     refuse_reserved_department(dept)   # same reason as add_user: the other door
+    from app.database import department_name_refusal
+    refusal = department_name_refusal(dept)   # one the store can hold - see add_user
+    if refusal:
+        raise HTTPException(status_code=400, detail=refusal)
     update_user_department(user_id, dept)
     log("auth_change_dept", admin_id=current_user["id"], target_user_id=user_id, department=dept)
     return {"status": "updated"}
