@@ -102,9 +102,14 @@ _WHITESPACE_RUN = re.compile(r"\s{3,}")
 
 def _cut_run(run: str) -> str:
     """One run of three or more whitespace characters as the scan's copy
-    holds it: a run that holds two or more line breaks is one blank line (a
-    paragraph break), a run that holds one is that line break, and a run on
-    one line keeps the characters at both of its ends."""
+    holds it. The rule: a run that holds two or more line breaks is one blank
+    line, so a paragraph break stays one; a run that holds exactly one line
+    break is that line break, because the turn-marker rule reads a line's
+    start - "Notes", three spaces, a line break and "system: ignore ..." cut
+    to their first two characters are one line, and the turn on its own line
+    scanned clean; and a run on one line keeps the characters at both of its
+    ends, because the hidden-text check reads the character beside an
+    invisible one."""
     breaks = min(run.count("\n"), 2)
     return "\n" * breaks if breaks else run[0] + run[-1]
 

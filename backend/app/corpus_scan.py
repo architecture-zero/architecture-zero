@@ -179,15 +179,32 @@ _EXFIL_DATA = (r"(?:data|content|information|conversation|history|context|transc
                r"messages?|secrets?|credentials?|keys?|tokens?|records?|everything|"
                r"\b(?:it|this|that|them)\b(?!\s+(?:url|link|button|page)\b)|\ball\b)")
 _EXFIL_DEST = r"(?:https?://|@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})"
+# The markdown rules below read in linear time too. Read as [^\]]* and
+# [^)]* around the URL's test, they cost n * n on a run of [ or ![ with no ]
+# after it (every bracket a start, each reading to the end) and on a URL
+# holding a run of ?, & or placeholders with no ) after it (each one retried
+# against the rest), and n * n * n with the opening repeated as well (an
+# image opening and a ? repeated to 80,000 characters: 215 s). Now an
+# image's text holds no ![ and a link's no [ (the search finds the last
+# opening before the ]), and the URL's test is a lookahead, which is never
+# re-entered once it has matched. Each rule matches exactly the texts it
+# matched; tests/test_scan_bracket_runs_linear.py holds the old forms.
+# What is left, said so it is not read as more: an opening repeated many
+# times with no ) anywhere after it still costs each opening one read to
+# the end, as it did (about 0.9 s at 80,000 characters for the worst rule).
+# A backtracking pattern cannot know an earlier opening already read that
+# tail, and bounding the URL's length would change what the rule matches.
+_MD_IMAGE = r"!\[[^\]!]*(?:!(?!\[)[^\]!]*)*\]"
+_MD_LINK = r"\[[^\[\]]*\]"
 _EXFIL = [
     rf"\b{_EXFIL_VERB}\b[^.\n]{{0,80}}{_EXFIL_DATA}[^.\n]{{0,60}}{_EXFIL_DEST}",
     r"make\s+(?:a\s+)?(?:request|call|fetch|get|post)\s+to\s+https?://",
-    r"!\[[^\]]*\]\(https?://[^)]*[?&][^)]*\)",   # markdown image, URL carries a query string
-    r"!\[[^\]]*\]\(https?://[^)]*(?:\{\{|\$\{|%7b)[^)]*\)",  # image URL with a template placeholder
-    r"\[[^\]]*\]\(https?://[^)]*(?:\{\{|\$\{|%7b)[^)]*\)",   # markdown link with a template placeholder
+    _MD_IMAGE + r"\(https?://(?=[^)]*[?&])[^)]*\)",   # markdown image, URL carries a query string
+    _MD_IMAGE + r"\(https?://(?=[^)]*(?:\{\{|\$\{|%7b))[^)]*\)",  # image URL with a template placeholder
+    _MD_LINK + r"\(https?://(?=[^)]*(?:\{\{|\$\{|%7b))[^)]*\)",   # markdown link with a template placeholder
 ]
 _EXFIL_MEDIUM = [
-    r"!\[[^\]]*\]\(https?://[^)]+\)",           # any external markdown image
+    _MD_IMAGE + r"\(https?://[^)]+\)",           # any external markdown image
 ]
 
 # Tool/agent hijack: content directing the model to use a tool destructively
