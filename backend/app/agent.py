@@ -153,18 +153,22 @@ def _read_file_text(p: Path, shown: str) -> str:
         # one character is ever read in.
         with p.open("r", encoding="utf-8", errors="replace") as f:
             text = f.read(READ_FILE_MAX_CHARS + 1)
-    return _framed_file_text(_cut_at_cap(text, "read_file", "the file"), shown)
+    kept, note = _cut_at_cap(text, "read_file", "the file")
+    return _framed_file_text(kept, shown, note)
 
 
-def _cut_at_cap(text: str, tool: str, what: str) -> str:
+def _cut_at_cap(text: str, tool: str, what: str) -> tuple[str, str]:
     """One tool result's own bound: READ_FILE_MAX_CHARS, with a marker saying
     the rest was not returned. read_file's since 2026-10-29, and
-    run_command's the same day - a command can print any workspace file."""
+    run_command's the same day - a command can print any workspace file.
+    Returns (kept text, marker) apart (2026-11-15): the marker is the
+    system's own line, so the formatter adds it AFTER defanging the text -
+    label-shaped lines inside the data are quoted, this one is not."""
     if len(text) <= READ_FILE_MAX_CHARS:
-        return text
-    return (text[:READ_FILE_MAX_CHARS]
-            + f"\n\n[{tool}: cut at {READ_FILE_MAX_CHARS} characters - "
-              f"{what} is longer and the rest was not returned]")
+        return text, ""
+    return (text[:READ_FILE_MAX_CHARS],
+            f"\n\n[{tool}: cut at {READ_FILE_MAX_CHARS} characters - "
+            f"{what} is longer and the rest was not returned]")
 
 
 def _injection_flag(text: str, source: str) -> bool:
@@ -193,13 +197,14 @@ def _injection_flag(text: str, source: str) -> bool:
     return True
 
 
-def _framed_file_text(text: str, shown: str) -> str:
+def _framed_file_text(text: str, shown: str, note: str = "") -> str:
     """The file's text as the model receives it (2026-10-29): framed as data
     by the retrieved blocks' own formatter (rerank.format_file_context) and
     tag-scanned (_injection_flag). The refusals above are fixed sentences and
-    are never framed."""
+    are never framed. `note` is the cut marker, the system's own line, added
+    after the text is defanged."""
     from app.rerank import format_file_context
-    return format_file_context(shown, text, _injection_flag(text, shown))
+    return format_file_context(shown, text, _injection_flag(text, shown), note)
 
 
 # -- What run_command reads (2026-10-29) --------------------------------------
@@ -343,8 +348,9 @@ def _framed_command_output(text: str, command: str) -> str:
     only by the turn's tool budget. The log names the command (cut to 200),
     which the tool_call line already carries."""
     from app.rerank import format_command_output
-    text = _cut_at_cap(text, "run_command", "the output")
-    return format_command_output(text, _injection_flag(text, f"run_command: {command}"))
+    text, note = _cut_at_cap(text, "run_command", "the output")
+    return format_command_output(text, _injection_flag(text, f"run_command: {command}"),
+                                 note)
 
 
 # -- One budget for a turn's tool results (2026-10-29) ------------------------
