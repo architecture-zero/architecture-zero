@@ -422,8 +422,15 @@ _RETIRED_SYSTEM = (
 # is the first field by the format the prompt demands. The salvage below
 # reads the bool and keeps the rationale's surviving text, marked; anything
 # short of a complete bool reads as nothing, as before.
+#
+# Only a reply that IS the verdict is salvaged: one that opens with the object,
+# after whitespace or a code fence the judge was told not to use. A search
+# anywhere in the reply read a fragment the judge QUOTED - from the answer it
+# was grading - as its own score, even with prose around it saying it was
+# not. Anything else stays unparseable: retried once, then unscored.
 _CUT_VERDICT_RE = re.compile(
-    r'\{\s*"pass"\s*:\s*(true|false)\b(?:\s*,\s*"rationale"\s*:\s*"(.*))?', re.S)
+    r'(?:```[A-Za-z]*\s*)?\{\s*"pass"\s*:\s*(true|false)\b'
+    r'(?:\s*,\s*"rationale"\s*:\s*"(.*))?', re.S)
 
 
 def _parse_verdict(raw: str) -> dict | None:
@@ -447,7 +454,7 @@ def _parse_verdict(raw: str) -> dict | None:
         if isinstance(data, dict) and isinstance(data.get("pass"), bool):
             return {"pass": data["pass"],
                     "rationale": str(data.get("rationale") or "").strip()}
-    m = _CUT_VERDICT_RE.search(text)
+    m = _CUT_VERDICT_RE.match(text)   # anchored at the reply's start, never a search
     if m:
         rationale = (m.group(2) or "").strip()
         # A whole object that failed to decode (a raw newline inside the
