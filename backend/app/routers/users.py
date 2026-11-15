@@ -65,6 +65,22 @@ def _refuse_role_beyond_caller(current_user: dict, target: dict | None, role: st
         raise HTTPException(status_code=403, detail=refusal)
 
 
+def _refuse_target_above_caller(current_user: dict, target: dict | None) -> None:
+    """Below the Owner, an account ranked above the caller is not the caller's
+    to change - on every route that writes to another account. Each route
+    refused an Owner target to a non-Owner and nothing else about rank, so a
+    Member holding manage_users deactivated an Admin, demoted it, narrowed its
+    permissions, reset its second factor and cleared its sign-in lock. Called
+    after the caller's proof and the 404, before any write; a target on the
+    caller's own rank or below is unaffected."""
+    from app.permissions import effective_level, is_owner
+    if target is None or is_owner(current_user):
+        return
+    if effective_level(target) > effective_level(current_user):
+        raise HTTPException(status_code=403,
+                            detail="Cannot change an account ranked above your own")
+
+
 def _refuse_create_beyond_creator(current_user: dict, role: str, department: str) -> None:
     """The create door's ceiling below the Owner (2026-10-31).
 
@@ -167,6 +183,9 @@ def remove_user(user_id: UserId, current_user: dict = Depends(require_permission
             raise HTTPException(status_code=403, detail="Only an Owner can deactivate an Owner")
         if count_active_owners() <= 1:
             raise HTTPException(status_code=400, detail="Cannot deactivate the last Owner")
+    # Rank is read off the row whatever its status: deactivating again still
+    # writes to that account (its sessions are revoked once more).
+    _refuse_target_above_caller(current_user, row)
     deactivate_user(user_id)
     revoke_all_user_tokens(user_id)
     log("auth_deactivate_user", admin_id=current_user["id"], target_user_id=user_id)
@@ -197,6 +216,7 @@ def change_role(user_id: UserId, body: dict, current_user: dict = Depends(requir
     # Owner.
     if (role == "owner" or target.get("role") == "owner") and not is_owner(current_user):
         raise HTTPException(status_code=403, detail="Only an Owner can grant or change an Owner role")
+    _refuse_target_above_caller(current_user, target)
     # The create door's role ceiling, here too: below the Owner, a role change
     # never lands a role above the caller's own rung or a preset holding a
     # scope the caller does not hold. Without it, a Member holding
@@ -316,6 +336,9 @@ def change_permissions(user_id: UserId, body: dict, current_user: dict = Depends
     refusal = can_grant(current_user, target, perms or [])
     if refusal:
         raise HTTPException(status_code=403, detail=refusal)
+    # Narrowing counts: can_grant passes a list the caller holds, and a
+    # higher-ranked account's list is not the caller's to narrow either.
+    _refuse_target_above_caller(current_user, target)
     # The no-usable-password rule - see change_role.
     refusal = password_required_for_authority(target, resulting_permissions(target, perms))
     if refusal:
@@ -376,6 +399,7 @@ def admin_mfa_reset(user_id: UserId, body: MfaResetRequest | None = Body(None),
     if target.get("role") == "owner" and not is_owner(current_user):
         raise HTTPException(status_code=403,
                             detail="Only an Owner can reset an Owner's MFA")
+    _refuse_target_above_caller(current_user, target)
     disable_mfa(user_id)
     # The seed the code count and any pending setup belonged to is gone, so
     # they go too (2026-10-02) - or the person enrolling again would meet a
@@ -482,6 +506,7 @@ def admin_unlock_user(user_id: UserId, body: UnlockRequest | None = Body(None),
     if target.get("role") == "owner" and not is_owner(current_user):
         raise HTTPException(status_code=403,
                             detail="Only an Owner can unlock an Owner's account")
+    _refuse_target_above_caller(current_user, target)
     unlock_user(user_id)
     log("admin_unlock_user", admin_id=current_user["id"], target_user_id=user_id,
         self_target=(user_id == current_user["id"]))
