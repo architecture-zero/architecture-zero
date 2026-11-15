@@ -641,6 +641,12 @@ _DATA_FRAMING = (
 # formatter's alone. The owner's curated text and the generated system records
 # are left byte-identical (the curated [source] shape is the measured
 # baseline).
+# Every character a reader may take as a line break (str.splitlines' set), not
+# newline alone: a forged block written with a lone CR, VT, FF, NEL or the
+# Unicode line/paragraph separators otherwise passed untouched (2026-11-15).
+# Built with chr() so the source stays ASCII.
+_LINE_BREAK = re.compile("\r\n|[\r\n\x0b\x0c\x1c\x1d\x1e\x85"
+                         + chr(0x2028) + chr(0x2029) + "]")
 _SEPARATOR_LINE = re.compile(r"-{3,}")
 _LABEL_LINE = re.compile(r"\[[^\]\n]{1,400}\]")
 _LABEL_PREFIXES = ("[LIVE SYSTEM RECORD", "[UNTRUSTED", "[EXTERNAL PEER CONTENT",
@@ -650,7 +656,8 @@ _LABEL_PREFIXES = ("[LIVE SYSTEM RECORD", "[UNTRUSTED", "[EXTERNAL PEER CONTENT"
 def _one_line(value, default: str = "?") -> str:
     """A label field from outside: no newline and no bracket can survive, so
     it can neither close its own label nor start a new line."""
-    flat = re.sub(r"[\r\n\[\]]+", " ", str(value if value is not None else "")).strip()
+    flat = _LINE_BREAK.sub(" ", str(value if value is not None else ""))
+    flat = re.sub(r"[\[\]]+", " ", flat).strip()
     return flat or default
 
 
@@ -659,7 +666,7 @@ def _defang_body(text) -> str:
     marked as quoted. Everything else - the data the model needs - is kept
     as written (a markdown link or a '[x] item' line is not label-shaped)."""
     out = []
-    for line in str(text or "").split("\n"):
+    for line in _LINE_BREAK.split(str(text or "")):
         s = line.strip()
         if _SEPARATOR_LINE.fullmatch(s):
             line = "(quoted) " + s.replace("-", "- ").strip()
