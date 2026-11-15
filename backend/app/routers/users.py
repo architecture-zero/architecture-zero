@@ -49,6 +49,22 @@ def get_users(current_user: dict = Depends(require_permission("manage_users"))):
     return {"users": safe}
 
 
+def _refuse_role_beyond_caller(current_user: dict, target: dict | None, role: str,
+                               above_detail: str) -> None:
+    """The role ceiling below the Owner, shared by the two doors that put a
+    role's preset on an account: creating it, and changing its role (a role
+    change resets the account to the new preset, users.update_user_role).
+    Never a role above the caller's own rung, nor one whose preset holds a
+    scope the caller does not hold - the permission door's rule, can_grant,
+    on the preset the account would then hold."""
+    from app.permissions import ROLE_LEVELS, can_grant, effective_level
+    if ROLE_LEVELS[role] > effective_level(current_user):
+        raise HTTPException(status_code=403, detail=above_detail)
+    refusal = can_grant(current_user, target, ROLE_PERMISSIONS[role])
+    if refusal:
+        raise HTTPException(status_code=403, detail=refusal)
+
+
 def _refuse_create_beyond_creator(current_user: dict, role: str, department: str) -> None:
     """The create door's ceiling below the Owner (2026-10-31).
 
@@ -64,12 +80,8 @@ def _refuse_create_beyond_creator(current_user: dict, role: str, department: str
     Admin the Owner narrowed minted the preset it was denied): the permission
     door's rule, can_grant, on the role's preset."""
     from app.database import _collection_name
-    from app.permissions import ROLE_LEVELS, can_grant, effective_level
-    if ROLE_LEVELS[role] > effective_level(current_user):
-        raise HTTPException(status_code=403, detail="Cannot create an account above your own role")
-    refusal = can_grant(current_user, None, ROLE_PERMISSIONS[role])
-    if refusal:
-        raise HTTPException(status_code=403, detail=refusal)
+    _refuse_role_beyond_caller(current_user, None, role,
+                               "Cannot create an account above your own role")
     allowed = {_collection_name("general"), _collection_name(current_user.get("department"))}
     if _collection_name(department) not in allowed:
         raise HTTPException(status_code=403,
@@ -185,6 +197,15 @@ def change_role(user_id: UserId, body: dict, current_user: dict = Depends(requir
     # Owner.
     if (role == "owner" or target.get("role") == "owner") and not is_owner(current_user):
         raise HTTPException(status_code=403, detail="Only an Owner can grant or change an Owner role")
+    # The create door's role ceiling, here too: below the Owner, a role change
+    # never lands a role above the caller's own rung or a preset holding a
+    # scope the caller does not hold. Without it, a Member holding
+    # manage_users that the create door refused an Admin created a Member it
+    # controlled and changed its role to Admin, handing that account
+    # manage_kb and view_analytics it never held itself.
+    if not is_owner(current_user):
+        _refuse_role_beyond_caller(current_user, target, role,
+                                   "Cannot grant a role above your own")
     # An account with no usable password may not hold a role whose preset
     # carries manage_users or manage_system (upstream's SSO-account rule, ported
     # 2026-09-09; no such accounts exist on a fresh clone, and the rule is
