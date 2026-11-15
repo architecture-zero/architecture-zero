@@ -36,6 +36,30 @@ def test_a_quoted_fragment_inside_a_fence_after_prose_is_not_a_verdict():
     assert _parse_verdict(raw) is None
 
 
+@pytest.mark.parametrize("raw", [
+    '{"pass": true|false, "rationale": "<one or two sentences>"}',
+    '```json\n{"pass": true|false, "rationale": "<one or two sentences>"}\n```',
+    '{"pass": false|true, "rationale": "x"}',
+    '{"pass": true|false',
+])
+def test_the_prompts_own_format_line_echoed_back_is_not_a_verdict(raw):
+    """The judge prompt ends with its format line, {"pass": true|false, ...}.
+    A judge that echoes it back has decided nothing: the bool must end at a
+    comma, a closing brace or the end of the reply, not at any word break."""
+    assert _parse_verdict(raw) is None
+
+
+@pytest.mark.parametrize("raw,want", [
+    ('{"pass": true, "rationale": "cut', True),
+    ('{"pass": false , "rationale": "cut', False),
+    ('{"pass": true', True),
+    ('{"pass": true}', True),
+])
+def test_control_a_bool_ending_at_a_comma_brace_or_the_end_still_salvages(raw, want):
+    v = _parse_verdict(raw)
+    assert v is not None and v["pass"] is want
+
+
 def test_control_a_complete_verdict_still_parses():
     assert _parse_verdict('{"pass": false, "rationale": "stale"}') == \
         {"pass": False, "rationale": "stale"}

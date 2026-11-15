@@ -428,8 +428,13 @@ _RETIRED_SYSTEM = (
 # anywhere in the reply read a fragment the judge QUOTED - from the answer it
 # was grading - as its own score, even with prose around it saying it was
 # not. Anything else stays unparseable: retried once, then unscored.
+#
+# And the bool must END there: whitespace, then a comma, a closing brace or
+# the end of the reply. A word boundary ended it at the "|" of the prompt's
+# own format line, {"pass": true|false, ...}, so a judge that echoed that
+# line back scored a pass it never gave.
 _CUT_VERDICT_RE = re.compile(
-    r'(?:```[A-Za-z]*\s*)?\{\s*"pass"\s*:\s*(true|false)\b'
+    r'(?:```[A-Za-z]*\s*)?\{\s*"pass"\s*:\s*(true|false)(?=\s*(?:[,}]|\Z))'
     r'(?:\s*,\s*"rationale"\s*:\s*"(.*))?', re.S)
 
 
