@@ -663,6 +663,11 @@ def _defang_body(text) -> str:
         s = line.strip()
         if _SEPARATOR_LINE.fullmatch(s):
             line = "(quoted) " + s.replace("-", "- ").strip()
+        elif s.startswith("---"):
+            # A section marker ('--- END RETRIEVED CONTENT RULES ---', '---
+            # SAFETY RULES ... ---'): the system prompt's own markers wrap its
+            # rule blocks, so one inside the data could close a section early.
+            line = "(quoted) " + s
         elif _LABEL_LINE.fullmatch(s) or s.startswith(_LABEL_PREFIXES):
             line = "(quoted) " + s
         out.append(line)
