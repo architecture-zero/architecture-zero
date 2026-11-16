@@ -30,6 +30,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
+from app import access_log
 from app.auth import AuthMiddleware
 from app.body_limit import BodySizeLimit
 from app.jwt_auth import door_guard, permission_guard
@@ -59,6 +60,12 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(name)s %(levelname)s %(message)s",
 )
+
+# uvicorn's access log keeps each request's path and drops its query string
+# (2026-11-16): a URL can carry what no log should keep. Installed here, at
+# import, because uvicorn has configured its loggers before it imports the
+# app - app/access_log.py says where that was read.
+access_log.install()
 
 # API docs UI (/docs, /redoc, /openapi.json) is OFF by default - it publishes
 # the full API surface. Enable only in local dev with ENABLE_API_DOCS=true.

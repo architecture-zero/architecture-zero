@@ -722,6 +722,9 @@ authentication") has both ways step by step.
 
 ## Monitoring
 
+- `docker compose logs backend` - the backend's own log. Its access lines
+  name each request's client, method, path and status, and leave out the
+  query string (since 2026-11-16): a URL can carry what no log should keep.
 - GET /api/health - liveness; its Ollama word is the self-check timer's
   last pass - the route calls nothing itself.
 - GET /api/health/ready - readiness: DB (critical), a crash loop
