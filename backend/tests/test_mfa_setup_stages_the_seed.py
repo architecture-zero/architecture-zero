@@ -33,6 +33,9 @@ FIX (each fails on the routes as they were):
   - a code of the staged seed opens no door but the confirm: not the
     sign-in, not the re-key's code step-up, not the own-account unlock
   - the staged seed is stored encrypted, never as the key itself
+  - the setup's answer says how long it may wait (`expires_minutes`), read
+    from MFA_PENDING_TTL, so a screen states the setting and not a fixed
+    number of its own
 FIX, the security read of this change (each fails on its first version):
   - an operator's MFA reset that lands after the confirm's code was accepted
     and before its write wins: the reset's "MFA disabled" stays true and the
@@ -297,6 +300,23 @@ def test_a_first_enrollments_setup_writes_nothing_to_the_account(client, account
     assert r.status_code == 200, r.text
     row = _row(someone)
     assert row["mfa_enabled"] is True and row["mfa_secret"] == new
+
+
+@pytest.mark.parametrize("enrolled", [True, False], ids=["a re-key", "a first enrollment"])
+def test_the_setup_says_how_long_it_may_wait_from_the_setting(client, accounts, monkeypatch,
+                                                              enrolled):
+    """The screens stated the window as fixed text, so an operator who changed
+    MFA_PENDING_TTL got screens that read wrong. The setup's answer carries
+    the window in whole minutes, read from the setting (here 600 seconds),
+    and nothing else in the answer changes."""
+    monkeypatch.setattr(security, "MFA_PENDING_TTL", 600)
+    someone = accounts(mfa=enrolled)
+    r = (_rekey(client, someone, _code(someone["seed"], -1)) if enrolled
+         else _enroll(client, someone))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body.get("expires_minutes") == security.mfa_pending_minutes() == 10, sorted(body)
+    assert sorted(body) == ["expires_minutes", "qr", "secret", "uri"]
 
 
 def test_a_staged_seeds_code_opens_no_door_but_the_confirm(client, accounts):

@@ -429,7 +429,11 @@ def mfa_setup(request: MFASetupRequest | None = None,
     buf = BytesIO()
     img.save(buf, format="PNG")
     qr_b64 = base64.b64encode(buf.getvalue()).decode()
-    return {"secret": secret, "uri": uri, "qr": f"data:image/png;base64,{qr_b64}"}
+    # How long the setup may wait for its confirm, in whole minutes, read from
+    # MFA_PENDING_TTL: the screens state this number, so a changed setting
+    # reads true there (they said a fixed one until 2026-11-16).
+    return {"secret": secret, "uri": uri, "qr": f"data:image/png;base64,{qr_b64}",
+            "expires_minutes": mfa_pending_minutes()}
 
 
 class MFAEnableRequest(BaseModel):

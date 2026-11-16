@@ -709,9 +709,11 @@ account until it is confirmed (since 2026-11-15): the server keeps the new
 seed aside, encrypted, and on a re-key the current authenticator keeps
 working at sign-in and every other door until a code from the new one is
 confirmed, which makes the new seed the live one and turns two-factor on in
-one write. A setup that is not confirmed within 30 minutes
+one write. A setup that is not confirmed within 30 minutes by default
 (`MFA_PENDING_TTL`) expires with nothing changed, so an abandoned re-key no
-longer leaves an account without its second factor. The tab asks before it
+longer leaves an account without its second factor. The setup's answer
+carries the window in whole minutes (`expires_minutes`), and the tab states
+that number, so a changed setting reads true on the screen. The tab asks before it
 closes over a setup that is not confirmed, since its key goes with the
 screen. An operator's MFA reset also drops a setup that is waiting. The API calls are the same doors for
 a script: POST /api/auth/mfa/setup, then POST /api/auth/mfa/enable. The

@@ -277,8 +277,24 @@ const ASK_SETUP_PENDING = 'This two-factor setup is not confirmed yet. Closing d
 const ASK_REPLACEMENT_PENDING = 'This replacement is not confirmed yet. Closing drops the new key. The '
   + 'authenticator you have now keeps working, and nothing changes. Close anyway?'
 
-// What a person reads about a setup that is not confirmed in time.
-const EXPIRES = 'A setup that is not confirmed within 30 minutes expires, and nothing changes.'
+// What a person reads about a setup that is not confirmed in time. The number
+// is the server's own: the setup's answer carries it (`expires_minutes`, read
+// from the server's MFA_PENDING_TTL), so a changed setting reads true here.
+// With no number to go on - before a setup is started, or from a server older
+// than the field - the sentence says it without one, never a number of its
+// own. (Until 2026-11-16 this was fixed text that said 30 minutes.)
+function expiresWords(minutes?: number): string {
+  if (minutes === undefined) return 'A setup that is not confirmed in time expires, and nothing changes.'
+  return `A setup that is not confirmed within ${minutes} minute${minutes === 1 ? '' : 's'} expires, `
+    + 'and nothing changes.'
+}
+
+// The window from a setup's answer, when it is one: a whole number of
+// minutes, at least one. Anything else is no number at all.
+function expiresMinutes(body: Record<string, unknown> | null): number | undefined {
+  const minutes = body?.expires_minutes
+  return typeof minutes === 'number' && Number.isInteger(minutes) && minutes > 0 ? minutes : undefined
+}
 
 // Said wherever this tab sends a person to an administrator for a reset. A
 // reset leaves the account with no second factor, and where one is required
@@ -383,7 +399,7 @@ function TwoFactorTab({ active, api, headers, known, onMfaChange, leaving }: {
   const [password, setPassword] = useState('')
   const [oldCode, setOldCode] = useState('')
   const [replacing, setReplacing] = useState(false)
-  const [pending, setPending] = useState<{ secret: string; qr: string } | null>(null)
+  const [pending, setPending] = useState<{ secret: string; qr: string; minutes?: number } | null>(null)
   const [code, setCode] = useState('')
   const [error, setError] = useState('')
   const [turnedOn, setTurnedOn] = useState(false)
@@ -487,7 +503,7 @@ function TwoFactorTab({ active, api, headers, known, onMfaChange, leaving }: {
         setError('The server answered, but not with a setup this screen can read. Start again.')
         return
       }
-      setPending({ secret, qr })
+      setPending({ secret, qr, minutes: expiresMinutes(body) })
       setPassword('')
       setOldCode('')
       setCode('')
@@ -634,7 +650,7 @@ function TwoFactorTab({ active, api, headers, known, onMfaChange, leaving }: {
       >
         {busy ? (replacement ? 'Confirming...' : 'Turning on...') : (replacement ? 'Use the new authenticator' : 'Turn on')}
       </button>
-      <p className="text-xs text-gray-500">{EXPIRES}</p>
+      <p className="text-xs text-gray-500">{expiresWords(pending.minutes)}</p>
       <button type="button" onClick={startAgain} className={quiet}>
         {replacement ? 'Cancel replacement' : 'Start again'}
       </button>
@@ -674,7 +690,7 @@ function TwoFactorTab({ active, api, headers, known, onMfaChange, leaving }: {
           <form onSubmit={start} className="space-y-3">
             <p className="text-xs text-gray-400">
               The authenticator you have now keeps working until a code from the new one is
-              confirmed. {EXPIRES}
+              confirmed. {expiresWords()}
             </p>
             <div>
               <label htmlFor="mfa-password" className={label}>Your password</label>

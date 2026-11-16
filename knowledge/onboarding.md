@@ -104,11 +104,13 @@ MFA to a new authenticator. It takes the same password and a current code
 from the authenticator being replaced, because a session and a password
 alone may not swap in a new one. The authenticator being replaced keeps
 working until a code from the new one is confirmed, and a replacement not
-confirmed within 30 minutes expires with nothing changed.
+confirmed within 30 minutes by default (MFA_PENDING_TTL; the tab states the
+number this server uses) expires with nothing changed.
 
 The same steps by API, for a script or a client of your own: POST
 /api/auth/mfa/setup with your current password in the body as
-`current_password` returns the QR code and the key, and POST
+`current_password` returns the QR code, the key and `expires_minutes` (how
+long the setup may wait for its confirm), and POST
 /api/auth/mfa/enable with one code from the authenticator activates it.
 A code is accepted once per account, at whichever door it is sent: the one
 that activates the authenticator is spent, so the first sign-in takes the
@@ -127,8 +129,8 @@ authenticator: it enrolls from a session that is still signed in, or the
 operator sets REQUIRE_MFA=false for the re-enrollment. Code attempts are capped
 per account (five per fifteen minutes by default, TOTP_MAX_FAILURES and
 TOTP_FAILURE_WINDOW), and only a right code or an admin's MFA reset clears
-the count - a correct password does not. Confirm a new authenticator within 30 minutes of its
-setup (MFA_PENDING_TTL); after that, start the setup again. Only AFTER
+the count - a correct password does not. Confirm a new authenticator soon after its setup:
+within 30 minutes by default (MFA_PENDING_TTL); after that, start the setup again. Only AFTER
 every account that needs password login has
 enrolled should the operator set REQUIRE_MFA=true in the host environment
 and recreate the backend (`docker compose up -d`; a plain `docker compose

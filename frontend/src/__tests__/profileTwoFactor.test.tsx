@@ -25,6 +25,13 @@
  * replacement under ON, tells the shell nothing until the confirm, and no
  * longer warns or re-reads the account over a replacement start that went
  * wrong: nothing that start did can have turned two-factor off.
+ *
+ * SINCE 2026-11-16 the window the tab states is the server's: the setup's
+ * answer carries `expires_minutes` (from MFA_PENDING_TTL) and the tab shows
+ * that number. It said a fixed 30 minutes, which read wrong on a server whose
+ * operator changed the setting. With no number from the server (before a
+ * setup is started, or a server older than the field) it says the window
+ * without one.
  */
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -42,7 +49,13 @@ const SEED = 'AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH'
 const IN_FOURS = ['AAAA', 'BBBB', 'CCCC', 'DDDD', 'EEEE', 'FFFF', 'GGGG', 'HHHH']
 // A real PNG, one pixel, so the bytes handed to the canvas are a picture.
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
-const SETUP = { secret: SEED, uri: `otpauth://totp/Test:pat?secret=${SEED}&issuer=Test`, qr: `data:image/png;base64,${PNG}` }
+// The setup's answer as the server sends it at its default window.
+const SETUP = {
+  secret: SEED,
+  uri: `otpauth://totp/Test:pat?secret=${SEED}&issuer=Test`,
+  qr: `data:image/png;base64,${PNG}`,
+  expires_minutes: 30,
+}
 // The server's sentences, as its routes send them.
 const EXPIRED = 'This authenticator setup has expired or was never started. Start the setup again.'
 const ALREADY_ON = 'MFA is already enabled for this account. To replace the authenticator, re-key: '
@@ -266,6 +279,46 @@ describe('Account Settings: the Two-factor tab', () => {
     expect(calls[2].body).toEqual({ code: '222222' })
     expect(shownKey()).toBeNull()
     expect(onMfaChange.mock.calls).toEqual([[true]])
+  })
+
+  it("the window a setup states is the server's number: a changed setting reads as its own", async () => {
+    account({ enabled: false }, { setup: () => json({ ...SETUP, expires_minutes: 10 }) })
+    mount()
+    await openOff()
+    startSetup()
+    await screen.findByTestId('two-factor-key')
+    expect(screen.getByText('A setup that is not confirmed within 10 minutes expires, and nothing changes.'))
+      .toBeInTheDocument()
+    expect(screen.queryByText(/30 minutes/)).toBeNull()
+  })
+
+  it('a server that does not send the window: the tab says it without a number, never one of its own', async () => {
+    const older: Record<string, unknown> = { ...SETUP }
+    delete older.expires_minutes
+    account({ enabled: false }, { setup: () => json(older) })
+    mount()
+    await openOff()
+    startSetup()
+    await screen.findByTestId('two-factor-key')
+    expect(screen.getByText('A setup that is not confirmed in time expires, and nothing changes.'))
+      .toBeInTheDocument()
+    expect(screen.queryByText(/\d+ minutes?/)).toBeNull()
+  })
+
+  it("a replacement states no number before it starts, and the server's once it has", async () => {
+    account({ enabled: true }, { setup: () => json({ ...SETUP, expires_minutes: 45 }) })
+    mount({ ...PAT, mfa_enabled: true })
+    fireEvent.click(tab('Two-factor'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Replace authenticator' }))
+    expect(screen.getByText(/A setup that is not confirmed in time expires, and nothing changes\./))
+      .toBeInTheDocument()
+    expect(screen.queryByText(/\d+ minutes?/)).toBeNull()
+    type(screen.getByLabelText('Your password'), 'pw-right')
+    type(screen.getByLabelText('A code from the authenticator you are replacing'), '111111')
+    fireEvent.click(screen.getByRole('button', { name: 'Start replacement' }))
+    await screen.findByTestId('two-factor-key')
+    expect(screen.getByText('A setup that is not confirmed within 45 minutes expires, and nothing changes.'))
+      .toBeInTheDocument()
   })
 
   it('a replacement that was opened and never started is forgotten once the account reads off', async () => {

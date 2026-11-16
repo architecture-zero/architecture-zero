@@ -118,7 +118,7 @@ capped per account at every door that checks one - counted in one write
 before the code is read, so a burst of concurrent guesses gets no more than
 the cap - and only a right code (or that reset) clears the count, so passing
 a password step-up never buys more guesses; MFA enable verifies a pending
-code only, within 30 minutes of its setup, and will not test a code against
+code only, within MFA_PENDING_TTL of its setup (30 minutes by default), and will not test a code against
 an enrolled account's live seed. A wrong password answers 400 with a plain
 reason, never a 401 that would log the operator out, and it counts against
 the same lockout as a failed login, so the step-up is not a second guessing
