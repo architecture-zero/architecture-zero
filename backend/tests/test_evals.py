@@ -1430,11 +1430,15 @@ def test_eval_peer_lane_runs_without_rag_as_the_chat_does(monkeypatch):
 
 
 def test_eval_peer_lane_asks_with_the_questions_own_words(monkeypatch):
-    """FIX (2026-10-23): a multi-turn question asks its peers with its own final
-    words, as the chat sends a peer request.prompt - never the follow-up the
-    local lane resolves for its own retrieval."""
+    """FIX (2026-10-23), RE-POINTED IN PLACE 2026-11-16: a multi-turn question
+    asks its peers what the chat asks them - routing.peer_lane_query, never the
+    query the local lane resolves for its own retrieval (which may carry an
+    answer). Its final words are not a bare follow-up, so they are asked as
+    they stand. Until 2026-11-16 this test stood the local resolver in with a
+    fixed string to show the peers never saw it; the peer lane now resolves a
+    bare follow-up from the user's words (tests/test_peer_lane_followup.py),
+    so the stand-in would answer for both lanes."""
     queries: list = []
-    monkeypatch.setattr("app.routing.resolve_followup", lambda q, turns: "RESOLVED FOLLOW-UP")
     turns = [{"role": "user", "content": "Tell me about the platform."},
              {"role": "assistant", "content": "It has four pillars."}]
     _peer_run(monkeypatch, "peer-words-run", use_peers=True, setup_turns=turns, queries=queries)

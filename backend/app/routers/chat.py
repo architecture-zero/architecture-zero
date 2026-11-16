@@ -893,13 +893,21 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
             required=PEER_CONSUME_MIN_LEVEL)
     elif request.use_peers:
         _peers_asked = True
+        # THE PEER QUERY (2026-11-16): what every peer is asked and what their
+        # pieces are ranked against below. routing.peer_lane_query holds the
+        # rule: a bare follow-up is asked with its subject, resolved from the
+        # user's own words only and never from an answer; any other turn is
+        # asked the prompt itself, byte for byte. The model and the saved
+        # history keep request.prompt.
+        from app.routing import peer_lane_query
+        peer_query = peer_lane_query(request.prompt, request.history)
         all_peers = get_peers()
         enabled_peers = [p for p in all_peers if p.get("enabled")]
         logger.info("Peer query requested - %d peers registered, %d enabled", len(all_peers), len(enabled_peers))
         if enabled_peers:
             loop = asyncio.get_running_loop()
             results = await asyncio.gather(
-                *[loop.run_in_executor(None, lambda p=p: query_peer_kb(p, request.prompt)) for p in enabled_peers],
+                *[loop.run_in_executor(None, lambda p=p: query_peer_kb(p, peer_query)) for p in enabled_peers],
                 return_exceptions=True,
             )
             for peer, result in zip(enabled_peers, results):
@@ -921,14 +929,15 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
     # reached the prompt; three peers sending eight each was twenty-four
     # pieces in front of the model whatever the question (select's docstring
     # has the measure).
-    # Off the event loop: the rank is a model call.
+    # Off the event loop: the rank is a model call. The rank reads the query
+    # the peers were asked (peer_query, bound wherever a peer was asked).
     if peer_chunks:
         from app import peer_boundary
         from app.rerank import rerank as _rank_peer_pool
         _lane: dict = {}
         _sent = peer_chunks
         peer_chunks = await asyncio.get_running_loop().run_in_executor(
-            None, lambda: peer_boundary.select(request.prompt, _sent, rag_threshold,
+            None, lambda: peer_boundary.select(peer_query, _sent, rag_threshold,
                                                rank=_rank_peer_pool, on_event=log,
                                                report=_lane))
         logger.info("Peer lane: %d sent, %d over the threshold (%.2f), %d after the scan, "

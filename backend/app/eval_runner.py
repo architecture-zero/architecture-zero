@@ -417,7 +417,8 @@ _eval_runs_lock = threading.Lock()
 EVAL_QUESTION_PAUSE_SECONDS = float(os.getenv("EVAL_QUESTION_PAUSE_SECONDS", "2.0"))
 def _peer_pieces(query: str, as_level) -> list[dict]:
     """The chat's federation lane, for a run asked with use_peers: every enabled
-    peer asked with the question, the pieces through app.peer_boundary.select with
+    peer asked `query` (the chat's peer query, routing.peer_lane_query, which
+    the caller builds), the pieces through app.peer_boundary.select with
     this instance's rank and threshold - the ONE function the chat calls - behind
     the same consume floor the chat applies to the caller's clearance
     (PEER_CONSUME_MIN_LEVEL, the chat router's constant). The question's as_level
@@ -609,13 +610,17 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
             # SUPPLEMENTARY block, so a run measures the system a peer-asking
             # client is served - not the hub alone. As the chat runs it: beside
             # the local lane, not inside it (the chat asks its peers whether or
-            # not RAG is on), and with the question's own words (the chat sends
-            # a peer request.prompt, not the follow-up resolved for local
-            # retrieval) - 2026-10-23, found by a fork's port of this lane.
+            # not RAG is on) - 2026-10-23, found by a fork's port of this lane -
+            # and asked what the chat asks them: routing.peer_lane_query over
+            # the scripted turns, a bare follow-up resolved from the user's own
+            # words only, never from a scripted answer (2026-11-16; until then
+            # the question's own words, as the chat sent them).
             # Not on an outage row: that row records the outage whatever a
             # peer holds (see the verdict below), so the peers are not asked.
             if use_peers and not retrieval_down:
-                peer_chunks = _peer_pieces(question_text, q.get("as_level"))
+                from app.routing import peer_lane_query
+                peer_chunks = _peer_pieces(peer_lane_query(question_text, setup_turns),
+                                           q.get("as_level"))
                 for c in peer_chunks:
                     retrieved.append({"source": c.get("source", "unknown"),
                                       "score": c.get("score"), "peer": c.get("peer", "")})

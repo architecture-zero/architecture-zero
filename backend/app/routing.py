@@ -281,7 +281,7 @@ def _last_assistant_text(history) -> str:
     return ""
 
 
-def resolve_followup(query: str, history=None) -> str:
+def resolve_followup(query: str, history=None, *, user_words_only: bool = False) -> str:
     """Expand a bare follow-up into a self-contained RETRIEVAL query by
     re-attaching the topic of the last SUBSTANTIVE user turn (and, in the
     'exchange' shape, the start of the last assistant turn - followup_shape).
@@ -292,7 +292,11 @@ def resolve_followup(query: str, history=None) -> str:
     topic alone, so words in an answer never flip it; every other pairing
     keeps the neutral '<topic> - <query>' form, which leaves the topic's own
     terms dominant. Rewrites the retrieval query ONLY - the caller still sends
-    the user's real words to the model and saves them to history."""
+    the user's real words to the model and saves them to history.
+
+    `user_words_only` (the peer lane's, through peer_lane_query): the shape is
+    not read and no assistant turn is, so the query is built from the user's
+    own words alone - the topic shape, whatever the key says."""
     if not is_followup(query) or not history:
         return query
     topic = _last_topic_text(history)
@@ -301,11 +305,31 @@ def resolve_followup(query: str, history=None) -> str:
     status_frame = bool(_STATUS_FOLLOWUP_RE.match(query)) and is_status_topic(topic)
     # The shape is read only here, on a turn the branch can act on: one config
     # read on a bare follow-up while the key is unset, none on any other chat
-    # question.
-    if followup_shape() == "exchange":
+    # question - and none at all for the peer lane.
+    if not user_words_only and followup_shape() == "exchange":
         answer = _last_assistant_text(history)
         if answer:
             topic = f"{topic} {answer}"
     if status_frame:
         return f"{topic} - current status"
     return f"{topic} - {query.strip()}"
+
+
+def peer_lane_query(prompt: str, history=None) -> str:
+    """The query this turn's Eco peers are asked, and the one their pieces are
+    ranked against (2026-11-16). A bare follow-up asked of a peer as typed
+    carries no subject - every peer was asked "tell me more" - so the peer
+    lane takes the local lane's resolution, but only as built from the USER'S
+    OWN WORDS: the last substantive user turn re-attached, and the status
+    frame decided on that turn alone. That text was the user's already.
+
+    Never assistant text. The 'exchange' shape carries the start of the last
+    answer; an answer is written from any collection the caller may read, and
+    a peer is not held to this instance's clearance. So this resolution reads
+    no shape and no assistant turn: it is the topic shape whatever the key
+    `followup_resolver` says, and under 'exchange' a peer gets the topic
+    shape's query, never the local lane's. Anything the resolver leaves alone
+    - not a bare follow-up, or no substantive earlier user turn - is `prompt`
+    itself, byte for byte. The model, the saved history and the logs keep the
+    user's real words; this is the peer lane's query and nothing else's."""
+    return resolve_followup(prompt, history, user_words_only=True)
