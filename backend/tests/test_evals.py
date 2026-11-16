@@ -1430,7 +1430,9 @@ def test_eval_peer_lane_runs_without_rag_as_the_chat_does(monkeypatch):
 
 
 def test_eval_peer_lane_asks_with_the_questions_own_words(monkeypatch):
-    """FIX (2026-10-23), RE-POINTED IN PLACE 2026-11-16: a multi-turn question
+    """CONTROL since 2026-11-16 (a FIX of 2026-10-23): it passes on the code
+    before too, since its question is not a bare follow-up and so is asked
+    as it stands either way. RE-POINTED IN PLACE 2026-11-16: a multi-turn question
     asks its peers what the chat asks them - routing.peer_lane_query, never the
     query the local lane resolves for its own retrieval (which may carry an
     answer). Its final words are not a bare follow-up, so they are asked as

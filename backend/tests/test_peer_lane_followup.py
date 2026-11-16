@@ -445,3 +445,84 @@ def test_no_answer_in_a_scripted_turn_reaches_a_peer_of_the_eval_replay(client, 
     assert CANARY in local[0]
     assert asked and ranked
     assert not any(CANARY in q for q in asked + ranked), (asked, ranked)
+
+
+# -- The re-attached topic is clipped for the peers (2026-11-16) ------------------
+# The peer query rides a GET's query string, and an earlier user turn can be as
+# long as the chat allows. Past a peer's request-line limit (nginx answers 414
+# past 8k, uvicorn refuses past 64 KiB) the request fails, and enough failures
+# open that peer's breaker for every caller. The peer lane re-attaches at most
+# routing.PEER_TOPIC_CLIP_BYTES of the turn's UTF-8, cut back to a whole word;
+# the local lane re-attaches all of it, as before. FIX on the commit before,
+# where the whole turn went to every peer; the CONTROL holds on both.
+
+LONG_TOPIC = " ".join(f"word{i:04d}" for i in range(1200))
+assert len(LONG_TOPIC) >= 10000
+TAIL = " - tell me more"
+
+
+def _long(topic=LONG_TOPIC):
+    return [{"role": "user", "content": topic}, {"role": "assistant", "content": ANSWER}]
+
+
+def test_fix_a_long_earlier_turn_reaches_the_peers_clipped_at_a_word(monkeypatch):
+    from app import routing
+    _on(monkeypatch)
+    bound = routing.PEER_TOPIC_CLIP_BYTES
+    assert bound == 1000
+    got = routing.peer_lane_query("tell me more", _long())
+    assert len(got) <= bound + len(TAIL)
+    assert got.endswith(TAIL)
+    clipped = got[:-len(TAIL)]
+    assert LONG_TOPIC.startswith(clipped) and LONG_TOPIC[len(clipped)] == " "
+    assert bound - len("word0000 ") < len(clipped.encode("utf-8")) <= bound
+    # The local lane re-attaches the whole turn, as before.
+    assert routing.resolve_followup("tell me more", _long()) == LONG_TOPIC + TAIL
+
+
+def test_fix_the_clip_counts_bytes_so_any_script_fits_a_request_line(monkeypatch):
+    """A thousand characters of a script whose letters are three bytes, with
+    no space between words, percent-encode to some 9,000 characters - past
+    nginx's 8k request line. Counted in UTF-8 bytes, the topic stays under
+    3,000 characters on the wire whatever the script."""
+    from urllib.parse import urlencode
+    from app import routing
+    _on(monkeypatch)
+    bound = routing.PEER_TOPIC_CLIP_BYTES
+    for topic in (chr(0x6587) * 5000, " ".join([chr(0x6587) * 3] * 3000),
+                  chr(0x1F600) * 3000):
+        got = routing.peer_lane_query("tell me more", _long(topic))
+        assert got.endswith(TAIL)
+        clipped = got[:-len(TAIL)]
+        assert clipped and topic.startswith(clipped)
+        assert len(clipped.encode("utf-8")) <= bound
+        assert len(urlencode({"q": got, "n": 8})) <= 3 * bound + 3 * len(TAIL) + 10
+
+
+def test_fix_a_word_longer_than_the_bound_is_cut_at_the_bound(monkeypatch):
+    from app import routing
+    _on(monkeypatch)
+    bound = routing.PEER_TOPIC_CLIP_BYTES
+    assert routing.peer_lane_query("tell me more", _long("x" * (bound * 3))) == "x" * bound + TAIL
+
+
+def test_control_a_topic_within_the_bound_is_re_attached_byte_for_byte(monkeypatch):
+    """The common case is untouched: an earlier question of up to 1,000
+    characters (and as many bytes) goes to the peers whole."""
+    from app import routing
+    _on(monkeypatch)
+    for topic in (HISTORY[0]["content"], "abcde" + " abcd" * 199):
+        assert len(topic.encode("utf-8")) <= 1000
+        assert routing.peer_lane_query("tell me more", _long(topic)) == topic + TAIL
+
+
+def test_fix_the_peers_are_asked_the_clipped_topic_through_the_chat(client, admin_headers,
+                                                                    monkeypatch):
+    _on(monkeypatch)
+    seen = _turn(client, admin_headers, "tell me more", _long())
+    asked = {query for _, query in seen["asked"]}
+    assert len(asked) == 1 and len(seen["asked"]) == 2
+    (got,) = asked
+    assert len(got) <= 1000 + len(TAIL) and got.endswith(TAIL)
+    assert seen["ranked"] == [got]
+    assert seen["local"] == [LONG_TOPIC + TAIL]

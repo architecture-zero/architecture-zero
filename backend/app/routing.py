@@ -282,6 +282,33 @@ def _last_assistant_text(history) -> str:
     return ""
 
 
+# How much of the earlier user turn the PEER lane re-attaches (2026-11-16,
+# found by a security read): PEER_TOPIC_CLIP_BYTES of its UTF-8, cut back to a
+# whole word. The peer query rides a GET's query string, and an earlier turn
+# can be as long as the chat allows (200,000 characters for a signed-in
+# caller). Past a peer's request-line limit - nginx answers 414 past 8k,
+# uvicorn refuses past 64 KiB - the request fails, and enough failures open
+# that peer's breaker for every caller. Bytes, not characters: percent-encoded,
+# a byte is at most three characters, so the topic stays under 3,000 on the
+# wire in any script, where 1,000 characters of a script with three-byte
+# letters and no spaces would be 9,000. A question's subject is in its first
+# words; the local lane re-attaches the whole turn, as before.
+PEER_TOPIC_CLIP_BYTES = 1000
+
+
+def _clip_for_a_peer(topic: str) -> str:
+    """`topic` itself when its UTF-8 fits PEER_TOPIC_CLIP_BYTES. Otherwise the
+    longest prefix that fits, cut back to the last whitespace in it so no
+    word is split - or cut at the bound when it holds no whitespace."""
+    if len(topic.encode("utf-8")) <= PEER_TOPIC_CLIP_BYTES:
+        return topic
+    head = topic.encode("utf-8")[:PEER_TOPIC_CLIP_BYTES].decode("utf-8", "ignore")
+    if topic[len(head)].isspace():
+        return head.rstrip()
+    cut = max((i for i, ch in enumerate(head) if ch.isspace()), default=0)
+    return head[:cut].rstrip() if cut else head
+
+
 def resolve_followup(query: str, history=None, *, user_words_only: bool = False) -> str:
     """Expand a bare follow-up into a self-contained RETRIEVAL query by
     re-attaching the topic of the last SUBSTANTIVE user turn (and, in the
@@ -297,13 +324,16 @@ def resolve_followup(query: str, history=None, *, user_words_only: bool = False)
 
     `user_words_only` (the peer lane's, through peer_lane_query): the shape is
     not read and no assistant turn is, so the query is built from the user's
-    own words alone - the topic shape, whatever the key says."""
+    own words alone - the topic shape, whatever the key says. The re-attached turn is clipped to
+    PEER_TOPIC_CLIP_BYTES (_clip_for_a_peer): the peer query rides a GET."""
     if not is_followup(query) or not history:
         return query
     topic = _last_topic_text(history)
     if not topic:
         return query
     status_frame = bool(_STATUS_FOLLOWUP_RE.match(query)) and is_status_topic(topic)
+    if user_words_only:
+        topic = _clip_for_a_peer(topic)
     # The shape is read only here, on a turn the branch can act on: one config
     # read on a bare follow-up while the key is unset, none on any other chat
     # question - and none at all for the peer lane.

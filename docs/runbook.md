@@ -975,12 +975,16 @@ the user's earlier question attached, in the `topic` shape whatever
 `followup_resolver` says: the start of an answer never goes to a peer, since
 an answer can be written from departments that are not the peers' to see. What
 does go is the user's earlier question - including one asked while the peers
-were switched off for that turn, which no peer saw at the time. Turn it on
-only when every registered peer is trusted with what your users ask (your own
-instances, for example), and restart the backend for it to take effect
-(`docker compose up -d`). The peers' pieces are ranked against the same
-query, and the evaluation runner asks its peers the way the chat does, so a
-run measures what the chat serves.
+were switched off for that turn, which no peer saw at the time. The question
+rides the peer request's query string, so each peer's web server also writes
+it into its own access log. At most its first 1,000 bytes are attached, cut
+at a word, so a long question cannot push the request past a peer's limit.
+Turn it on only when every registered peer is trusted with what your users
+ask (your own instances, for example). A changed value takes effect only
+when the backend container is recreated (`docker compose up -d`; a plain
+restart keeps the value it was created with). The peers' pieces are ranked
+against the same query, and the evaluation runner asks its peers the way the
+chat does, so a run measures what the chat serves.
 
 Growing the locked holdout: `backend/scripts/author_holdout.py` has an OUTSIDE
 model read corpus files and draft questions plus grading keys for them, spread
