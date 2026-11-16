@@ -612,9 +612,10 @@ def _run_eval_job(run_id: str, run_at: str, questions: list, model: str,
             # the local lane, not inside it (the chat asks its peers whether or
             # not RAG is on) - 2026-10-23, found by a fork's port of this lane -
             # and asked what the chat asks them: routing.peer_lane_query over
-            # the scripted turns, a bare follow-up resolved from the user's own
-            # words only, never from a scripted answer (2026-11-16; until then
-            # the question's own words, as the chat sent them).
+            # the scripted turns (2026-11-16) - the question's own words, as
+            # before, unless PEER_FOLLOWUP_RESOLVED is on; then a bare
+            # follow-up resolved from the user's own words only, never from a
+            # scripted answer.
             # Not on an outage row: that row records the outage whatever a
             # peer holds (see the verdict below), so the peers are not asked.
             if use_peers and not retrieval_down:

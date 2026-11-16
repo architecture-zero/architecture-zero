@@ -158,8 +158,11 @@ def _last_answer(history):
 
 def test_the_key_ships_with_no_row_no_default_and_no_environment_read(client):
     """Nothing turns the shape on: a fresh instance has no `followup_resolver`
-    row, config's defaults seed none, and the resolver's module reads no
-    environment variable at all."""
+    row, config's defaults seed none, and the resolver's module reads the
+    environment nowhere itself. Its one read of a setting through the on/off
+    table (2026-11-16) is PEER_FOLLOWUP_RESOLVED, the peer lane's switch,
+    which never reads the shape."""
+    import re
     import app.config
     from app.config import get_config
     _delete_key()   # a row an earlier test left would be that test's, not the app's
@@ -169,6 +172,7 @@ def test_the_key_ships_with_no_row_no_default_and_no_environment_read(client):
     source = (Path(__file__).resolve().parents[1] / "app" / "routing.py").read_text(
         encoding="utf-8")
     assert not any(read in source for read in ("import os", "os.environ", "getenv"))
+    assert re.findall(r"\bflag\((.*?)\)", source) == ['"PEER_FOLLOWUP_RESOLVED"']
 
 
 def test_the_admin_config_route_cannot_write_the_key(client, admin_headers):

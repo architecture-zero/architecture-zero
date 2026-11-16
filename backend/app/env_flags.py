@@ -88,6 +88,9 @@ _TABLE = {
     # peers
     "ECO_EXPOSE_KB": False,
     "PEER_ALLOW_PRIVATE": False,
+    # a bare follow-up is asked of the peers with the user's earlier question
+    # (app/routing.py, peer_lane_query); off unless every peer is trusted
+    "PEER_FOLLOWUP_RESOLVED": False,
     # background work
     "ENABLE_ASYNC_JOBS": False,
     "BOOT_BACKGROUND_SYNC": True,

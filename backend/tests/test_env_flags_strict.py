@@ -72,6 +72,9 @@ ROWS = {
     "RERANK_HOSTED_ALLOWED":       (False, "app.rag_config",      "RERANK_HOSTED_ALLOWED",   ""),
     "ECO_EXPOSE_KB":               (False, "app.auth",            "ECO_EXPOSE_KB",           "false"),
     "PEER_ALLOW_PRIVATE":          (False, "app.peers",           "_ALLOW_PRIVATE",          "false"),
+    # New with its reader (2026-11-16): no line came before it, so its
+    # yardstick is "off unless the word true".
+    "PEER_FOLLOWUP_RESOLVED":      (False, "app.routing",         "peer_followups_resolved()", "false"),
     "ENABLE_ASYNC_JOBS":           (False, "app.jobs",            "ENABLE_ASYNC_JOBS",       "false"),
     "BOOT_BACKGROUND_SYNC":        (True,  "app.main",            "_boot_sync_enabled()",    "true"),
     "HELP_DOCS":                   (True,  "app.runtime_config",  "HELP_DOCS_SYNC",          "true"),

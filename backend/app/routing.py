@@ -15,6 +15,7 @@ Design constraints:
 """
 import re
 
+from app.env_flags import flag
 from app.logger import get_logger
 
 log = get_logger("routing")
@@ -315,21 +316,37 @@ def resolve_followup(query: str, history=None, *, user_words_only: bool = False)
     return f"{topic} - {query.strip()}"
 
 
+def peer_followups_resolved() -> bool:
+    """PEER_FOLLOWUP_RESOLVED, by the table's rule (app/env_flags.py): on only
+    for the word true, off unless set. Read on each call, so a test can set
+    it; the start's check refuses a value that is neither word."""
+    return flag("PEER_FOLLOWUP_RESOLVED")
+
+
 def peer_lane_query(prompt: str, history=None) -> str:
     """The query this turn's Eco peers are asked, and the one their pieces are
-    ranked against (2026-11-16). A bare follow-up asked of a peer as typed
-    carries no subject - every peer was asked "tell me more" - so the peer
-    lane takes the local lane's resolution, but only as built from the USER'S
-    OWN WORDS: the last substantive user turn re-attached, and the status
-    frame decided on that turn alone. That text was the user's already.
+    ranked against (2026-11-16). `prompt` itself, the same object, unless the
+    operator has turned PEER_FOLLOWUP_RESOLVED on.
 
-    Never assistant text. The 'exchange' shape carries the start of the last
-    answer; an answer is written from any collection the caller may read, and
-    a peer is not held to this instance's clearance. So this resolution reads
-    no shape and no assistant turn: it is the topic shape whatever the key
-    `followup_resolver` says, and under 'exchange' a peer gets the topic
-    shape's query, never the local lane's. Anything the resolver leaves alone
-    - not a bare follow-up, or no substantive earlier user turn - is `prompt`
-    itself, byte for byte. The model, the saved history and the logs keep the
-    user's real words; this is the peer lane's query and nothing else's."""
+    OPT-IN, because a deployer's peers can be third parties. A bare follow-up
+    asked of a peer as typed carries no subject - every peer is asked "tell
+    me more" - and resolving it sends the peers the user's earlier question,
+    which they may never have seen: a question asked with the peers off is
+    still the topic a later follow-up re-attaches. That is for a deployment
+    whose peers are all trusted with what its users ask, and the operator
+    decides it.
+
+    On, the peer lane takes the local lane's resolution, but only as built
+    from the USER'S OWN WORDS: the last substantive user turn re-attached, and
+    the status frame decided on that turn alone. Never assistant text. The
+    'exchange' shape carries the start of the last answer; an answer is
+    written from any collection the caller may read, and a peer is not held
+    to this instance's clearance. So this resolution reads no shape and no
+    assistant turn: it is the topic shape whatever the key
+    `followup_resolver` says. Anything the resolver leaves alone - not a bare
+    follow-up, or no substantive earlier user turn - is `prompt` itself, byte
+    for byte. The model, the saved history and the logs keep the user's real
+    words; this is the peer lane's query and nothing else's."""
+    if not peer_followups_resolved():
+        return prompt
     return resolve_followup(prompt, history, user_words_only=True)

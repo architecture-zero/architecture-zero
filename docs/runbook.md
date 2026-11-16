@@ -966,6 +966,22 @@ keeps from sending anything. Measure it on your own multi-turn questions
 before you keep it: a retrieval-only run with the key unset, then one with it
 set, on the same corpus.
 
+**Eco peers and a follow-up.** All of the above is this instance's own
+retrieval. The registered peers are asked a bare follow-up as the user typed
+it - "tell me more", with no subject - unless the host sets
+`PEER_FOLLOWUP_RESOLVED=true` (an on/off setting, off when unset; the rule at
+the top of `.env.example`). With it on, every peer is asked the follow-up with
+the user's earlier question attached, in the `topic` shape whatever
+`followup_resolver` says: the start of an answer never goes to a peer, since
+an answer can be written from departments that are not the peers' to see. What
+does go is the user's earlier question - including one asked while the peers
+were switched off for that turn, which no peer saw at the time. Turn it on
+only when every registered peer is trusted with what your users ask (your own
+instances, for example), and restart the backend for it to take effect
+(`docker compose up -d`). The peers' pieces are ranked against the same
+query, and the evaluation runner asks its peers the way the chat does, so a
+run measures what the chat serves.
+
 Growing the locked holdout: `backend/scripts/author_holdout.py` has an OUTSIDE
 model read corpus files and draft questions plus grading keys for them, spread
 deterministically across the whole corpus. It writes a JSON array to

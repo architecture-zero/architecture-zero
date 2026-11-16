@@ -895,10 +895,10 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
         _peers_asked = True
         # THE PEER QUERY (2026-11-16): what every peer is asked and what their
         # pieces are ranked against below. routing.peer_lane_query holds the
-        # rule: a bare follow-up is asked with its subject, resolved from the
-        # user's own words only and never from an answer; any other turn is
-        # asked the prompt itself, byte for byte. The model and the saved
-        # history keep request.prompt.
+        # rule: off by default (PEER_FOLLOWUP_RESOLVED), the prompt itself,
+        # byte for byte; switched on, a bare follow-up is asked with its
+        # subject, resolved from the user's own words only and never from an
+        # answer. The model and the saved history keep request.prompt.
         from app.routing import peer_lane_query
         peer_query = peer_lane_query(request.prompt, request.history)
         all_peers = get_peers()

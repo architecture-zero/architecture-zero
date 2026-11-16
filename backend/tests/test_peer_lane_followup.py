@@ -1,5 +1,5 @@
 """The peer lane asks the follow-up the local lane resolves, built from the
-user's own words only (2026-11-16).
+user's own words only - when the operator turns it on (2026-11-16).
 
 A bare follow-up ("tell me more", "current") carries no subject. The local
 lane resolves it (routing.resolve_followup re-attaches the last substantive
@@ -7,23 +7,28 @@ user turn), but the peer lane asked every peer the words as typed and ranked
 what came back against them: a follow-up asked each peer "tell me more", and
 the pieces that came back were noise.
 
-The peer lane now asks routing.peer_lane_query - the query each peer is asked
-AND the one the peers' pieces are ranked against (peer_boundary.select). It is
-the local lane's resolution when that is built from the user's own words: the
-topic shape, the last substantive user turn re-attached, with the status frame
-decided on that turn alone. It is never built from assistant text. The
-'exchange' shape carries the start of the last answer, an answer is written
-from any collection the caller may read, and a peer is not held to this
-instance's clearance - so under that shape a peer gets the topic shape's
-query. A turn the resolver leaves alone asks the peers the prompt itself, byte
-for byte, as before. The model, the saved history and the logs keep the
-user's real words.
+routing.peer_lane_query is the query each peer is asked AND the one the
+peers' pieces are ranked against (peer_boundary.select). It is OPT-IN, behind
+PEER_FOLLOWUP_RESOLVED (a row of app/env_flags.py, off by default): a
+deployer's peers can be third parties, and a resolved follow-up sends them
+the user's earlier question - one asked with the peers off included, which
+they never saw. Off, every peer is asked the prompt itself, byte for byte, as
+before. On, it is the local lane's resolution when that is built from the
+user's own words: the topic shape, the last substantive user turn re-attached,
+with the status frame decided on that turn alone. Never from assistant text:
+the 'exchange' shape carries the start of the last answer, an answer is
+written from any collection the caller may read, and a peer is not held to
+this instance's clearance - so under that shape a peer gets the topic shape's
+query. A turn the resolver leaves alone asks the peers the prompt itself. The
+model, the saved history and the logs keep the user's real words.
 
-FIX tests fail on the commit before, where the peers were asked the prompt as
-typed. CONTROL tests hold on both. The canary tests are CONTROLS on the commit
-before (nothing was resolved for a peer there, so nothing could leak); they
-are the pin that a peer query built from the local lane's resolution - which
-reads the answer under 'exchange' - would fail.
+FIX tests fail on the commit before theirs - the switch's tests on the
+version that resolved for the peers with no switch, the rest on the code that
+asked the peers the prompt as typed. CONTROL tests hold on both. The canary
+tests are CONTROLS on the code before (nothing was resolved for a peer there,
+so nothing could leak); they are the pin that a peer query built from the
+local lane's resolution - which reads the answer under 'exchange' - would
+fail.
 """
 import importlib.util
 import json
@@ -32,6 +37,7 @@ from unittest.mock import patch
 
 import pytest
 
+FLAG = "PEER_FOLLOWUP_RESOLVED"
 USER = "How should a new operator prepare the first knowledge import?"
 ANSWER = "Start with the onboarding guide, then stage the files in a folder."
 PROJECT = "give me a general review of my project"
@@ -39,6 +45,8 @@ HISTORY = [{"role": "user", "content": USER},
            {"role": "assistant", "content": ANSWER}]
 # Text only an assistant turn carries. It must never reach a peer.
 CANARY = "zq-canary-7311-answer-only"
+# A value nobody would type, to prove a refusal does not quote what it read.
+MARKER = "Zq7-peer-flag-pasted-by-mistake"
 
 PEERS = [{"id": "p1", "name": "peer-one", "url": "http://peer-one.test", "enabled": True},
          {"id": "p2", "name": "peer-two", "url": "http://peer-two.test", "enabled": True}]
@@ -60,12 +68,19 @@ BEFORE = _load_before()
 
 
 @pytest.fixture(autouse=True)
-def _latch_shut(monkeypatch):
+def _latch_shut_and_switch_unset(monkeypatch):
     """The 'exchange' shape is live only while the host's hosted-rerank latch
     is shut; every test starts with it shut whatever the machine's environment
-    holds, so a test that sets the key really runs the shape."""
+    holds, so a test that sets the key really runs the shape. And every test
+    starts with the peer switch as a host that never set it."""
     import app.rag_config as latch_home
     monkeypatch.setattr(latch_home, "RERANK_HOSTED_ALLOWED", False)
+    monkeypatch.delenv(FLAG, raising=False)
+
+
+def _on(monkeypatch):
+    """The operator's opt-in."""
+    monkeypatch.setenv(FLAG, "true")
 
 
 def _shape(monkeypatch, value):
@@ -123,7 +138,7 @@ def _asked(seen) -> list:
     return sorted(seen["asked"])
 
 
-# -- FIX: a bare follow-up asks the peers its subject ---------------------------
+# -- THE SWITCH: off by default, the peers asked as before ----------------------
 
 FOLLOW_UPS = [
     ("tell me more", HISTORY, f"{USER} - tell me more"),
@@ -135,22 +150,84 @@ FOLLOW_UPS = [
                  {"role": "assistant", "content": "Here is the review of the build."}],
      f"{PROJECT} - current status"),
 ]
+FOLLOW_UP_IDS = ["tell me more", "padded why", "chained", "status frame"]
 
 
-@pytest.mark.parametrize("prompt, history, want", FOLLOW_UPS,
-                         ids=["tell me more", "padded why", "chained", "status frame"])
+def test_fix_the_switch_is_a_row_of_the_table_and_off_by_default(monkeypatch):
+    from app import env_flags, routing
+    assert FLAG in env_flags.names()
+    assert env_flags.default(FLAG) is False
+    assert routing.peer_followups_resolved() is False
+    monkeypatch.setenv(FLAG, "TRUE")
+    assert routing.peer_followups_resolved() is True
+    monkeypatch.setenv(FLAG, "false")
+    assert routing.peer_followups_resolved() is False
+
+
+@pytest.mark.parametrize("value", [None, "", "false", "FALSE"], ids=repr)
+def test_fix_off_every_peer_is_asked_the_prompt_byte_for_byte(client, admin_headers,
+                                                              monkeypatch, value):
+    """Unset, empty or false: each bare follow-up is asked of every peer as
+    typed, and the peers' pieces are ranked against those words - while the
+    local lane beside them resolves it, as it always has."""
+    if value is not None:
+        monkeypatch.setenv(FLAG, value)
+    for prompt, history, want in FOLLOW_UPS:
+        seen = _turn(client, admin_headers, prompt, history)
+        assert _asked(seen) == [("peer-one", prompt), ("peer-two", prompt)], prompt
+        assert seen["ranked"] == [prompt]
+        assert seen["local"] == [want]
+
+
+@pytest.mark.parametrize("value", [None, "", "false"], ids=repr)
+def test_fix_off_the_peer_query_is_the_prompt_itself(monkeypatch, value):
+    """Not merely equal: the same object, whatever the history and the key."""
+    from app.routing import peer_lane_query
+    if value is not None:
+        monkeypatch.setenv(FLAG, value)
+    for shape in (None, "exchange"):
+        _shape(monkeypatch, shape)
+        for history in TABLE.values():
+            for query in QUERIES:
+                assert peer_lane_query(query, history) is query, (shape, query)
+
+
+@pytest.mark.parametrize("value", ["1", "yes", "on", " true", "true ", '"true"', MARKER])
+def test_fix_a_value_that_is_neither_word_is_refused_and_never_quoted(monkeypatch, value):
+    """The table's rule, as for every other switch: the start refuses (the
+    boot's check reads every row) and so does the read itself, naming the
+    variable and the two words and never the value."""
+    from app import env_flags
+    from app.routing import peer_lane_query
+    monkeypatch.setenv(FLAG, value)
+    for refuse in (env_flags.check_all, lambda: peer_lane_query("tell me more", HISTORY)):
+        with pytest.raises(RuntimeError) as refused:
+            refuse()
+        said = str(refused.value)
+        assert said.startswith(f"SECURITY: {FLAG} ")
+        assert f"{FLAG}=true or {FLAG}=false" in said
+        assert MARKER.lower() not in said.lower()
+
+
+# -- FIX: switched on, a bare follow-up asks the peers its subject ---------------
+
+@pytest.mark.parametrize("prompt, history, want", FOLLOW_UPS, ids=FOLLOW_UP_IDS)
 def test_fix_a_bare_follow_up_asks_every_peer_the_resolved_topic(client, admin_headers,
-                                                                  prompt, history, want):
+                                                                  monkeypatch, prompt,
+                                                                  history, want):
     """Each peer is asked the follow-up with its subject, the peers' pieces are
     ranked against the same words, and they are the words the local lane
     retrieved on (the topic shape is the default)."""
+    _on(monkeypatch)
     seen = _turn(client, admin_headers, prompt, history)
     assert _asked(seen) == [("peer-one", want), ("peer-two", want)]
     assert seen["ranked"] == [want]
     assert seen["local"] == [want]
 
 
-def test_control_the_model_and_the_saved_history_keep_the_users_words(client, admin_headers):
+def test_control_the_model_and_the_saved_history_keep_the_users_words(client, admin_headers,
+                                                                      monkeypatch):
+    _on(monkeypatch)
     seen = _turn(client, admin_headers, "tell me more", HISTORY)
     resolved = f"{USER} - tell me more"
     user_turns = [m for m in seen["messages"] if m.get("role") == "user"]
@@ -179,7 +256,8 @@ UNRESOLVED = [
                               "empty history", "no user turn", "only bare user turns",
                               "too long to be a follow-up"])
 def test_control_a_turn_the_resolver_leaves_alone_asks_the_peers_its_prompt(
-        client, admin_headers, prompt, history):
+        client, admin_headers, monkeypatch, prompt, history):
+    _on(monkeypatch)
     seen = _turn(client, admin_headers, prompt, history)
     assert _asked(seen) == [("peer-one", prompt), ("peer-two", prompt)]
     assert seen["ranked"] == [prompt]
@@ -207,14 +285,17 @@ CANARY_PROMPTS = ["tell me more", "current", "why?", "more"]
 SHAPES = [None, "topic", "exchange", "EXCHANGE ", "bogus"]
 
 
+@pytest.mark.parametrize("switch", ["true", None], ids=["switch on", "switch unset"])
 @pytest.mark.parametrize("shape", SHAPES, ids=repr)
 def test_no_assistant_text_reaches_a_peer_under_any_shape(client, admin_headers,
-                                                          monkeypatch, shape):
+                                                          monkeypatch, shape, switch):
     """Every turn below carries the canary in its assistant turns. No peer is
-    ever asked it, and the peers' pieces are never ranked against it. Under
-    'exchange' the LOCAL lane's query does carry it on every one of these
-    turns - which is what makes the peer side's absence a proof and not an
-    accident of the table."""
+    ever asked it, and the peers' pieces are never ranked against it, with the
+    peer switch on or off. Under 'exchange' the LOCAL lane's query does carry
+    it on every one of these turns - which is what makes the peer side's
+    absence a proof and not an accident of the table."""
+    if switch is not None:
+        monkeypatch.setenv(FLAG, switch)
     _shape(monkeypatch, shape)
     exchange = (shape or "").strip().lower() == "exchange"
     turns = 0
@@ -231,7 +312,7 @@ def test_no_assistant_text_reaches_a_peer_under_any_shape(client, admin_headers,
     assert turns == len(CANARY_HISTORIES) * len(CANARY_PROMPTS) == 16
 
 
-# -- The helper itself (FIX: it did not exist) -----------------------------------
+# -- The helper itself, switched on ------------------------------------------------
 
 TABLE = {
     "none": None,
@@ -256,6 +337,7 @@ def test_fix_the_peer_query_is_the_topic_shape_whatever_the_key_says(client, mon
     every history and query in the table: the same answer, under every value
     of the key - and so never a word of an answer."""
     from app.routing import peer_lane_query, resolve_followup
+    _on(monkeypatch)
     _shape(monkeypatch, shape)
     compared = 0
     for name, history in TABLE.items():
@@ -275,6 +357,7 @@ def test_fix_the_peer_query_reads_no_shape(client, monkeypatch):
     that is never asked for, cannot change what a peer is sent."""
     import app.config
     from app.routing import peer_lane_query
+    _on(monkeypatch)
     reads: list = []
     real = app.config.get_config
     monkeypatch.setattr(app.config, "get_config",
@@ -285,9 +368,10 @@ def test_fix_the_peer_query_reads_no_shape(client, monkeypatch):
     assert "followup_resolver" not in reads
 
 
-def test_fix_an_unresolved_turn_is_the_prompt_itself():
+def test_fix_an_unresolved_turn_is_the_prompt_itself(monkeypatch):
     """Not merely equal: the same object, so nothing about it was rebuilt."""
     from app.routing import peer_lane_query
+    _on(monkeypatch)
     for prompt, history in UNRESOLVED:
         assert peer_lane_query(prompt, history) is prompt, prompt
 
@@ -328,7 +412,17 @@ def _eval_lanes(monkeypatch, run_id, question, setup_turns):
     return local, asked, ranked
 
 
+def test_fix_off_the_eval_replay_asks_its_peers_the_question(client, monkeypatch):
+    """The replay measures what the chat serves: with the switch off, the
+    question as written, while its own local lane resolves."""
+    local, asked, ranked = _eval_lanes(monkeypatch, "peer-followup-eval-off", "tell me more",
+                                       HISTORY)
+    assert asked == ["tell me more"] and ranked == ["tell me more"]
+    assert local == [f"{USER} - tell me more"]
+
+
 def test_fix_the_eval_replay_asks_its_peers_the_resolved_follow_up(client, monkeypatch):
+    _on(monkeypatch)
     local, asked, ranked = _eval_lanes(monkeypatch, "peer-followup-eval", "tell me more",
                                        HISTORY)
     want = f"{USER} - tell me more"
@@ -337,12 +431,14 @@ def test_fix_the_eval_replay_asks_its_peers_the_resolved_follow_up(client, monke
 
 def test_control_the_eval_replay_asks_a_single_turn_question_in_its_own_words(client,
                                                                              monkeypatch):
+    _on(monkeypatch)
     local, asked, ranked = _eval_lanes(monkeypatch, "peer-followup-eval-single",
                                        "tell me more", None)
     assert asked == ["tell me more"] and ranked == ["tell me more"]
 
 
 def test_no_answer_in_a_scripted_turn_reaches_a_peer_of_the_eval_replay(client, monkeypatch):
+    _on(monkeypatch)
     _shape(monkeypatch, "exchange")
     local, asked, ranked = _eval_lanes(monkeypatch, "peer-followup-eval-canary", "tell me more",
                                        CANARY_HISTORIES["an answer after the question"])
