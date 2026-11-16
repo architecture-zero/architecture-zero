@@ -929,6 +929,10 @@ pairs). The run refuses to start while the boot ingest is still embedding,
 so a fresh deploy measures a whole corpus, never a half-ingested one.
 Deeper measurement (A/B arms, noise bands) lives in
 `backend/scripts/eval_retrieval.py` - run it inside the container.
+After any change to a judge rubric prompt, recalibrate before it grades real
+rows: `docker compose exec backend python scripts/judge_calibration.py` runs
+planted pass and fail cases for every rubric (one judge call each) and exits
+non-zero on any miss.
 
 **The follow-up shape.** A message that is only a follow-up - "more",
 "explain", "current" - carries no subject, so retrieval is asked with the last

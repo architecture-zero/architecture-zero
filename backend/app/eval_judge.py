@@ -26,7 +26,9 @@ prompt - the repeated lesson being that emphasis alone never moves a class;
 a stated rule moves exactly its class. Each rule is pinned by planted
 calibration cases (a pass twin and a fail twin carrying the rule's
 load-bearing features), because real rows resist in ways synthetic ones do
-not. Re-run the planted suite whenever a prompt changes.
+not. The planted suite is scripts/judge_calibration.py (one judge call per
+case, so it runs offline, never in the test suite); re-run it whenever a
+prompt changes.
 """
 import datetime
 import json
@@ -375,7 +377,8 @@ _HONESTY_SYSTEM = (
 # specific the key names fails, whatever the framing. The rubric text is
 # shared word for word by every instance running this eval, so a verdict
 # means the same thing everywhere; per the calibration method above, pin both
-# sides with a planted pass twin and fail twin before changing a word of it.
+# sides with a planted pass twin and fail twin (the r-pass-* / r-fail-* cases
+# in scripts/judge_calibration.py) before changing a word of it.
 _RETIRED_SYSTEM = (
     "You are a strict judge of how a RAG assistant handles DELETED "
     "information. The owner removed, on purpose, the documents that used to "
