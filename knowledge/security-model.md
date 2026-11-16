@@ -265,7 +265,15 @@ judged against the seed the account holds when the code is accepted, not
 only the one it held when the request began: a sign-in or a re-key begun
 before a re-key was confirmed, or a confirm begun before a second setup or
 an administrator's reset, carrying a code for the seed that has since been
-replaced, is refused as a wrong code. The record's key holds
+replaced, is refused as a wrong code. A reset that lands after the
+confirm's code was accepted still wins: the reset drops the waiting setup
+before it turns the factor off, and the confirm's write lands only while
+that setup is still there and the account's row is as the confirm read it
+before checking the code, so the confirm answers "start the setup again"
+and the factor stays off. A password change, a sign-out (every session
+goes with it), a refresh token caught being reused and a deactivation drop
+a waiting setup too.
+The record's key holds
 a short digest of the seed, which cannot be turned back into it; no answer
 or log line carries the key - not even when a statement on it fails: the
 database engine leaves the values bound into a statement out of its errors,

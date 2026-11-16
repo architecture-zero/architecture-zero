@@ -47,12 +47,13 @@ from app.security import (check_setup_rate_limit, check_auth_rate_limit,
                           count_totp_attempt, clear_totp_attempts,
                           totp_code_refusal,
                           stage_mfa_seed, staged_mfa_seed, clear_mfa_pending,
-                          mfa_pending_minutes,
+                          mfa_pending_minutes, mfa_pending_key,
                           client_ip_from_request, verify_setup_claim_code,
                           burn_setup_claim_code)
 from app.users import (owner_exists, store_refresh_token,
                        get_refresh_token,
                        revoke_all_user_tokens, get_user_by_id, set_mfa_secret,
+                       mfa_row_state,
                        increment_failed_attempts,
                        reset_failed_attempts, lock_user, unlock_user,
                        list_user_sessions, revoke_refresh_token_by_id,
@@ -464,19 +465,33 @@ def mfa_enable(request: MFAEnableRequest, current_user: dict = Depends(get_curre
     So the attempt counts in the per-account code bound before the code is
     read, and a staged seed may be confirmed only for MFA_PENDING_TTL after
     its setup.
+
+    And an operator's MFA reset wins over a confirm it races. The reset drops
+    the staged seed first, then the factor; the confirm reads the staged seed
+    again after the code's record is written (a reset before that point is a
+    wrong code), and its write is conditional, in one statement, on the row
+    it read before the code was checked and on the staged record still
+    being there - so a reset landing after the code was accepted has
+    dropped the record (and, on an enrolled account, changed the row), the
+    write changes nothing, and the answer is the same 400 to start again.
+    The reset's 200 "MFA disabled" stays true.
     """
     user_id = current_user["id"]
     staged = staged_mfa_seed(user_id)
     if not staged:
-        raise HTTPException(
-            status_code=400,
-            detail="This authenticator setup has expired or was never started. "
-                   "Start the setup again.")
+        raise HTTPException(status_code=400, detail=_SETUP_GONE)
+    # The row as it stands before any code is checked - the raw ciphertext
+    # and the flag, not a decrypted copy. The write below lands only if the
+    # row still holds exactly this.
+    seen = mfa_row_state(user_id)
+    if seen is None:
+        raise HTTPException(status_code=400, detail=_SETUP_GONE)
     count_totp_attempt(user_id)
     # The same helper as every other door, so the code that confirms a setup
     # is recorded as accepted: it is spent, and the first sign-in takes the
     # next one. staged=True: the seed read again after the record's write is
-    # the staged one, so a second setup or a reset meanwhile is a wrong code.
+    # the staged one, so a second setup or a reset before this point is a
+    # wrong code.
     refusal = totp_code_refusal(user_id, staged, request.code, staged=True)
     if refusal:
         # 400, not 401 (2026-10-02): a signed-in client reads a 401 as an
@@ -485,10 +500,22 @@ def mfa_enable(request: MFAEnableRequest, current_user: dict = Depends(get_curre
         # the step-up doors.
         raise HTTPException(status_code=400, detail=refusal)
     clear_totp_attempts(user_id)
-    set_mfa_secret(user_id, staged)
+    if not set_mfa_secret(user_id, staged, if_unchanged=seen,
+                          while_pending=mfa_pending_key(user_id)):
+        # The row changed after it was read: a reset (or another confirm)
+        # landed in between. Nothing is written over it.
+        clear_mfa_pending(user_id)
+        log("auth_mfa_confirm_superseded", user_id=user_id)
+        raise HTTPException(status_code=400, detail=_SETUP_GONE)
     clear_mfa_pending(user_id)
     log("auth_mfa_enabled", user_id=user_id)
     return {"status": "MFA enabled"}
+
+
+# The confirm's one answer for "there is no setup to confirm": never started,
+# expired, cleared, unreadable, or overtaken by a reset.
+_SETUP_GONE = ("This authenticator setup has expired or was never started. "
+               "Start the setup again.")
 
 
 @router.get("/api/auth/sessions")
@@ -539,6 +566,9 @@ def refresh(req: Request):
         ghost = get_refresh_token_any(hash_token(raw_token))
         if ghost and ghost.get("revoked"):
             revoke_all_user_tokens(ghost["user_id"])
+            # A stolen copy is the signal: an authenticator setup waiting
+            # for its confirm goes with the sessions.
+            clear_mfa_pending(ghost["user_id"])
             increment("auth_refresh_reuse_total")
             log("refresh_token_reused", user_id=ghost["user_id"],
                 token_id=ghost["id"])
@@ -572,6 +602,7 @@ def refresh(req: Request):
     if not rotate_refresh_token(hash_token(raw_token), user["id"],
                                 hash_token(new_raw), expires_at):
         revoke_all_user_tokens(user["id"])
+        clear_mfa_pending(user["id"])
         increment("auth_refresh_reuse_total")
         log("refresh_token_reused", user_id=user["id"], token_id=record.get("id"),
             race=True)
@@ -585,6 +616,7 @@ def logout(req: Request, current_user: dict = Depends(get_current_user)):
     auth_header = req.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         revoke_all_user_tokens(current_user["id"])
+        clear_mfa_pending(current_user["id"])
     log("auth_logout", user_id=current_user["id"])
     return {"status": "logged out"}
 
@@ -592,8 +624,12 @@ def logout(req: Request, current_user: dict = Depends(get_current_user)):
 @router.delete("/api/auth/sessions")
 def revoke_sessions(current_user: dict = Depends(get_current_user)):
     """Revoke all active refresh tokens for the current user (sign out
-    everywhere)."""
+    everywhere), and drop an authenticator setup waiting for its confirm:
+    a session that outlives the sign-out (an access token runs out on its
+    own) must not be able to finish a setup the account no longer
+    vouches for."""
     revoke_all_user_tokens(current_user["id"])
+    clear_mfa_pending(current_user["id"])
     log("auth_revoke_sessions", user_id=current_user["id"])
     return {"status": "all sessions revoked"}
 
@@ -668,6 +704,9 @@ def change_password(request: ChangePasswordRequest, current_user: dict = Depends
         raise HTTPException(status_code=400, detail="; ".join(errors))
     update_user_password(current_user["id"], hash_password(request.new_password))
     revoke_all_user_tokens(current_user["id"])
+    # An authenticator setup staged under the old password goes too: whoever
+    # staged it proved a password that no longer opens the account.
+    clear_mfa_pending(current_user["id"])
     log("auth_password_change", user_id=current_user["id"])
     return {"status": "password updated - please sign in again"}
 

@@ -188,6 +188,10 @@ def remove_user(user_id: UserId, current_user: dict = Depends(require_permission
     _refuse_target_above_caller(current_user, row)
     deactivate_user(user_id)
     revoke_all_user_tokens(user_id)
+    # And any authenticator setup waiting for its confirm: a reactivation
+    # inside its window must not find it still confirmable.
+    from app.security import clear_mfa_pending
+    clear_mfa_pending(user_id)
     log("auth_deactivate_user", admin_id=current_user["id"], target_user_id=user_id)
     return {"status": "deactivated"}
 
@@ -400,17 +404,20 @@ def admin_mfa_reset(user_id: UserId, body: MfaResetRequest | None = Body(None),
         raise HTTPException(status_code=403,
                             detail="Only an Owner can reset an Owner's MFA")
     _refuse_target_above_caller(current_user, target)
-    disable_mfa(user_id)
-    # The seed the code count and any pending setup belonged to is gone, so
-    # they go too (2026-10-02) - or the person enrolling again would meet a
-    # cap their old seed filled. The pending record holds a staged seed
-    # (security.stage_mfa_seed), and a reset leaves none behind for the
-    # confirm to turn on. This door removes the seed the count was
-    # against; an unlock leaves the seed where it is, so it never clears the
-    # count.
+    # The staged setup goes FIRST, before the factor: a confirm writes only
+    # while that record is there and the row is as it read it
+    # (users.set_mfa_secret), so a confirm racing this reset cannot switch
+    # the factor back on after the "MFA disabled" below. The pending record
+    # holds a staged seed (security.stage_mfa_seed); a reset leaves none
+    # behind for the confirm to turn on.
     from app.security import clear_totp_attempts, clear_mfa_pending
-    clear_totp_attempts(user_id)
     clear_mfa_pending(user_id)
+    disable_mfa(user_id)
+    # The seed the code count belonged to is gone, so the count goes too
+    # (2026-10-02) - or the person enrolling again would meet a cap their old
+    # seed filled. This door removes the seed the count was against; an
+    # unlock leaves the seed where it is, so it never clears the count.
+    clear_totp_attempts(user_id)
     # The record of accepted codes is not cleared: it is kept per seed, so a
     # new seed meets a fresh one (security._used_code_key).
     log("admin_mfa_reset", admin_id=current_user["id"], target_user_id=user_id,

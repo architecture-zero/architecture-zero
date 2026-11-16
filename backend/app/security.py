@@ -446,6 +446,13 @@ def staged_mfa_seed(user_id: int) -> str | None:
     return seed if readable and seed else None
 
 
+def mfa_pending_key(user_id: int) -> str:
+    """The staged setup's key, for the confirm's conditional write
+    (users.set_mfa_secret's while_pending): the write lands only while this
+    record is there, so a reset that has dropped it wins."""
+    return _pending_key(user_id)
+
+
 def mfa_pending_minutes() -> int:
     """MFA_PENDING_TTL in whole minutes, for the words a person reads."""
     return max(1, MFA_PENDING_TTL // 60)
@@ -569,7 +576,9 @@ def totp_code_refusal(user_id: int, seed: str, code: str, *,
     # for a seed that is no longer stored is a wrong code. At the confirm
     # that is the STAGED seed: a confirm held while a second setup staged
     # another, or while an operator's reset cleared it, must not turn on a
-    # seed that is no longer the one waiting.
+    # seed that is no longer the one waiting. This read sees only what landed
+    # before it; a reset after it is the confirm's conditional write's to
+    # catch (users.set_mfa_secret, if_unchanged and while_pending).
     if not (_still_staged(user_id, seed) if staged else _still_stored(user_id, seed)):
         return CODE_WRONG
     return None

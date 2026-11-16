@@ -219,16 +219,58 @@ def update_user_username(user_id: int, username: str) -> bool:
 
 # ── MFA ──────────────────────────────────────────────────────────────────────
 
-def set_mfa_secret(user_id: int, secret: str):
-    # The confirm's one write: a code from `secret` has just been accepted, so
-    # it becomes the account's live seed AND two-factor is on, in ONE update -
-    # never a moment with the new seed stored and the factor off. Setup
-    # writes nothing here; it stages the seed (security.stage_mfa_seed) until
-    # this confirm. Encrypted at rest - the column must never hold a mintable
-    # seed in the clear.
+def mfa_row_state(user_id: int) -> tuple[str | None, bool] | None:
+    """The account's factor as it is stored: the raw mfa_secret column
+    (ciphertext, never decrypted here) and mfa_enabled - or None when no row
+    has the id. The confirm reads this before it checks a code and hands it
+    back to set_mfa_secret, which writes only if the row still holds exactly
+    this."""
     with get_session() as db:
-        db.query(User).filter(User.id == user_id).update(
-            {"mfa_secret": encrypt_at_rest(secret), "mfa_enabled": True})
+        row = (db.query(User.mfa_secret, User.mfa_enabled)
+                 .filter(User.id == user_id).first())
+        return None if row is None else (row[0], bool(row[1]))
+
+
+def set_mfa_secret(user_id: int, secret: str, *,
+                   if_unchanged: tuple[str | None, bool] | None = None,
+                   while_pending: str | None = None) -> bool:
+    """The confirm's one write: a code from `secret` has just been accepted,
+    so it becomes the account's live seed AND two-factor is on, in ONE update
+    - never a moment with the new seed stored and the factor off. Setup
+    writes nothing here; it stages the seed (security.stage_mfa_seed) until
+    this confirm. Encrypted at rest - the column must never hold a mintable
+    seed in the clear.
+
+    `if_unchanged` is the (raw mfa_secret, mfa_enabled) pair mfa_row_state
+    read before the code was checked. With it the write is conditional - the
+    database decides, in the same statement - and True only if the row still
+    held that pair: an operator's MFA reset that landed after the code was
+    accepted has changed the row, and the confirm must not switch the factor
+    back on over it. Without it (test fixtures) the write is plain.
+
+    `while_pending` is the staged setup's key in the security state table.
+    With it the same statement also requires that record to be there and
+    unexpired. A reset drops that record before it touches the factor, so a
+    reset that has begun is seen here even when it would leave the row as it
+    was - an account that never had a factor reads (no seed, off) before a
+    reset and after it, which the row's pair alone cannot tell apart."""
+    import time
+    from sqlalchemy import exists, select, update
+    from app.models import SecurityState
+    stmt = update(User).where(User.id == user_id)
+    if if_unchanged is not None:
+        seen_secret, seen_enabled = if_unchanged
+        stmt = stmt.where(User.mfa_secret.is_(None) if seen_secret is None
+                          else User.mfa_secret == seen_secret,
+                          User.mfa_enabled == seen_enabled)
+    if while_pending is not None:
+        stmt = stmt.where(exists(select(SecurityState.key).where(
+            SecurityState.key == while_pending,
+            SecurityState.expires_at > time.time())))
+    with get_session() as db:
+        changed = db.execute(stmt.values(
+            {"mfa_secret": encrypt_at_rest(secret), "mfa_enabled": True})).rowcount
+    return changed == 1
 
 
 def disable_mfa(user_id: int):

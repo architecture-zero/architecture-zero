@@ -33,11 +33,18 @@ FIX (each fails on the routes as they were):
   - a code of the staged seed opens no door but the confirm: not the
     sign-in, not the re-key's code step-up, not the own-account unlock
   - the staged seed is stored encrypted, never as the key itself
+FIX, the security read of this change (each fails on its first version):
+  - an operator's MFA reset that lands after the confirm's code was accepted
+    and before its write wins: the reset's "MFA disabled" stays true and the
+    confirm answers "start the setup again" - on a re-key, and on a first
+    enrollment, where the reset leaves the row as it found it
+  - a password change, a sign-out of every session, a sign-out, a refresh
+    token caught being reused and a deactivation each drop a staged setup
 CONTROL (true before and after):
   - a second setup replaces the staged seed: the first one's code is refused
     and the second one's turns it on
-  - the admin reset drops a staged seed, and a confirm held across the reset
-    turns nothing on
+  - the admin reset drops a staged seed, and a confirm held at its code's
+    match across the reset turns nothing on
   - no log line carries the staged seed
 
 Throwaway accounts of its own, driven through the app's routes; the three
@@ -360,8 +367,12 @@ def test_control_the_admin_reset_drops_a_staged_seed(client, accounts):
     assert row["mfa_enabled"] is False and row["mfa_secret"] is None
 
 
-def test_control_a_confirm_held_across_an_admin_reset_turns_nothing_on(
+def test_control_a_confirm_held_at_its_codes_match_across_an_admin_reset_turns_nothing_on(
         client, accounts, monkeypatch):
+    """Held after the code matched and before its record is written: the
+    reset lands there, the staged seed's re-read finds it gone, and the code
+    is a wrong code. (A reset landing later, at the write, is the FIX case
+    below.)"""
     top, someone = accounts(TOP), accounts(mfa=False)
     r = _enroll(client, someone)
     assert r.status_code == 200, r.text
@@ -393,6 +404,110 @@ def test_control_a_confirm_held_across_an_admin_reset_turns_nothing_on(
     assert confirm.status_code == 400 and confirm.json() == {"detail": WRONG}, confirm.text
     row = _row(someone)
     assert row["mfa_enabled"] is False and row["mfa_secret"] is None
+
+
+# -- FIX: the security read of this change ------------------------------------
+
+def _hold_the_confirms_write(monkeypatch):
+    """The confirm is held as it is about to write - its code accepted, the
+    staged seed re-read - until `release` is set."""
+    import app.routers.auth as auth_router
+    at_write, release = threading.Event(), threading.Event()
+    real = auth_router.set_mfa_secret
+
+    def held(*args, **kwargs):
+        at_write.set()
+        release.wait(20)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(auth_router, "set_mfa_secret", held)
+    return at_write, release
+
+
+@pytest.mark.parametrize("enrolled", [True, False], ids=["a re-key", "a first enrollment"])
+def test_a_reset_landing_at_the_confirms_write_wins(client, accounts, monkeypatch, enrolled):
+    top, someone = accounts(TOP), accounts(mfa=enrolled)
+    r = (_rekey(client, someone, _code(someone["seed"], -1)) if enrolled
+         else _enroll(client, someone))
+    assert r.status_code == 200, r.text
+    new = r.json()["secret"]
+    at_write, release = _hold_the_confirms_write(monkeypatch)
+    box = {}
+    thread = threading.Thread(target=lambda: box.setdefault(
+        "answer", _confirm(client, someone, _code(new, 0))), daemon=True)
+    thread.start()
+    try:
+        assert at_write.wait(20), "the confirm never reached its write"
+        reset = client.post(f"/api/admin/users/{someone['id']}/mfa-reset",
+                            headers=top["headers"], json={"current_password": PW})
+    finally:
+        release.set()
+    thread.join(30)
+    assert reset.status_code == 200 and reset.json() == {"status": "MFA disabled"}, reset.text
+    confirm = box["answer"]
+    assert confirm.status_code == 400 and "start the setup again" in confirm.json()["detail"].lower(), \
+        f"the confirm wrote over the reset: {confirm.status_code} {confirm.text}"
+    row = _row(someone)
+    assert row["mfa_enabled"] is False and row["mfa_secret"] is None, \
+        "the factor is on after the reset said it was off"
+
+
+def _change_password(client, account):
+    return client.patch("/api/auth/me/password", headers=account["headers"],
+                        json={"current_password": PW, "new_password": PW + "2"})
+
+
+def _revoke_sessions(client, account):
+    return client.delete("/api/auth/sessions", headers=account["headers"])
+
+
+def _sign_out(client, account):
+    return client.post("/api/auth/logout", headers=account["headers"])
+
+
+@pytest.mark.parametrize("act", [_change_password, _revoke_sessions, _sign_out],
+                         ids=["a password change", "a sign-out of every session", "a sign-out"])
+def test_the_accounts_own_security_actions_drop_a_staged_setup(client, accounts, act):
+    someone = accounts()
+    old = someone["seed"]
+    r = _rekey(client, someone, _code(old, -1))
+    assert r.status_code == 200, r.text
+    new = r.json()["secret"]
+    r = act(client, someone)
+    assert r.status_code == 200, r.text
+    assert f"mfa_pending:{someone['id']}" not in state_store.keys("mfa_pending:"), \
+        "the staged setup survived"
+    r = _confirm(client, someone, _code(new, 0))
+    assert r.status_code != 200, r.text
+    if r.status_code == 400:
+        assert "start the setup again" in r.json()["detail"].lower(), r.text
+    row = _row(someone)
+    assert row["mfa_enabled"] is True and row["mfa_secret"] == old
+
+
+def test_a_reused_refresh_token_drops_a_staged_setup(client, accounts):
+    someone = accounts(mfa=False)
+    r = client.post("/api/auth/login", json={"username": someone["name"], "password": PW})
+    assert r.status_code == 200 and r.json().get("refresh_token"), r.text
+    first = r.json()["refresh_token"]
+    r = _enroll(client, someone)
+    assert r.status_code == 200, r.text
+    r = client.post("/api/auth/refresh", headers={"Authorization": f"Bearer {first}"})
+    assert r.status_code == 200, r.text
+    r = client.post("/api/auth/refresh", headers={"Authorization": f"Bearer {first}"})
+    assert r.status_code == 401, r.text
+    assert f"mfa_pending:{someone['id']}" not in state_store.keys("mfa_pending:"), \
+        "the staged setup survived a stolen copy's signal"
+
+
+def test_a_deactivation_drops_a_staged_setup(client, accounts):
+    top, someone = accounts(TOP), accounts()
+    r = _rekey(client, someone, _code(someone["seed"], -1))
+    assert r.status_code == 200, r.text
+    r = client.delete(f"/api/users/{someone['id']}", headers=top["headers"])
+    assert r.status_code == 200, r.text
+    assert f"mfa_pending:{someone['id']}" not in state_store.keys("mfa_pending:"), \
+        "the staged setup survived the deactivation"
 
 
 def test_control_no_log_line_carries_the_staged_seed(client, accounts, monkeypatch):
