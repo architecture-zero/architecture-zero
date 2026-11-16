@@ -6,10 +6,17 @@ not as a substitute for legal compliance review.
 """
 import re
 
+# The email's local part is at most 64 characters, RFC 5321's limit
+# (2026-11-15). As `+` it read from every word boundary in a
+# run of address characters to the run's end, so `a.a.a...` cost n * n steps
+# in one regex call - minutes for a large ingest, with the interpreter lock
+# held. A run over 64 characters before an @ is no address in full: one word is
+# not matched, a dotted run is matched from its last 64 characters.
+# tests/test_pii_email_linear.py pins the cost and the old form's matches.
 _PATTERNS: dict[str, re.Pattern] = {
     "SSN":         re.compile(r'\b\d{3}-\d{2}-\d{4}\b'),
     "credit_card": re.compile(r'\b(?:\d{4}[\s\-]?){3}\d{4}\b'),
-    "email":       re.compile(r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b'),
+    "email":       re.compile(r'\b[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b'),
     "phone":       re.compile(r'\b(\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]\d{4}\b'),
     "IP_address":  re.compile(r'\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b'),
 }

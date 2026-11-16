@@ -21,8 +21,10 @@ share (single add_document writes and the batched path), so a connector
 module cannot walk around it: any future ingestion path inherits the gate by
 construction. Framing at retrieval is format_context (rerank.py).
 """
+import multiprocessing
 import os
 import re
+from concurrent.futures import ProcessPoolExecutor
 
 from app.rag_config import UNTRUSTED_TIERS
 
@@ -368,7 +370,42 @@ def _fold_wrapped(text: str) -> str:
     return "".join(out)
 
 
+# A LARGE TEXT IS READ IN A CHILD PROCESS (2026-11-15). Each rule is one regex search over the whole text, and a search
+# holds the interpreter lock until it returns, so while scan() read a large
+# text every other thread of the backend - chat, sign-in, health - waited.
+# Measured on one workstation: an ingest or upload of 5 MB shaped to slow the
+# exfiltration rule held the lock for 5.6 s at a time (18 s in all), ordinary
+# prose 0.14 s; both grow with the size. Above SCAN_IN_CHILD_ABOVE characters
+# the same function reads the same text in a process of its own, started for
+# that scan and gone after it, so the verdict is the in-process one and
+# nothing else waits on it. 200,000: the largest text read in process costs
+# other threads at most about 0.2 s on the slowest shape. A child that cannot start or dies raises
+# here, and every caller already fails closed on a scan that raises - nothing
+# is indexed - so a scan that did not run is never read as clean.
+# tests/test_scan_large_text_in_child.py pins the stall and the verdict.
+SCAN_IN_CHILD_ABOVE = 200_000
+
+
 def scan(text: str) -> list[dict]:
+    """Return [{type, severity}] for every injection-shaped signal in `text` -
+    read in a child process above SCAN_IN_CHILD_ABOVE characters (above),
+    in this one otherwise; the verdict is the same either way."""
+    if text and len(text) > SCAN_IN_CHILD_ABOVE:
+        return _scan_in_child(text)
+    return _scan(text)
+
+
+def _scan_in_child(text: str) -> list[dict]:
+    # spawn, never fork: the backend runs threads (the server, the store's
+    # client), and a forked child of a threaded process can inherit a lock
+    # some other thread held. A spawned child imports this module and what it
+    # imports (rag_config, env_flags) and nothing else.
+    ctx = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=1, mp_context=ctx) as pool:
+        return pool.submit(_scan, text).result()
+
+
+def _scan(text: str) -> list[dict]:
     """Return [{type, severity}] for every injection-shaped signal in `text`.
 
     Deduplicated by (type, severity), and a HIGH finding suppresses the same
