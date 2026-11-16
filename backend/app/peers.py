@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 import requests as _req
 from app.config import get_config, set_config
 from app.env_flags import flag
+from app.routing import _clip_for_a_peer
 
 log = logging.getLogger(__name__)
 
@@ -30,6 +31,24 @@ _CB_BACKOFF_SECONDS = int(os.getenv("PEER_CIRCUIT_BREAKER_BACKOFF", "300"))
 # hand this instance a body of any size, slowly. Eight pieces come to about
 # 12 KB; a megabyte is a ceiling, not a figure to tune toward. 0 switches it off.
 PEER_MAX_RESPONSE_BYTES = int(os.getenv("PEER_MAX_RESPONSE_BYTES", str(1024 * 1024)))
+
+# The most of a question a peer is asked, and the most of one a peer reads
+# (2026-11-16): PEER_QUERY_MAX_BYTES of its UTF-8, the head kept, cut back to a
+# whole word. A chat prompt can be 200,000 characters, and it went to every
+# peer whole - in a URL, where past nginx's 8k request line it was a 414 and
+# enough of those opened the peer's breaker for every caller. The question
+# rides a POST body now, which has room, but a peer question is a retrieval
+# query, not a document: the asker clips before it sends, by either method,
+# and the door clips what it is handed, by either method. A clamp, never a
+# refusal - the door answers an oversized n the same way. The head, because
+# a resolved follow-up puts its topic first (app/routing.py, peer_lane_query).
+PEER_QUERY_MAX_BYTES = 8000
+
+
+def clip_peer_query(query: str) -> str:
+    """`query` cut to PEER_QUERY_MAX_BYTES of UTF-8 at a word, the head kept:
+    the one rule the asker (query_peer_kb) and the door both apply."""
+    return _clip_for_a_peer(query, PEER_QUERY_MAX_BYTES)
 
 
 class PeerResponseTooLarge(Exception):
@@ -194,7 +213,7 @@ def _read_bounded(resp, max_bytes: int, deadline: float) -> None:
 
 def _pinned_request(method: str, url: str, ip: str | None, *, timeout: float,
                     headers: dict | None = None, params: dict | None = None,
-                    max_bytes: int | None = None):
+                    json_body: dict | None = None, max_bytes: int | None = None):
     """Send `method url` over a connection to `ip` - the address
     resolve_peer_url validated for its hostname - with no second DNS lookup
     anywhere: the URL sent down the socket carries the IP literal, the Host
@@ -205,6 +224,10 @@ def _pinned_request(method: str, url: str, ip: str | None, *, timeout: float,
     to run without an address - a request this module did not pin is a
     request this module does not make. The caller closes the response with
     _release (the Session behind it owns the pooled connection).
+
+    `json_body` (2026-11-16) is sent as the request's JSON body - the peer
+    question rides there, not in the URL (query_peer_kb). The pinning, the
+    no-redirect rule and the bounded read are the same for it.
 
     The body is read HERE, bounded (since 2026-09-30): at most `max_bytes`
     (PEER_MAX_RESPONSE_BYTES by default)
@@ -228,7 +251,7 @@ def _pinned_request(method: str, url: str, ip: str | None, *, timeout: float,
     deadline = time.monotonic() + max(float(timeout), 1.0) * 2
     resp = None
     try:
-        resp = session.request(method, pinned, headers=hdrs, params=params,
+        resp = session.request(method, pinned, headers=hdrs, params=params, json=json_body,
                                timeout=timeout, allow_redirects=False, stream=True)
         _read_bounded(resp, cap, deadline)
     except Exception:
@@ -405,19 +428,35 @@ def query_peer_kb(peer: dict, query: str, n_results: int = 8, timeout: int = 10)
 
     headers = {"X-Peer-Key": _PEER_API_KEY} if _PEER_API_KEY else {}
     # THE QUESTION STAYS OUT OF EVERY LOG LINE AND FAILURE RECORD HERE
-    # (2026-10-02). It rides in this request's URL as `q`, and a failed
+    # (2026-10-02). On the GET below it rides in the URL as `q`, and a failed
     # connection's message quotes that URL - so a failure records the KIND of
     # error and the status where there was one, never the library's own
     # message. The breaker's last_error is shown on the admin's peer panel;
     # this line used to log the first 80 characters of every question at INFO
     # as well.
     log.info("Querying peer '%s' at %s/api/query-kb (n=%d)", name, url, n_results)
+    # THE QUESTION RIDES A POST BODY (2026-11-16), not the URL: every hop that
+    # logs a request line - the peer's server, every proxy in front of it, and
+    # a proxy's error log, which quotes the line on every upstream failure -
+    # kept the question when it was `?q=`. An older peer serves GET only and
+    # answers a keyed POST with 405 (its key check admits the path, its router
+    # has no POST): that peer, and only on a 405, is asked once more by GET,
+    # and the 405 is not a failure - the retry's outcome is what the breaker
+    # records. Nothing else falls back: a 401, a 403, a 5xx or a timeout is
+    # that peer's answer. Upgrade every peer to keep questions out of URLs.
+    asked = {"q": clip_peer_query(query), "n": n_results}
     t0 = time.monotonic()
     resp = None
     try:
-        resp = _pinned_request("GET", f"{url}/api/query-kb", ip,
-                               params={"q": query, "n": n_results},
-                               headers=headers, timeout=timeout)
+        resp = _pinned_request("POST", f"{url}/api/query-kb", ip,
+                               json_body=asked, headers=headers, timeout=timeout)
+        if resp.status_code == 405:
+            _release(resp)
+            resp = None
+            log.info("Peer '%s' does not take a POST (405) - asking it by GET, an older peer",
+                     name)
+            resp = _pinned_request("GET", f"{url}/api/query-kb", ip,
+                                   params=asked, headers=headers, timeout=timeout)
         if 300 <= resp.status_code < 400:
             # Never followed: a redirect to a NAME would be a second, unpinned
             # resolution. The operator registers the final URL instead.

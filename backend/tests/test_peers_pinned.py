@@ -92,8 +92,9 @@ def test_query_connects_to_the_validated_address_not_the_name(monkeypatch, recor
     assert [c["peer"] for c in out] == ["Peer One"]
     assert len(sent) == 1
     pool_kw, req = sent[0]
-    assert req.url.startswith(f"https://{PUBLIC}/api/query-kb?")   # the socket goes to the IP
-    assert "q=what+is+up" in req.url and "n=3" in req.url
+    assert req.url == f"https://{PUBLIC}/api/query-kb"             # the socket goes to the IP
+    # The question rides the body, not the URL (2026-11-16).
+    assert req.method == "POST" and json.loads(req.body) == {"q": "what is up", "n": 3}
     assert req.headers["Host"] == "peer.example.com"                # the peer sees its name
     assert pool_kw["server_hostname"] == "peer.example.com"         # TLS SNI is the name
     assert pool_kw["assert_hostname"] == "peer.example.com"         # the cert must match it

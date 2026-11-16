@@ -40,8 +40,11 @@ PUBLIC_BY_DESIGN = {
     ("POST", "/api/auth/setup"),          # refuses once an Owner exists
     # Peer federation serve: gated by X-Peer-Key middleware when
     # ECO_EXPOSE_KB=true, and the route itself 403s without a peer scope
-    # stamp - sealed even with the middleware off (tested below).
+    # stamp - sealed even with the middleware off (tested below). The POST
+    # (2026-11-16) is the same door with the question in the body: the same
+    # middleware gate, by path, and the same handler behind it.
     ("GET", "/api/query-kb"),
+    ("POST", "/api/query-kb"),
     # Liveness + version: monitoring probes carry no JWT.
     ("GET", "/"),
     ("GET", "/api/version"),
@@ -134,6 +137,7 @@ def test_query_kb_fails_closed_without_a_peer_scope(client):
     the route refuses - defense in depth, same posture as every other
     public-by-design entry documenting its own gate."""
     assert client.get("/api/query-kb", params={"q": "anything"}).status_code == 403
+    assert client.post("/api/query-kb", json={"q": "anything"}).status_code == 403
 
 
 # ── The privilege LEVEL, not just "is it protected" ──────────────────────────
@@ -270,6 +274,7 @@ REQUIRED_GUARD = {
     ("PATCH", "/api/peers/{peer_id}"): "require_owner",
     ("POST", "/api/peers/{peer_id}/reset-breaker"): "require_owner",
     ("GET", "/api/query-kb"): "public",
+    ("POST", "/api/query-kb"): "public",
     ("GET", "/api/sessions"): "require_permission:view_analytics",
     # The caller's OWN sessions - deliberately a LOWER tier than the
     # all_users operator view above. The chat sidebar reads this one; a
@@ -462,8 +467,9 @@ def test_the_pin_covers_every_route():
     silently fails to register would shrink this number with nothing else in
     the suite noticing."""
     # 99 since 2026-09-21: GET /api/help/page, the in-product help's page read.
-    assert len(_actual_guards()) == 99, (
-        f"expected 99 routes, found {len(_actual_guards())} - a router failed "
+    # 100 since 2026-11-16: POST /api/query-kb, the peer question in a body.
+    assert len(_actual_guards()) == 100, (
+        f"expected 100 routes, found {len(_actual_guards())} - a router failed "
         "to register, or routes were added without updating this count")
 
 

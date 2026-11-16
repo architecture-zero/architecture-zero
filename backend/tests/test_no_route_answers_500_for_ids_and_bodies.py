@@ -506,6 +506,9 @@ _NUMBERS_AND_LOOSE = {
     ("POST", "/api/chat", "history"):
         "NOT WALKED: a list of a schema of its own, so a wrong entry is the schema's 422; "
         "a right one would start a real turn",
+    ("POST", "/api/query-kb", "n"):
+        "the peer door's n, answered with the bound and never stored: "
+        "test_peer_query_by_post.py drives it past the range",
 }
 
 # Routes whose body is neither a schema nor a plain object.

@@ -44,7 +44,7 @@ from app.history import (save_message, load_history,
 from app.jwt_auth import check_permission, require_permission, within_stored_range
 from app.logger import log, log_error
 from app.metrics import increment, record_request
-from app.peers import get_peers, query_peer_kb
+from app.peers import clip_peer_query, get_peers, query_peer_kb
 from app.permissions import MEMBER_LEVEL
 from app.providers import (stream_chat_events, non_stream_tool_call, supports_tools,
                            _provider_for_model, offered_providers,
@@ -254,6 +254,11 @@ def query_kb_for_peer(req: Request, q: str, n: int = Query(8)):
     it stamps request.state.peer_scope; this route fails closed without the
     stamp, so it is sealed even if the middleware is off.
 
+    By GET with the question in the URL, or by POST with it in the body
+    (query_kb_for_peer_by_post, 2026-11-16). Either way the question is held
+    to PEER_QUERY_MAX_BYTES (app/peers.py, clip_peer_query) - clipped at a
+    word, never refused, the same rule as n.
+
     CLEARANCE: the scope is a rung on the access ladder (permissions.
     PEER_SCOPE_LEVELS), and departments are filtered by the SAME
     department_min_level() every other retrieval surface uses. 'public' serves
@@ -275,6 +280,7 @@ def query_kb_for_peer(req: Request, q: str, n: int = Query(8)):
         raise HTTPException(status_code=403,
                             detail="Peer KB serving is not enabled on this instance.")
     n = max(1, min(n, _query_kb_max_results()))
+    q = clip_peer_query(q)
     departments = [d for d in list_departments()
                    if d != "general" and department_min_level(d) <= level]
     try:
@@ -305,6 +311,26 @@ def query_kb_for_peer(req: Request, q: str, n: int = Query(8)):
     # not a peer's to read.
     return {"results": [{k: v for k, v in r.items() if k != "collection"}
                         if isinstance(r, dict) else r for r in results]}
+
+
+class PeerQuery(BaseModel):
+    """A peer's question by POST (2026-11-16): the same two fields the GET
+    takes in its URL. A field this door does not know is ignored, not
+    refused - a newer asker may send more."""
+    q: str
+    n: int = 8
+
+
+@router.post("/api/query-kb")
+def query_kb_for_peer_by_post(req: Request, body: PeerQuery):
+    """The same door by POST, the question in the JSON body (2026-11-16): a
+    question in a URL is kept by every hop that logs a request line, this
+    instance's access log and every proxy's included. One handler serves both
+    methods - query_kb_for_peer above, with its scope check, its fail-closed
+    403, its bound on n and its answer's shape. The GET stays for older
+    askers. The peer-key middleware gates the PATH, so a POST meets the same
+    X-Peer-Key check as a GET."""
+    return query_kb_for_peer(req, body.q, body.n)
 
 
 # The history routes ask for the scope the taxonomy names for them (AZ-03,

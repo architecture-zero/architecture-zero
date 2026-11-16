@@ -345,6 +345,16 @@ Since v0.1.x, for a script or a client of your own:
   pieces for one question, and never more than this instance's own chat
   fetches in a turn: an `n` above that is answered with that many, and one
   below 1 with one. It used to answer 422 for either.
+- The same door also takes `POST /api/query-kb` with a JSON body,
+  `{"q": "...", "n": 8}`, and this instance asks its own peers that way:
+  the question rides the body, not the URL, so no web server's access log
+  and no proxy's log keeps it. The same `X-Peer-Key` check, the same bound
+  on `n` and the same answer as the GET; a body field the door does not
+  know is ignored. A peer that answers the POST with 405 is an older
+  instance: it is asked once more by GET, with the question in the URL, so
+  upgrade every peer to keep questions out of URLs. Either way the question
+  is held to its first 8,000 bytes (UTF-8), cut at a word - by the asker
+  before it sends and by the door on what it is handed, never refused.
 - An authenticator code is accepted once per account, at whichever route
   it is sent: `POST /api/auth/mfa/complete`, the `mfa_code` of a re-key
   (`POST /api/auth/mfa/setup`) and of the caller's own unlock, and
@@ -981,9 +991,11 @@ the user's earlier question attached, in the `topic` shape whatever
 an answer can be written from departments that are not the peers' to see. What
 does go is the user's earlier question - including one asked while the peers
 were switched off for that turn, which no peer saw at the time. The question
-rides the peer request's query string, so each peer's web server also writes
-it into its own access log. At most its first 1,000 bytes are attached, cut
-at a word, so a long question cannot push the request past a peer's limit.
+rides the peer request's body; a peer that answers 405 is an older instance,
+asked once more with the question in its URL, where that peer's web server
+writes it into its access log - upgrade every peer to keep questions out of
+URLs. At most the earlier question's first 1,000 bytes are attached, cut at a
+word, so a long question cannot push that URL past a peer's limit.
 Turn it on only when every registered peer is trusted with what your users
 ask (your own instances, for example). A changed value takes effect only
 when the backend container is recreated (`docker compose up -d`; a plain
