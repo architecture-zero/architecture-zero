@@ -505,9 +505,9 @@ export default function App() {
     setCurrentUser(u => u ? { ...u, username: newUsername } : u)
   }
 
-  // The account screen turned two-factor on, or began replacing the
-  // authenticator (off until the new one is confirmed). The signed-in
-  // account held here follows, so nothing waits for a reload to be true.
+  // The account screen turned two-factor on, or read the account and found
+  // it changed. The signed-in account held here follows, so nothing waits
+  // for a reload to be true.
   const handleMfaChange = (enabled: boolean) => {
     setCurrentUser(u => u ? { ...u, mfa_enabled: enabled } : u)
   }

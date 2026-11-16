@@ -57,6 +57,15 @@ def test_enrollment_stores_ciphertext_and_still_verifies(client, probe):
                     json={"current_password": _USER["password"]})
     assert r.status_code == 200, r.text
     secret = r.json()["secret"]
+    # Setup stages the seed and writes nothing to the column (2026-11-15);
+    # the confirm is the write, so the column is read after it.
+    assert _raw_column(probe["id"]) is None
+
+    # The whole flow end to end: prove possession, enable.
+    code = pyotp.TOTP(secret).now()
+    r = client.post("/api/auth/mfa/enable", headers=probe["headers"],
+                    json={"code": code})
+    assert r.status_code == 200, r.text
 
     raw = _raw_column(probe["id"])
     assert raw != secret, "the seed reached the column IN THE CLEAR"
@@ -64,29 +73,23 @@ def test_enrollment_stores_ciphertext_and_still_verifies(client, probe):
     # The read seam hands consumers the real seed.
     assert get_user_by_id(probe["id"])["mfa_secret"] == secret
 
-    # And the whole flow still works end to end: prove possession, enable.
-    code = pyotp.TOTP(secret).now()
-    r = client.post("/api/auth/mfa/enable", headers=probe["headers"],
-                    json={"code": code})
-    assert r.status_code == 200, r.text
-
 
 def test_legacy_plaintext_row_still_verifies(client, probe):
     """A pre-encryption row (or restored backup) must keep working - the
-    passthrough is deliberate, not an accident to fix later."""
+    passthrough is deliberate, not an accident to fix later. Read at the
+    sign-in since 2026-11-15: the confirm checks only a staged seed, so the
+    live column's reader is the door that proves the passthrough."""
     legacy_seed = pyotp.random_base32()
     with get_session() as db:
         db.query(User).filter(User.id == probe["id"]).update(
-            {"mfa_secret": legacy_seed, "mfa_enabled": False})
+            {"mfa_secret": legacy_seed, "mfa_enabled": True})
     assert get_user_by_id(probe["id"])["mfa_secret"] == legacy_seed
-    # Setup marks a seed pending for MFA_PENDING_TTL (2026-10-02); this row
-    # was written straight to the column, so mark it as setup would.
-    from app.security import mark_mfa_pending
-    mark_mfa_pending(probe["id"])
-    code = pyotp.TOTP(legacy_seed).now()
-    r = client.post("/api/auth/mfa/enable", headers=probe["headers"],
-                    json={"code": code})
-    assert r.status_code == 200, r.text
+    r = client.post("/api/auth/login", json=_USER)
+    assert r.status_code == 200 and r.json().get("mfa_required"), r.text
+    r = client.post("/api/auth/mfa/complete",
+                    json={"mfa_token": r.json()["mfa_token"],
+                          "code": pyotp.TOTP(legacy_seed).now()})
+    assert r.status_code == 200 and r.json()["access_token"], r.text
 
 
 def test_boot_sweep_converges_legacy_rows_idempotently(client, probe):

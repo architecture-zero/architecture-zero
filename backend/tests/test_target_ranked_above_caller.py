@@ -20,8 +20,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app.users import (enable_mfa, get_user_by_id, get_user_by_id_any_status,
-                       get_user_by_username, lock_user)
+from app.users import (get_user_by_id, get_user_by_id_any_status,
+                       get_user_by_username, lock_user, set_mfa_secret)
+
+# A second factor on, as the confirm leaves it: the seed and mfa_enabled in
+# one write (users.set_mfa_secret; the separate enable step went with the
+# staged setup).
+_SEED = "JBSWY3DPEHPK3PXP"
 
 OWNER_PW = "AdminPass1"
 _PW = "RankAbove1"
@@ -62,7 +67,7 @@ def _prepared_target(client, admin_headers, role):
     """A target with a second factor on and a sign-in lock in place, so the
     MFA reset and the unlock each have something to change."""
     uid, _ = _create(client, admin_headers, role)
-    enable_mfa(uid)
+    set_mfa_secret(uid, _SEED)
     lock_user(uid, (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat())
     return uid
 
@@ -134,7 +139,7 @@ def test_control_an_admin_acts_on_its_own_rank_and_below(
 
 def test_control_the_self_service_second_factor_reset_is_unchanged(client, member_manager):
     uid, actor = member_manager
-    enable_mfa(uid)
+    set_mfa_secret(uid, _SEED)
     r = client.post(f"/api/admin/users/{uid}/mfa-reset", headers=actor,
                     json={"current_password": _PW})
     assert r.status_code == 200, r.text

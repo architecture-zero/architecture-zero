@@ -50,7 +50,10 @@ PREFIX = "gAAAAA"   # every Fernet token starts this way (version byte 0x80)
 # enumerated from the WRITERS in app/ (encrypt_at_rest / encrypt_secret).
 # (table, key column, value column, key-suffix filter or None). Keep this in
 # step with the app: a tenant missing here is a row that stays unreadable
-# after a rotation, silently.
+# after a rotation, silently. One writer is left out on purpose: the
+# authenticator seed a setup stages in security_state (security.stage_mfa_seed)
+# lives at most MFA_PENDING_TTL, and one that cannot be read after a rotation
+# is answered "start the setup again" - not silent, and nothing is lost.
 TENANTS = {
     "JWT_SECRET_KEY": [
         ("users", "id", "mfa_secret", None),          # the MFA TOTP seed

@@ -69,9 +69,12 @@ Particularly interesting, because these are where the interesting failures live:
   one write before the code is read (`TOTP_MAX_FAILURES` per
   `TOTP_FAILURE_WINDOW`; only a right code or an operator's MFA reset clears
   the count, a correct password does not), and `POST /api/auth/mfa/enable`
-  verifies a pending code only - on an enrolled account it answers 409
-  without reading the code, and a pending seed may be confirmed for
-  `MFA_PENDING_TTL` after its setup. A code is accepted once per account:
+  verifies a code against the seed a setup staged, never the account's live
+  seed - with nothing staged it refuses before reading the code - and a
+  staged seed may be confirmed for `MFA_PENDING_TTL` after its setup. A
+  setup writes nothing to the account until that confirm (since
+  2026-11-15), so a re-key in progress leaves the current authenticator in
+  force at every door, and one never confirmed changes nothing. A code is accepted once per account:
   every route that takes one records the time step it accepted, in the
   write that accepts it, and refuses a code that is not newer. A way to
   test codes against an account's seed past that cap, or to have one code

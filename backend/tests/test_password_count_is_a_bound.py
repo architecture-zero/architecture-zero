@@ -339,11 +339,10 @@ def test_a_session_that_unlocks_itself_between_rounds_is_stopped_at_the_limit(cl
     case pins has not moved: an unlock, on whatever proof, does not clear
     the count of passwords checked."""
     import pyotp
-    from app.users import enable_mfa, set_mfa_secret
+    from app.users import set_mfa_secret
     admin = accounts("admin")
     seed = pyotp.random_base32()
     set_mfa_secret(admin["id"], seed)
-    enable_mfa(admin["id"])
     before = _row(admin)["password_hash"]
     checks = _Checks(monkeypatch)
     answers = []

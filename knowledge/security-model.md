@@ -108,7 +108,12 @@ longer-lived credential or replace an authentication factor without the
 password. Re-keying an authenticator that is already enrolled takes more:
 the password AND a current code from that authenticator (since 2026-10-02),
 so a session plus the password cannot swap in someone else's - and a person
-who lost theirs asks an admin for the MFA reset below. Code attempts are
+who lost theirs asks an admin for the MFA reset below. A setup writes
+nothing to the account until a code from the new authenticator is
+confirmed (since 2026-11-15): the new seed is kept aside, encrypted, the
+current one stays in force at every door meanwhile, and a setup not
+confirmed within MFA_PENDING_TTL expires with nothing changed. The confirm
+checks a code only against that kept-aside seed, never the live one. Code attempts are
 capped per account at every door that checks one - counted in one write
 before the code is read, so a burst of concurrent guesses gets no more than
 the cap - and only a right code (or that reset) clears the count, so passing
@@ -257,10 +262,10 @@ against the seed it read before a re-key replaced it still meets that
 seed's record, so the code cannot be accepted there a second time. An old
 seed's record expires by itself after a few minutes. A code is also
 judged against the seed the account holds when the code is accepted, not
-only the one it held when the request began: a sign-in begun before a
-re-key, a confirm begun before a second setup, or a re-key begun before
-another, carrying a code for the seed that has since been replaced, is
-refused as a wrong code. The record's key holds
+only the one it held when the request began: a sign-in or a re-key begun
+before a re-key was confirmed, or a confirm begun before a second setup or
+an administrator's reset, carrying a code for the seed that has since been
+replaced, is refused as a wrong code. The record's key holds
 a short digest of the seed, which cannot be turned back into it; no answer
 or log line carries the key - not even when a statement on it fails: the
 database engine leaves the values bound into a statement out of its errors,

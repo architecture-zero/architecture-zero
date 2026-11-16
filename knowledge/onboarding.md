@@ -102,8 +102,9 @@ authenticator app or type the key shown under it, then type the app's
 Replace authenticator, on the same tab, moves an account that already has
 MFA to a new authenticator. It takes the same password and a current code
 from the authenticator being replaced, because a session and a password
-alone may not swap in a new one, and two-factor is off for the account until
-a code from the new authenticator is confirmed.
+alone may not swap in a new one. The authenticator being replaced keeps
+working until a code from the new one is confirmed, and a replacement not
+confirmed within 30 minutes expires with nothing changed.
 
 The same steps by API, for a script or a client of your own: POST
 /api/auth/mfa/setup with your current password in the body as
@@ -115,7 +116,7 @@ next code, and a script that signs in and then confirms a write with a code
 needs two different codes.
 Re-enrolling an account that already has MFA takes the same password plus
 `rekey: true` and a current code from the authenticator being replaced
-(`mfa_code`).
+(`mfa_code`), and is confirmed the same way, at /api/auth/mfa/enable.
 
 Someone who has lost their authenticator cannot re-key it themselves: an
 admin resets it (Reset MFA on the admin panel's Users tab, or POST

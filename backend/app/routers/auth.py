@@ -46,13 +46,14 @@ from app.security import (check_setup_rate_limit, check_auth_rate_limit,
                           record_mfa_failure, burn_mfa_challenge,
                           count_totp_attempt, clear_totp_attempts,
                           totp_code_refusal,
-                          mark_mfa_pending, mfa_pending_live, clear_mfa_pending,
+                          stage_mfa_seed, staged_mfa_seed, clear_mfa_pending,
+                          mfa_pending_minutes,
                           client_ip_from_request, verify_setup_claim_code,
                           burn_setup_claim_code)
 from app.users import (owner_exists, store_refresh_token,
                        get_refresh_token,
                        revoke_all_user_tokens, get_user_by_id, set_mfa_secret,
-                       enable_mfa, increment_failed_attempts,
+                       increment_failed_attempts,
                        reset_failed_attempts, lock_user, unlock_user,
                        list_user_sessions, revoke_refresh_token_by_id,
                        update_user_password, update_user_username)
@@ -353,11 +354,22 @@ def mfa_setup(request: MFASetupRequest | None = None,
     """Generate a new TOTP secret and return the provisioning URI + QR code
     PNG (base64).
 
+    STAGED, never stored (2026-11-15): the new seed waits in the pending
+    record (security.stage_mfa_seed, encrypted) for MFA_PENDING_TTL, and
+    nothing is written to the account - not the seed, not mfa_enabled. The
+    current authenticator keeps working at every door until a code from the
+    new one is confirmed at /mfa/enable, which writes the seed and turns the
+    factor on together. A setup nobody confirms expires with nothing
+    changed. This route used to write the new seed over the live one and
+    switch two-factor off until the confirm: a re-key signed in with the
+    password alone meanwhile, and one that was abandoned left two-factor
+    off for good. A second setup replaces the staged seed.
+
     Step-up (2026-09-16, outside review of this template): a bearer session
     may USE the account; it may not replace an authentication factor. The
     rekey flag below is intent, not proof - any holder of a live access
-    token could still pass it and swap the seed, which disables MFA until
-    the new code verifies. So the caller's own password comes first, on
+    token could still pass it and stage a seed of their own for the confirm
+    to turn on. So the caller's own password comes first, on
     enrollment and re-key alike (enrolling a factor on an un-enrolled
     account changes what the real owner needs to sign in). Same contract as
     every other step-up door: 400 with a string detail, failures share
@@ -372,10 +384,11 @@ def mfa_setup(request: MFASetupRequest | None = None,
     own account included, logged), then the member enrolls fresh.
 
     Re-key guard (2026-09-05, readiness-audit port): calling this while MFA
-    is ENABLED replaces the secret and flips mfa_enabled off - so any holder
-    of a live access token could strip an account's second factor with one
-    bodyless POST. An enabled account must now say rekey explicitly; on
-    refusal the stored secret is untouched.
+    was ENABLED replaced the secret and flipped mfa_enabled off - so any
+    holder of a live access token could strip an account's second factor
+    with one bodyless POST. An enabled account must still say rekey
+    explicitly (the intent half of the step-up above), and on refusal
+    nothing is staged.
     """
     import pyotp, qrcode, base64
     from io import BytesIO
@@ -387,22 +400,24 @@ def mfa_setup(request: MFASetupRequest | None = None,
                 status_code=409,
                 detail="MFA is already enabled for this account. To replace the "
                        "authenticator, re-key: send rekey=true with your password "
-                       "and a current code; that replaces the secret and disables "
-                       "MFA until the new code verifies.")
+                       "and a current code. The authenticator you have keeps "
+                       "working until a code from the new one is confirmed, and a "
+                       f"replacement not confirmed within {mfa_pending_minutes()} "
+                       "minutes expires with nothing changed.")
         require_totp_step_up(current_user, request.mfa_code,
                              "re-key your authenticator")
         log("auth_mfa_rekey_started", user_id=current_user["id"],
             username=current_user["username"])
     secret = pyotp.random_base32()
-    set_mfa_secret(current_user["id"], secret)
-    # Nothing to clear for the code that was just accepted: the record of
-    # accepted codes is kept per seed (security._used_code_key), so the new
-    # seed's codes meet a fresh one, and a request still holding the old
-    # seed meets the old seed's record.
-    # The new seed may be confirmed for MFA_PENDING_TTL, then setup starts
-    # again (2026-10-02): the confirm takes a session alone, so a pending seed
-    # that waited forever was a door that stayed open forever.
-    mark_mfa_pending(current_user["id"])
+    # Staged, not stored: the account's live seed and mfa_enabled stay as
+    # they are until /mfa/enable confirms a code from this one. Nothing to
+    # clear for the code that was just accepted: the record of accepted
+    # codes is kept per seed (security._used_code_key), so the new seed's
+    # codes meet a fresh one. The staged seed may be confirmed for
+    # MFA_PENDING_TTL, then setup starts again (2026-10-02): the confirm
+    # takes a session alone, so a pending seed that waited forever was a
+    # door that stayed open forever.
+    stage_mfa_seed(current_user["id"], secret)
     # The issuer is what an authenticator app shows beside the account: this
     # instance's name, through the one reader (config.instance_name).
     uri = pyotp.totp.TOTP(secret).provisioning_uri(
@@ -422,54 +437,57 @@ class MFAEnableRequest(BaseModel):
 
 @router.post("/api/auth/mfa/enable")
 def mfa_enable(request: MFAEnableRequest, current_user: dict = Depends(get_current_user)):
-    """Verify TOTP code against pending secret and activate MFA.
+    """Verify a TOTP code against the STAGED secret; on a right one, make it
+    the account's live secret and turn MFA on.
 
-    A PENDING secret only (2026-10-02). On an enrolled account the stored
-    secret is the LIVE one, and this route used to verify the code against
-    it - 200 for a right code, 401 for a wrong one, no counter, no throttle:
-    an unbounded oracle for the current code, open to a session alone, which
-    every door that accepts a current code inherited. An enrolled account is
-    now answered 409 before any code is read, the same for every code. A
-    re-key flips mfa_enabled off until the new code verifies, so the re-key
-    still finishes here.
+    The staged secret only, never the live one (2026-11-15). Setup stages
+    its seed (security.stage_mfa_seed) and writes nothing to the account, so
+    this confirm is where a first enrollment AND a re-key finish: ONE update
+    writes the seed and mfa_enabled=True together (users.set_mfa_secret),
+    then the staged record is cleared. Until then the live seed works at
+    every door as before. Nothing staged - never set up, expired, cleared by
+    an operator's reset, or undecryptable after a key rotation - is one 400
+    that says to start again, answered before any code is read.
 
-    And the pending check is bounded too (2026-10-02, the defensive read of
-    the change above): a right guess here switches the factor on and is a
-    code the other doors accept for its window, and this door takes a
-    session alone. So the attempt counts in the per-account code bound
-    before the code is read, and a pending seed may be confirmed only for
-    MFA_PENDING_TTL after its setup.
+    Why it never reads the live seed (2026-10-02): this route used to verify
+    the code against the stored, LIVE seed on an enrolled account - 200 for
+    a right code, 401 for a wrong one, no counter, no throttle: an unbounded
+    oracle for the current code, open to a session alone, which every door
+    that accepts a current code inherited. It was closed with a 409 for any
+    enrolled account; with the seed staged, an enrolled account confirming
+    a re-key is the normal case, so the 409 went and the rule became: the
+    only seed this route checks a code against is the staged one.
+
+    And the check is bounded (2026-10-02, the defensive read of the change
+    above): a right guess here switches the factor on and is a code the
+    other doors accept for its window, and this door takes a session alone.
+    So the attempt counts in the per-account code bound before the code is
+    read, and a staged seed may be confirmed only for MFA_PENDING_TTL after
+    its setup.
     """
-    user = get_user_by_id(current_user["id"])
-    if user and user.get("mfa_enabled"):
-        raise HTTPException(
-            status_code=409,
-            detail="MFA is already enabled for this account; there is no pending "
-                   "authenticator to verify. To replace it, re-key: POST "
-                   "/api/auth/mfa/setup with rekey=true, your password and a "
-                   "current code.")
-    if not user or not user.get("mfa_secret"):
-        raise HTTPException(status_code=400, detail="Call /api/auth/mfa/setup first")
-    if not mfa_pending_live(user["id"]):
+    user_id = current_user["id"]
+    staged = staged_mfa_seed(user_id)
+    if not staged:
         raise HTTPException(
             status_code=400,
-            detail="This authenticator setup has expired - start it again with "
-                   "POST /api/auth/mfa/setup.")
-    count_totp_attempt(user["id"])
+            detail="This authenticator setup has expired or was never started. "
+                   "Start the setup again.")
+    count_totp_attempt(user_id)
     # The same helper as every other door, so the code that confirms a setup
     # is recorded as accepted: it is spent, and the first sign-in takes the
-    # next one.
-    refusal = totp_code_refusal(user["id"], user["mfa_secret"], request.code)
+    # next one. staged=True: the seed read again after the record's write is
+    # the staged one, so a second setup or a reset meanwhile is a wrong code.
+    refusal = totp_code_refusal(user_id, staged, request.code, staged=True)
     if refusal:
         # 400, not 401 (2026-10-02): a signed-in client reads a 401 as an
         # expired session - refresh, retry, sign out - so a mistyped code in
-        # the middle of a re-key signed the person out while MFA was off.
-        # The same contract as the step-up doors.
+        # the middle of a setup signed the person out. The same contract as
+        # the step-up doors.
         raise HTTPException(status_code=400, detail=refusal)
-    clear_totp_attempts(user["id"])
-    clear_mfa_pending(user["id"])
-    enable_mfa(current_user["id"])
-    log("auth_mfa_enabled", user_id=current_user["id"])
+    clear_totp_attempts(user_id)
+    set_mfa_secret(user_id, staged)
+    clear_mfa_pending(user_id)
+    log("auth_mfa_enabled", user_id=user_id)
     return {"status": "MFA enabled"}
 
 

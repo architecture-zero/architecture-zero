@@ -403,7 +403,9 @@ def admin_mfa_reset(user_id: UserId, body: MfaResetRequest | None = Body(None),
     disable_mfa(user_id)
     # The seed the code count and any pending setup belonged to is gone, so
     # they go too (2026-10-02) - or the person enrolling again would meet a
-    # cap their old seed filled. This door removes the seed the count was
+    # cap their old seed filled. The pending record holds a staged seed
+    # (security.stage_mfa_seed), and a reset leaves none behind for the
+    # confirm to turn on. This door removes the seed the count was
     # against; an unlock leaves the seed where it is, so it never clears the
     # count.
     from app.security import clear_totp_attempts, clear_mfa_pending

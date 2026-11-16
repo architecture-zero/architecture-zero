@@ -11,29 +11,26 @@ interface ProfileProps {
   onClose: () => void
   onUsernameChange: (newUsername: string, accessToken: string, refreshToken: string) => void
   onPasswordChange: () => void
-  // Two-factor went on, or went off for a replacement that is not confirmed
-  // yet. The shell's copy of the account follows, with no reload.
+  // Two-factor went on, or a read of the account found it on or off. The
+  // shell's copy of the account follows, with no reload.
   onMfaChange: (enabled: boolean) => void
 }
 
 // What the Two-factor tab tells this screen about closing: the question to
-// ask first (null when there is nothing to ask), and what to settle once the
-// close goes ahead.
+// ask first, or null when there is nothing to ask.
 interface Leaving {
   question: () => string | null
-  left: () => void
 }
 
 export default function Profile({ api, headers, user, onClose, onUsernameChange, onPasswordChange, onMfaChange }: ProfileProps) {
   const [tab, setTab] = useState<'username' | 'password' | 'mfa'>('username')
   // Closing is the Two-factor tab's to speak to: a setup on the page goes
-  // with the screen, and a replacement that is not finished leaves the
-  // account with no second factor. It keeps this current; Close reads it.
-  const leaving = useRef<Leaving>({ question: () => null, left: () => {} })
+  // with the screen, and its key cannot be shown again. It keeps this
+  // current; Close reads it.
+  const leaving = useRef<Leaving>({ question: () => null })
   const close = () => {
     const question = leaving.current.question()
     if (question && !window.confirm(question)) return
-    leaving.current.left()
     onClose()
   }
 
@@ -260,25 +257,28 @@ export default function Profile({ api, headers, user, onClose, onUsernameChange,
 // answer that lands after that is dropped whole: the account it was for may
 // no longer be the one signed in.
 //
-// A replacement is the one path that can leave an account worse off than it
-// found it: the server stores the new key and turns two-factor off before it
-// answers, and nothing puts the old key back. So this tab never lets that
-// pass unsaid. An answer to a replacement start that is lost, unreadable or a
-// server error is followed by a fresh read of the account, and "on" is shown
-// only if that read says so. Closing asks first while a setup is on the page
-// or a replacement is on its way.
+// A setup changes nothing on the account until it is confirmed: the server
+// keeps the new key aside, and on a replacement the authenticator in use
+// keeps working - at sign-in and everywhere else - until a code from the new
+// one is confirmed here. A setup that is never confirmed expires with
+// nothing changed. (Until 2026-11-15 the server stored the new key at the
+// start and turned two-factor off until the confirm, and this tab carried a
+// warning and a re-read for every way that could go wrong. None of it is
+// needed now: starting a replacement cannot leave the account off.) Closing
+// asks first while a setup is on the page, since its key goes with the
+// screen.
 
-type TwoFactorStatus = 'checking' | 'on' | 'off' | 'unknown' | 'unconfirmed'
+type TwoFactorStatus = 'checking' | 'on' | 'off' | 'unknown'
 
 // What Close asks first (window.confirm, as the Users tab asks before it
 // resets a second factor).
 const ASK_SETUP_PENDING = 'This two-factor setup is not confirmed yet. Closing drops its key, and the '
   + 'setup has to be started again. Close anyway?'
-const ASK_REPLACEMENT_PENDING = 'Two-factor is OFF for this account until a code from the new '
-  + 'authenticator is confirmed. Closing now drops the new key and leaves it off. Close anyway?'
-const ASK_REPLACEMENT_UNSETTLED = 'A replacement was started and it is not known yet whether it went '
-  + 'through. Two-factor may be OFF for this account, and its new key is not shown if you close now. '
-  + 'Close anyway?'
+const ASK_REPLACEMENT_PENDING = 'This replacement is not confirmed yet. Closing drops the new key. The '
+  + 'authenticator you have now keeps working, and nothing changes. Close anyway?'
+
+// What a person reads about a setup that is not confirmed in time.
+const EXPIRES = 'A setup that is not confirmed within 30 minutes expires, and nothing changes.'
 
 // Said wherever this tab sends a person to an administrator for a reset. A
 // reset leaves the account with no second factor, and where one is required
@@ -287,10 +287,12 @@ const WHERE_REQUIRED = 'Where two-factor is required to sign in, an account that
   + 'in until it is set up again: do that from a session that is still signed in, or have the person '
   + 'who runs this server switch the requirement off while you do.'
 
-// The server's two answers that mean the setup this tab is holding is gone: it
-// waited too long, or the stored key was reset meanwhile. Both arrive as a 400,
-// like a mistyped code, so the words are what tells them apart. Should the
-// words change, "Start again" is still on the page under the code.
+// The server's answer that means the setup this tab is holding is gone: it
+// waited too long, or an administrator's reset cleared it meanwhile. It
+// arrives as a 400, like a mistyped code, so the words are what tells them
+// apart ("setup first" is what a server from before 2026-11-15 said for a
+// reset). Should the words change, "Start again" is still on the page under
+// the code.
 const SETUP_GONE = /expired|setup first/i
 
 // A body as JSON, or null when it is not JSON: a proxy's HTML error page, an
@@ -385,17 +387,10 @@ function TwoFactorTab({ active, api, headers, known, onMfaChange, leaving }: {
   const [code, setCode] = useState('')
   const [error, setError] = useState('')
   const [turnedOn, setTurnedOn] = useState(false)
+  // What was just confirmed was a replacement, not a first setup.
+  const [replaced, setReplaced] = useState(false)
   const [gone, setGone] = useState(false)
   const [busy, setBusy] = useState(false)
-  // A replacement begun on this screen has taken two-factor off, and it is not
-  // back on: off now, where it was on when the screen opened.
-  const [leftOff, setLeftOff] = useState(false)
-  // A replacement start is on its way to the server.
-  const rekeyInFlight = useRef(false)
-  // A replacement start was sent and how it ended is not known: its answer
-  // was lost, unreadable or a server error. The next read of the account
-  // settles it.
-  const rekeyUnsettled = useRef(false)
   const alive = useRef(true)
   useEffect(() => {
     alive.current = true
@@ -421,26 +416,8 @@ function TwoFactorTab({ active, api, headers, known, onMfaChange, leaving }: {
       }
     } catch { /* unreachable: what the shell knew stands in below */ }
     if (!alive.current) return
-    if (enabled === undefined && rekeyUnsettled.current) {
-      // A replacement was started, nobody knows how it ended, and the account
-      // cannot be read: "on" is the one thing not to say. What the shell last
-      // knew does not stand in here, and the shell is told as much, so no
-      // later visit falls back on an "on" from before the replacement.
-      if (known !== false) onMfaChange(false)
-      setUnreadable(false)
-      setStatus('unconfirmed')
-      return
-    }
     if (enabled !== undefined) {
       if (enabled !== known) onMfaChange(enabled)
-      // This read settles a replacement left open. Off means it went through:
-      // the old key is gone and the new one never reached this screen.
-      if (rekeyUnsettled.current && !enabled) {
-        setLeftOff(true)
-        setError('')
-      }
-      if (enabled) setLeftOff(false)
-      rekeyUnsettled.current = false
     } else {
       enabled = known
     }
@@ -450,26 +427,21 @@ function TwoFactorTab({ active, api, headers, known, onMfaChange, leaving }: {
     setStatus(enabled === undefined ? 'unknown' : enabled ? 'on' : 'off')
   }
 
-  // What the account screen asks before it closes, and what it settles once
-  // the close goes ahead. Set after every render, so Close reads this moment.
+  // What the account screen asks before it closes. Set after every render, so
+  // Close reads this moment. The key never outlives the screen.
   useEffect(() => {
     leaving.current = {
       question: () => {
-        if (pending) return leftOff ? ASK_REPLACEMENT_PENDING : ASK_SETUP_PENDING
-        return rekeyInFlight.current || rekeyUnsettled.current ? ASK_REPLACEMENT_UNSETTLED : null
+        if (!pending) return null
+        return status === 'on' ? ASK_REPLACEMENT_PENDING : ASK_SETUP_PENDING
       },
-      // A replacement start that is still on its way, or whose answer was
-      // lost, is settled by nothing once this screen is gone: an answer that
-      // lands later is dropped with it. The account is then no longer known to
-      // be on, and the shell is told that much. The key never outlives the
-      // screen.
-      left: () => { if (rekeyInFlight.current || rekeyUnsettled.current) onMfaChange(false) },
     }
   })
 
   // Read on the way in, unless a setup is on the page: that state is this
-  // tab's own, and the account reads "off" for as long as it is pending. What
-  // an earlier visit to the tab was told does not carry over.
+  // tab's own, and the account reads as it did before the setup for as long
+  // as it is pending. What an earlier visit to the tab was told does not
+  // carry over.
   useEffect(() => {
     if (!active || pending) return
     setError('')
@@ -486,7 +458,6 @@ function TwoFactorTab({ active, api, headers, known, onMfaChange, leaving }: {
     setBusy(true)
     setError('')
     setTurnedOn(false)
-    rekeyInFlight.current = rekey
     try {
       const res = await fetch(`${api}/api/auth/mfa/setup`, {
         method: 'POST',
@@ -503,11 +474,6 @@ function TwoFactorTab({ active, api, headers, known, onMfaChange, leaving }: {
           // Two-factor is already on, so this tab's picture of the account
           // was stale. Read it again; the server's words stay on the page.
           readStatus()
-        } else if (rekey && res.status >= 500) {
-          // A refusal (4xx) changed nothing. A server error is not one: it
-          // says nothing about how far the replacement got.
-          rekeyUnsettled.current = true
-          readStatus()
         }
         return
       }
@@ -516,11 +482,9 @@ function TwoFactorTab({ active, api, headers, known, onMfaChange, leaving }: {
       const secret = body?.secret
       const qr = body?.qr
       if (typeof secret !== 'string' || !secret || typeof qr !== 'string') {
-        // A 2xx that is not this API's answer proves nothing either way. Say
-        // so, and ask the server what the account is now.
+        // A 2xx that is not this API's answer: there is no key to show. The
+        // account is as it was, since nothing changes before a confirm.
         setError('The server answered, but not with a setup this screen can read. Start again.')
-        if (rekey) rekeyUnsettled.current = true
-        readStatus()
         return
       }
       setPending({ secret, qr })
@@ -528,29 +492,19 @@ function TwoFactorTab({ active, api, headers, known, onMfaChange, leaving }: {
       setOldCode('')
       setCode('')
       setGone(false)
-      // Storing a new key turns two-factor off on the server, and it stays off
-      // until a code from the new authenticator is confirmed below.
-      setStatus('off')
-      if (rekey) {
-        setReplacing(false)
-        setLeftOff(true)
-        onMfaChange(false)
-      }
+      // Nothing on the account changes until a code from the new
+      // authenticator is confirmed below: two-factor stays as it was, and on
+      // a replacement the authenticator in use keeps working.
+      setReplacing(false)
     } catch {
-      if (!alive.current) return
-      setError('Could not reach the server')
-      if (rekey) {
-        // The request may have reached the server all the same. Ask.
-        rekeyUnsettled.current = true
-        readStatus()
-      }
+      if (alive.current) setError('Could not reach the server')
     } finally {
-      rekeyInFlight.current = false
       if (alive.current) setBusy(false)
     }
   }
 
-  // Step 3: the first code from the new authenticator turns two-factor on.
+  // Step 3: the first code from the new authenticator turns two-factor on -
+  // or, on a replacement, makes the new authenticator the one in use.
   const confirm = async (e: React.FormEvent) => {
     e.preventDefault()
     if (busy || code.length !== 6) return
@@ -567,15 +521,12 @@ function TwoFactorTab({ active, api, headers, known, onMfaChange, leaving }: {
         if (!alive.current) return
         setError(words)
         setCode('')
-        if (res.status === 409) {
-          // Already on, so there is no setup left to confirm: the key on the
-          // page is dead. Drop it and read the account again.
-          setPending(null)
-          setReplacing(false)
-          readStatus()
-        } else if (res.status === 400 && SETUP_GONE.test(words)) {
+        if (res.status === 400 && SETUP_GONE.test(words)) {
+          // The key on the page is dead. Drop it, and read the account: an
+          // administrator's reset may have changed it meanwhile.
           setPending(null)
           setGone(true)
+          readStatus()
         }
         return
       }
@@ -592,7 +543,7 @@ function TwoFactorTab({ active, api, headers, known, onMfaChange, leaving }: {
         return
       }
       setUnreadable(false)
-      setLeftOff(false)
+      setReplaced(status === 'on')
       setStatus('on')
       setTurnedOn(true)
       onMfaChange(true)
@@ -637,42 +588,93 @@ function TwoFactorTab({ active, api, headers, known, onMfaChange, leaving }: {
     )
   }
 
-  // A replacement was started, how it ended is not known, and the account
-  // cannot be read. Never "on": the old key may be gone.
-  if (status === 'unconfirmed') {
-    return (
-      <div className="space-y-3">
-        <p className="text-sm font-medium text-amber-300">Two-factor could not be confirmed for this account.</p>
-        <p className="text-xs text-gray-400">
-          A replacement was started and its answer never arrived, so two-factor may be off for this
-          account now. Check it on this tab before you sign out.
-        </p>
-        {refused}
-        <button type="button" onClick={readStatus} className={primary} style={{ backgroundColor: PRIMARY_COLOR }}>
-          Check again
-        </button>
+  // Steps 2 and 3 once a setup is on the page: scan, then confirm. The same
+  // two on a first setup and on a replacement.
+  const replacement = status === 'on'
+  const scanStep = (
+    <div className="space-y-2">
+      <p className={`text-xs ${pending ? 'text-gray-400' : 'text-gray-600'}`}>2. Scan with your authenticator app</p>
+      {pending && (
+        <div className="flex flex-col items-center gap-2">
+          <QrCode png={pending.qr} />
+          <p className="text-xs text-gray-400">or type this key:</p>
+          {/* Shown in fours and held as one run of text, so a copy is the key
+              itself with no spaces in it. */}
+          <p data-testid="two-factor-key" className="font-mono text-sm text-white text-center select-all">
+            {(pending.secret.match(/.{1,4}/g) || []).map((four, i) => (
+              <span key={i} className="inline-block mx-1">{four}</span>
+            ))}
+          </p>
+        </div>
+      )}
+    </div>
+  )
+  const codeStep = pending ? (
+    <form onSubmit={confirm} className="space-y-3">
+      <div>
+        <label htmlFor="mfa-code" className={label}>3. The 6-digit code</label>
+        <input
+          id="mfa-code"
+          type="text"
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          maxLength={6}
+          value={code}
+          onChange={e => setCode(sixDigits(e.target.value))}
+          autoFocus
+          className={`${field} text-center tracking-widest`}
+        />
       </div>
-    )
-  }
+      {refused}
+      <button
+        type="submit"
+        disabled={busy || code.length !== 6}
+        className={primary}
+        style={{ backgroundColor: PRIMARY_COLOR }}
+      >
+        {busy ? (replacement ? 'Confirming...' : 'Turning on...') : (replacement ? 'Use the new authenticator' : 'Turn on')}
+      </button>
+      <p className="text-xs text-gray-500">{EXPIRES}</p>
+      <button type="button" onClick={startAgain} className={quiet}>
+        {replacement ? 'Cancel replacement' : 'Start again'}
+      </button>
+    </form>
+  ) : (
+    <p className="text-xs text-gray-600">3. The 6-digit code</p>
+  )
 
   if (status === 'on') {
     return (
       <div className="space-y-3">
         <p className="text-sm font-medium text-green-400">Two-factor is ON for this account.</p>
-        {turnedOn && <p className="text-xs text-green-400">Turned on just now.</p>}
+        {turnedOn && (
+          <p className="text-xs text-green-400">
+            {replaced ? 'The new authenticator is the one in use now.' : 'Turned on just now.'}
+          </p>
+        )}
         {unreadable ? (
           <p className="text-xs text-red-400">
             Its stored key cannot be read on this server, so the next sign-in by this account will be
             refused. An administrator can reset it (Admin, Users, Reset MFA). Then set it up again here.
             {' '}{WHERE_REQUIRED}
           </p>
+        ) : pending ? (
+          <>
+            <p className="text-xs text-amber-300">
+              A replacement is waiting to be confirmed. The authenticator you have now keeps working
+              until a code from the new one is confirmed below.
+            </p>
+            <p className="text-xs text-gray-400">
+              1. Your password and a current code: <span className="text-green-400">confirmed</span>
+            </p>
+            {scanStep}
+            {codeStep}
+          </>
         ) : replacing ? (
           <form onSubmit={start} className="space-y-3">
-            <p className="text-xs text-amber-300">
-              Replacing turns two-factor off for this account until a code from the new authenticator
-              is confirmed, and the authenticator you have now stops working as soon as you start.
-              Stay signed in until it is confirmed: where two-factor is required to sign in, an
-              account without it cannot sign back in.
+            <p className="text-xs text-gray-400">
+              The authenticator you have now keeps working until a code from the new one is
+              confirmed. {EXPIRES}
             </p>
             <div>
               <label htmlFor="mfa-password" className={label}>Your password</label>
@@ -744,17 +746,6 @@ function TwoFactorTab({ active, api, headers, known, onMfaChange, leaving }: {
   return (
     <div className="space-y-4">
       <p className="text-sm font-medium text-white">Two-factor is OFF for this account.</p>
-      {leftOff && (pending ? (
-        <p className="text-xs text-amber-300">
-          It stays off until a code from the new authenticator is confirmed below. Stay signed in until then.
-        </p>
-      ) : (
-        <p className="text-xs text-amber-300">
-          Two-factor is off for this account now. The replacement took the authenticator you had out of
-          use, and no new one is confirmed. Set it up below before you sign out: where two-factor is
-          required to sign in, an account without it cannot sign back in.
-        </p>
-      ))}
       {pending ? (
         <p className="text-xs text-gray-400">1. Your password: <span className="text-green-400">confirmed</span></p>
       ) : (
@@ -782,55 +773,8 @@ function TwoFactorTab({ active, api, headers, known, onMfaChange, leaving }: {
           </button>
         </form>
       )}
-      <div className="space-y-2">
-        <p className={`text-xs ${pending ? 'text-gray-400' : 'text-gray-600'}`}>2. Scan with your authenticator app</p>
-        {pending && (
-          <div className="flex flex-col items-center gap-2">
-            <QrCode png={pending.qr} />
-            <p className="text-xs text-gray-400">or type this key:</p>
-            {/* Shown in fours and held as one run of text, so a copy is the key
-                itself with no spaces in it. */}
-            <p data-testid="two-factor-key" className="font-mono text-sm text-white text-center select-all">
-              {(pending.secret.match(/.{1,4}/g) || []).map((four, i) => (
-                <span key={i} className="inline-block mx-1">{four}</span>
-              ))}
-            </p>
-          </div>
-        )}
-      </div>
-      {pending ? (
-        <form onSubmit={confirm} className="space-y-3">
-          <div>
-            <label htmlFor="mfa-code" className={label}>3. The 6-digit code</label>
-            <input
-              id="mfa-code"
-              type="text"
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              maxLength={6}
-              value={code}
-              onChange={e => setCode(sixDigits(e.target.value))}
-              autoFocus
-              className={`${field} text-center tracking-widest`}
-            />
-          </div>
-          {refused}
-          <button
-            type="submit"
-            disabled={busy || code.length !== 6}
-            className={primary}
-            style={{ backgroundColor: PRIMARY_COLOR }}
-          >
-            {busy ? 'Turning on...' : 'Turn on'}
-          </button>
-          <p className="text-xs text-gray-500">
-            A setup that is not confirmed in time expires, and then it is started again.
-          </p>
-          <button type="button" onClick={startAgain} className={quiet}>Start again</button>
-        </form>
-      ) : (
-        <p className="text-xs text-gray-600">3. The 6-digit code</p>
-      )}
+      {scanStep}
+      {codeStep}
     </div>
   )
 }

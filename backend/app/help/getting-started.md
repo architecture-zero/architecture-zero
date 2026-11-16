@@ -17,7 +17,7 @@ You can add a second step to your own sign-in: a six-digit code from an authenti
 
 ## A new or lost authenticator
 
-To move to a new phone or app, use Replace authenticator on the Two-factor tab. It asks for your password and a code from the authenticator you have now. Two-factor is off for your account from that moment until you confirm a code from the new one, so stay signed in until you have. Closing the screen before that asks you first.
+To move to a new phone or app, use Replace authenticator on the Two-factor tab. It asks for your password and a code from the authenticator you have now. The authenticator you have now keeps working until you confirm a code from the new one; if you do not confirm within 30 minutes, the replacement expires and nothing changes. Closing the screen before you confirm asks you first.
 
 If you lose the authenticator, ask your administrator to reset two-factor for your account, then set it up again. Where two-factor is required to sign in, an account that was reset cannot sign in until it is set up again: set it up from a session that is still signed in, or ask the person who runs the server to switch the requirement off while you do.
 

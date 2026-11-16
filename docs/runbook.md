@@ -704,12 +704,16 @@ Enrolling and re-keying have a screen in the web client: Account Settings
 (click your name at the top of the page), the Two-factor tab. Start setup
 enrolls, Replace authenticator re-keys, and each asks for what its API call
 asks for. An account whose stored seed cannot be read is told so on that
-tab, in place of a factor shown as healthy. A re-key that is started and not
-finished leaves the account with no second factor, because the server turns
-it off when it stores the new seed: the tab says the account is off until the
-new code is confirmed, asks before it closes over a setup that is not
-confirmed, and reads the account again when a re-key's answer never arrives,
-showing "on" only if that read says so. The API calls are the same doors for
+tab, in place of a factor shown as healthy. A setup changes nothing on the
+account until it is confirmed (since 2026-11-15): the server keeps the new
+seed aside, encrypted, and on a re-key the current authenticator keeps
+working at sign-in and every other door until a code from the new one is
+confirmed, which makes the new seed the live one and turns two-factor on in
+one write. A setup that is not confirmed within 30 minutes
+(`MFA_PENDING_TTL`) expires with nothing changed, so an abandoned re-key no
+longer leaves an account without its second factor. The tab asks before it
+closes over a setup that is not confirmed, since its key goes with the
+screen. An operator's MFA reset also drops a setup that is waiting. The API calls are the same doors for
 a script: POST /api/auth/mfa/setup, then POST /api/auth/mfa/enable. The
 getting-started guide (knowledge/onboarding.md, "Setting up two-factor
 authentication") has both ways step by step.

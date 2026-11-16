@@ -17,6 +17,14 @@
  * Content-Security-Policy refuses an image at a data: address.
  * CONTROL: the Username and Password tabs behave as they did, and a guest has
  * no account screen at all.
+ *
+ * SINCE 2026-11-15 the server stages a setup's key and changes nothing on the
+ * account until a code from it is confirmed: a replacement leaves two-factor
+ * ON, with the authenticator in use still working, until its confirm, and a
+ * setup nobody confirms expires with nothing changed. So the tab shows a
+ * replacement under ON, tells the shell nothing until the confirm, and no
+ * longer warns or re-reads the account over a replacement start that went
+ * wrong: nothing that start did can have turned two-factor off.
  */
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -36,11 +44,11 @@ const IN_FOURS = ['AAAA', 'BBBB', 'CCCC', 'DDDD', 'EEEE', 'FFFF', 'GGGG', 'HHHH'
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 const SETUP = { secret: SEED, uri: `otpauth://totp/Test:pat?secret=${SEED}&issuer=Test`, qr: `data:image/png;base64,${PNG}` }
 // The server's sentences, as its routes send them.
-const EXPIRED = 'This authenticator setup has expired - start it again with POST /api/auth/mfa/setup.'
-const NOTHING_PENDING = 'Call /api/auth/mfa/setup first'
+const EXPIRED = 'This authenticator setup has expired or was never started. Start the setup again.'
 const ALREADY_ON = 'MFA is already enabled for this account. To replace the authenticator, re-key: '
-  + 'send rekey=true with your password and a current code; that replaces the secret and disables '
-  + 'MFA until the new code verifies.'
+  + 'send rekey=true with your password and a current code. The authenticator you have keeps '
+  + 'working until a code from the new one is confirmed, and a replacement not confirmed within '
+  + '30 minutes expires with nothing changed.'
 // What the tab adds wherever it sends a person to an administrator for a reset.
 const WHERE_REQUIRED = 'Where two-factor is required to sign in, an account that was reset cannot sign '
   + 'in until it is set up again: do that from a session that is still signed in, or have the person '
@@ -67,8 +75,8 @@ function serve(answer: Answer): Call[] {
 }
 
 // The three routes the tab talks to, answering as the server does unless a
-// test says otherwise. `state` is the account: a setup turns two-factor off
-// until it is confirmed, a confirmed code turns it on.
+// test says otherwise. `state` is the account: a setup changes nothing on it,
+// a confirmed code turns two-factor on.
 function account(
   state: { enabled: boolean; unreadable?: boolean },
   routes: { me?: Answer; setup?: Answer; enable?: Answer } = {},
@@ -80,7 +88,6 @@ function account(
     }
     if (call.url.endsWith('/api/auth/mfa/setup')) {
       if (routes.setup) return routes.setup(call)
-      state.enabled = false
       return json(SETUP)
     }
     if (call.url.endsWith('/api/auth/mfa/enable')) {
@@ -117,6 +124,12 @@ function startSetup(password = 'pw-right') {
 async function turnOn(code: string) {
   type(screen.getByLabelText('3. The 6-digit code'), code)
   fireEvent.click(screen.getByRole('button', { name: 'Turn on' }))
+}
+
+// A replacement's step 3: the same field, under its own button.
+async function useNew(code: string) {
+  type(screen.getByLabelText('3. The 6-digit code'), code)
+  fireEvent.click(screen.getByRole('button', { name: 'Use the new authenticator' }))
 }
 
 // jsdom draws nothing, so a test that looks at the QR code gives it the two
@@ -237,15 +250,22 @@ describe('Account Settings: the Two-factor tab', () => {
     expect(calls[1]).toMatchObject({ url: '/api/auth/mfa/setup', method: 'POST' })
     expect(calls[1].body).toEqual({ current_password: 'pw-right', rekey: true, mfa_code: '111111' })
     expect(key.textContent).toBe(SEED)
-    // Off on the server until the new one is confirmed, and the page says so.
-    expect(screen.getByText('Two-factor is OFF for this account.')).toBeInTheDocument()
-    expect(screen.getByText(/stays off until a code from the new authenticator is confirmed/)).toBeInTheDocument()
-    expect(onMfaChange.mock.calls).toEqual([[false]])
+    // Still on, with the authenticator in use still working until the new one
+    // is confirmed: the page says so, and the shell is told nothing.
+    expect(screen.getByText('Two-factor is ON for this account.')).toBeInTheDocument()
+    expect(screen.getByText(/A replacement is waiting to be confirmed/))
+      .toHaveTextContent('The authenticator you have now keeps working until a code from the new one is confirmed below.')
+    expect(screen.getByText(/within 30 minutes expires, and nothing changes/)).toBeInTheDocument()
+    expect(screen.queryByText(/OFF/)).toBeNull()
+    expect(onMfaChange).not.toHaveBeenCalled()
 
-    await turnOn('222222')
-    expect(await screen.findByText('Two-factor is ON for this account.')).toBeInTheDocument()
+    await useNew('222222')
+    expect(await screen.findByText('The new authenticator is the one in use now.')).toBeInTheDocument()
+    expect(screen.getByText('Two-factor is ON for this account.')).toBeInTheDocument()
+    expect(calls[2]).toMatchObject({ url: '/api/auth/mfa/enable', method: 'POST' })
     expect(calls[2].body).toEqual({ code: '222222' })
-    expect(onMfaChange.mock.calls).toEqual([[false], [true]])
+    expect(shownKey()).toBeNull()
+    expect(onMfaChange.mock.calls).toEqual([[true]])
   })
 
   it('a replacement that was opened and never started is forgotten once the account reads off', async () => {
@@ -355,7 +375,7 @@ describe('Account Settings: the Two-factor tab', () => {
     expect(shownKey()).toBeNull()
   })
 
-  it("an answer that is not the API's is not taken for a setup, nor for on: the tab says so and reads the account", async () => {
+  it("an answer that is not the API's is not taken for a setup, nor for on: the tab says so", async () => {
     const page = () => new Response('<!doctype html><html></html>', { status: 200, headers: { 'Content-Type': 'text/html' } })
     const state = { enabled: false }
     const answers: Answer[] = [page, () => json(SETUP)]
@@ -366,16 +386,19 @@ describe('Account Settings: the Two-factor tab', () => {
     startSetup()
     expect(await screen.findByRole('alert')).toHaveTextContent('not with a setup this screen can read')
     expect(shownKey()).toBeNull()
-    await waitFor(() => expect(reads()).toBe(2))
-    // The second try is a real setup; the page that answers its confirm is not a confirmation.
-    await screen.findByText('Two-factor is OFF for this account.')
+    // A setup start changes nothing on the account, so there is nothing to
+    // read again for it.
+    expect(reads()).toBe(1)
+    // The second try is a real setup; the page that answers its confirm is
+    // not a confirmation, and the account is read to say what it is.
+    expect(screen.getByText('Two-factor is OFF for this account.')).toBeInTheDocument()
     startSetup()
     await screen.findByTestId('two-factor-key')
     await turnOn('123456')
     expect(await screen.findByRole('alert')).toHaveTextContent('not in a form this screen can read')
     expect(await screen.findByText('Two-factor is OFF for this account.')).toBeInTheDocument()
     expect(shownKey()).toBeNull()
-    expect(reads()).toBe(3)
+    expect(reads()).toBe(2)
     expect(onMfaChange).not.toHaveBeenCalledWith(true)
   })
 
@@ -387,26 +410,24 @@ describe('Account Settings: the Two-factor tab', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not reach the server')
   })
 
-  it.each([EXPIRED, NOTHING_PENDING])(
-    "a setup that is gone shows the server's words, drops the dead key and offers to start again: %s",
-    async words => {
-      const calls = account({ enabled: false }, { enable: () => json({ detail: words }, 400) })
-      mount()
-      await openOff()
-      startSetup()
-      await screen.findByTestId('two-factor-key')
-      await turnOn('123456')
-      expect(await screen.findByRole('alert')).toHaveTextContent(words)
-      expect(shownKey()).toBeNull()
-      expect(screen.queryByRole('button', { name: 'Turn on' })).toBeNull()
-      // The offer: the password again, under a button that says what it does.
-      type(screen.getByLabelText('1. Your password'), 'pw-right')
-      fireEvent.click(screen.getByRole('button', { name: 'Start again' }))
-      expect((await screen.findByTestId('two-factor-key')).textContent).toBe(SEED)
-      expect(setups(calls)).toHaveLength(2)
-      expect(setups(calls)[1].body).toEqual({ current_password: 'pw-right', rekey: false })
-      expect(screen.queryByRole('alert')).toBeNull()
-    })
+  it("a setup that is gone shows the server's words, drops the dead key and offers to start again", async () => {
+    const calls = account({ enabled: false }, { enable: () => json({ detail: EXPIRED }, 400) })
+    mount()
+    await openOff()
+    startSetup()
+    await screen.findByTestId('two-factor-key')
+    await turnOn('123456')
+    expect(await screen.findByRole('alert')).toHaveTextContent(EXPIRED)
+    expect(shownKey()).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Turn on' })).toBeNull()
+    // The offer: the password again, under a button that says what it does.
+    type(screen.getByLabelText('1. Your password'), 'pw-right')
+    fireEvent.click(screen.getByRole('button', { name: 'Start again' }))
+    expect((await screen.findByTestId('two-factor-key')).textContent).toBe(SEED)
+    expect(setups(calls)).toHaveLength(2)
+    expect(setups(calls)[1].body).toEqual({ current_password: 'pw-right', rekey: false })
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
 
   it('a setup can be started again before it is confirmed, and the first key leaves the page', async () => {
     account({ enabled: false })
@@ -433,22 +454,25 @@ describe('Account Settings: the Two-factor tab', () => {
     expect(onMfaChange).toHaveBeenLastCalledWith(true)
   })
 
-  it('already on when a code is confirmed: the dead key is dropped and the tab reads the account again', async () => {
-    const state = { enabled: false }
-    const words = 'MFA is already enabled for this account; there is no pending authenticator to verify.'
-    account(state, { enable: () => { state.enabled = true; return json({ detail: words }, 409) } })
-    mount()
-    await openOff()
-    startSetup()
+  it('a replacement an administrator reset meanwhile: the dead key is dropped and the tab reads the account again', async () => {
+    const state = { enabled: true }
+    // The reset cleared the staged key and the live one: the confirm finds
+    // nothing to confirm, and the account is off.
+    account(state, { enable: () => { state.enabled = false; return json({ detail: EXPIRED }, 400) } })
+    const { onMfaChange } = mount({ ...PAT, mfa_enabled: true })
+    fireEvent.click(tab('Two-factor'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Replace authenticator' }))
+    type(screen.getByLabelText('Your password'), 'pw-right')
+    type(screen.getByLabelText('A code from the authenticator you are replacing'), '111111')
+    fireEvent.click(screen.getByRole('button', { name: 'Start replacement' }))
     await screen.findByTestId('two-factor-key')
-    await turnOn('123456')
-    expect(await screen.findByText('Two-factor is ON for this account.')).toBeInTheDocument()
-    expect(screen.getByRole('alert')).toHaveTextContent(words)
+    await useNew('123456')
+    expect(await screen.findByText('Two-factor is OFF for this account.')).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent(EXPIRED)
     expect(shownKey()).toBeNull()
-    // The dead key is not held either. A setup still held would keep the tab
-    // from reading the account: after a reset and a look at another tab it
-    // reads it, and starts clean, the old refusal gone.
-    state.enabled = false
+    expect(onMfaChange.mock.calls).toEqual([[false]])
+    // The dead key is not held either: a look at another tab and back reads
+    // the account and starts clean, the old refusal gone.
     fireEvent.click(tab('Username'))
     fireEvent.click(tab('Two-factor'))
     expect(await screen.findByText('Two-factor is OFF for this account.')).toBeInTheDocument()
@@ -605,24 +629,19 @@ describe('Account Settings: the Two-factor tab', () => {
 })
 
 /**
- * A REPLACEMENT THAT DOES NOT FINISH IS NEVER LEFT UNSAID (2026-11-11).
+ * A REPLACEMENT THAT DOES NOT FINISH CHANGES NOTHING (2026-11-15).
  *
- * The server stores the new key and turns two-factor off before it answers a
- * replacement start, and nothing puts the old key back. Three ways the tab let
- * that pass in silence: an answer that was lost (or unreadable, or a server
- * error) left "Two-factor is ON" on the page with no fresh read behind it;
- * Close asked nothing while a setup was on the page or a replacement was on
- * its way; and an answer that landed after the screen closed left the shell
- * believing the account was still on.
- *
- * FIX: such an answer is followed by a read of the account, and the page says
- * what the read says (on with the error, off with a warning, or "could not be
- * confirmed", never on, when the read fails too). Close asks first, and a
- * close that goes ahead over an unsettled replacement tells the shell.
- * CONTROL: a refusal changes nothing and reads nothing; with nothing on the
- * page Close asks nothing.
+ * Until 2026-11-15 the server stored the new key and turned two-factor off
+ * before it answered a replacement start, so this tab read the account again
+ * after any start whose answer was lost, and warned that two-factor might be
+ * off. The server now stages the key and changes nothing until a code from it
+ * is confirmed. So a start that is lost, unreadable or a server error leaves
+ * the account as it was: ON stays, with what went wrong, and nothing is read
+ * again or told to the shell. A replacement dropped before its confirm, or
+ * one whose setup expired, leaves the authenticator in use where it was.
+ * CONTROL: a refusal changes nothing and reads nothing, as before.
  */
-describe('Account Settings: a replacement whose answer does not arrive', () => {
+describe('Account Settings: a replacement that does not finish', () => {
   const lost = () => Promise.reject(new TypeError('Failed to fetch'))
   const page = () => new Response('<!doctype html><html></html>', { status: 200, headers: { 'Content-Type': 'text/html' } })
   const serverError = () => new Response('<html><body><h1>502 Bad Gateway</h1></body></html>',
@@ -639,104 +658,18 @@ describe('Account Settings: a replacement whose answer does not arrive', () => {
 
   it.each([
     ['the request is lost on the way', lost, 'Could not reach the server'],
+    ['the answer is a page, not this API', page, 'not with a setup this screen can read'],
     ['the server answers with an error', serverError, 'The server refused this (HTTP 502)'],
-  ])('%s and the account still reads on: ON stays, with what went wrong', async (_what, answer, words) => {
+  ])('%s: ON stays, with what went wrong, and nothing is read again', async (_what, answer, words) => {
     const calls = account({ enabled: true }, { setup: answer })
     const { onMfaChange } = mount({ ...PAT, mfa_enabled: true })
     await startReplacement()
-    // "On" is said again only because the server was asked again.
-    await waitFor(() => expect(reads(calls)).toBe(2))
-    expect(await screen.findByText('Two-factor is ON for this account.')).toBeInTheDocument()
-    expect(screen.getByRole('alert')).toHaveTextContent(words)
+    expect(await screen.findByRole('alert')).toHaveTextContent(words)
+    expect(screen.getByText('Two-factor is ON for this account.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Start replacement' })).toBeInTheDocument()
+    expect(screen.queryByText(/OFF|may be off/)).toBeNull()
+    expect(reads(calls)).toBe(1)
     expect(onMfaChange).not.toHaveBeenCalled()
-  })
-
-  it.each([
-    ['the request is lost on the way', lost],
-    ['the answer is a page, not this API', page],
-    ['the server answers with an error', serverError],
-  ])('%s and the account reads off: OFF with a warning, and the shell is told', async (_what, answer) => {
-    const state = { enabled: true }
-    // The server took the request: the old key is gone before any answer.
-    // Only that first answer goes missing; the setup that follows is answered.
-    let first = true
-    account(state, {
-      setup: () => {
-        state.enabled = false
-        if (!first) return json(SETUP)
-        first = false
-        return answer()
-      },
-    })
-    const { onMfaChange } = mount({ ...PAT, mfa_enabled: true })
-    await startReplacement()
-    expect(await screen.findByText('Two-factor is OFF for this account.')).toBeInTheDocument()
-    const warning = screen.getByText(/Two-factor is off for this account now/)
-    expect(warning).toHaveTextContent(/Set it up below before you sign out/)
-    expect(screen.queryByText('Two-factor is ON for this account.')).toBeNull()
-    expect(screen.queryByRole('alert')).toBeNull()
-    expect(onMfaChange.mock.calls).toEqual([[false]])
-    // The way back is on the page: the password, a new key, a first code.
-    startSetup()
-    await screen.findByTestId('two-factor-key')
-    expect(screen.getByText(/stays off until a code from the new authenticator is confirmed/)).toBeInTheDocument()
-    await turnOn('123456')
-    expect(await screen.findByText('Two-factor is ON for this account.')).toBeInTheDocument()
-    expect(onMfaChange).toHaveBeenLastCalledWith(true)
-    // The warning was about that replacement. Turned on, it is over: a later
-    // reset by an administrator reads as plain off.
-    state.enabled = false
-    fireEvent.click(tab('Username'))
-    await openOff()
-    expect(screen.queryByText(/Two-factor is off for this account now/)).toBeNull()
-  })
-
-  it('the warning ends when the account reads on again, however that came about', async () => {
-    const state = { enabled: true }
-    account(state, { setup: () => { state.enabled = false; return lost() } })
-    mount({ ...PAT, mfa_enabled: true })
-    await startReplacement()
-    await screen.findByText(/Two-factor is off for this account now/)
-    // Set up from another screen meanwhile: this tab reads the account as on.
-    state.enabled = true
-    fireEvent.click(tab('Username'))
-    fireEvent.click(tab('Two-factor'))
-    await screen.findByText('Two-factor is ON for this account.')
-    // A reset after that is not this replacement: plain off, no warning.
-    state.enabled = false
-    fireEvent.click(tab('Username'))
-    await openOff()
-    expect(screen.queryByText(/Two-factor is off for this account now/)).toBeNull()
-  })
-
-  it.each([
-    ['the request is lost on the way', lost],
-    ['the answer is a page, not this API', page],
-    ['the server answers with an error', serverError],
-  ])('%s and the account cannot be read either: not ON, and the page says it may be off', async (_what, answer) => {
-    const state = { enabled: true, down: false }
-    const calls = account(state, {
-      me: () => (state.down ? lost() : json({ ...ME, mfa_enabled: state.enabled, mfa_secret_unreadable: false })),
-      setup: () => { state.down = true; state.enabled = false; return answer() },
-    })
-    const { onMfaChange } = mount({ ...PAT, mfa_enabled: true })
-    await startReplacement()
-    expect(await screen.findByText('Two-factor could not be confirmed for this account.')).toBeInTheDocument()
-    expect(screen.getByText(/may be off for this\s+account now/)).toHaveTextContent(/Check it on this tab before you sign out/)
-    expect(screen.queryByText('Two-factor is ON for this account.')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Replace authenticator' })).toBeNull()
-    // The shell's copy no longer says on either.
-    expect(onMfaChange).toHaveBeenLastCalledWith(false)
-    // Still unreadable: still not on. Then the server is back, and says off.
-    const before = reads(calls)
-    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
-    await waitFor(() => expect(reads(calls)).toBe(before + 1))
-    expect(await screen.findByText('Two-factor could not be confirmed for this account.')).toBeInTheDocument()
-    state.down = false
-    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
-    expect(await screen.findByText('Two-factor is OFF for this account.')).toBeInTheDocument()
-    expect(screen.getByText(/Two-factor is off for this account now/)).toBeInTheDocument()
   })
 
   it('a refused replacement start changes nothing and reads nothing: ON stays, with the refusal', async () => {
@@ -749,15 +682,32 @@ describe('Account Settings: a replacement whose answer does not arrive', () => {
     expect(onMfaChange).not.toHaveBeenCalled()
   })
 
-  it('a replacement started again before it is confirmed leaves the page saying two-factor is off now', async () => {
-    account({ enabled: true })
-    mount({ ...PAT, mfa_enabled: true })
+  it('a replacement cancelled before it is confirmed: the key leaves the page and ON stays', async () => {
+    const calls = account({ enabled: true })
+    const { onMfaChange } = mount({ ...PAT, mfa_enabled: true })
     await startReplacement()
     await screen.findByTestId('two-factor-key')
-    fireEvent.click(screen.getByRole('button', { name: 'Start again' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel replacement' }))
     expect(shownKey()).toBeNull()
-    // No key is on the page and the old authenticator is gone: said, not implied.
-    expect(screen.getByText(/Two-factor is off for this account now/)).toHaveTextContent(/before you sign out/)
+    expect(screen.getByText('Two-factor is ON for this account.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Replace authenticator' })).toBeInTheDocument()
+    expect(calls.filter(c => c.url.endsWith('/api/auth/mfa/enable'))).toHaveLength(0)
+    expect(onMfaChange).not.toHaveBeenCalled()
+  })
+
+  it('a replacement whose setup expired: the dead key is dropped, the account reads ON, and it can start again', async () => {
+    const calls = account({ enabled: true }, { enable: () => json({ detail: EXPIRED }, 400) })
+    const { onMfaChange } = mount({ ...PAT, mfa_enabled: true })
+    await startReplacement()
+    await screen.findByTestId('two-factor-key')
+    await useNew('123456')
+    expect(await screen.findByRole('alert')).toHaveTextContent(EXPIRED)
+    expect(screen.getByText('Two-factor is ON for this account.')).toBeInTheDocument()
+    expect(shownKey()).toBeNull()
+    expect(reads(calls)).toBe(2)
+    expect(onMfaChange).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Replace authenticator' }))
+    expect(screen.getByRole('button', { name: 'Start replacement' })).toBeInTheDocument()
   })
 })
 
@@ -795,39 +745,33 @@ describe('Account Settings: closing while a setup is on the page', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
-  it('a replacement that is not confirmed: the question says two-factor is OFF until the new code is confirmed', async () => {
+  it('a replacement that is not confirmed: the question says the authenticator in use keeps working', async () => {
     const ask = asks(false)
     const { onClose, onMfaChange } = await replacementUnderWay()
     await screen.findByTestId('two-factor-key')
     closeIt()
     expect(ask).toHaveBeenCalledTimes(1)
     expect(ask).toHaveBeenLastCalledWith(expect.stringMatching(
-      /^Two-factor is OFF for this account until a code from the new authenticator is confirmed\./))
+      /^This replacement is not confirmed yet\. Closing drops the new key\. The authenticator you have now keeps working, and nothing changes\./))
     expect(onClose).not.toHaveBeenCalled()
     expect(shownKey()?.textContent).toBe(SEED)
     ask.mockReturnValue(true)
     closeIt()
     expect(onClose).toHaveBeenCalledTimes(1)
-    // The shell was told when the replacement began; closing adds nothing.
-    expect(onMfaChange.mock.calls).toEqual([[false]])
+    // Nothing changed on the account, so the shell is told nothing.
+    expect(onMfaChange).not.toHaveBeenCalled()
   })
 
-  it('a replacement start still on its way: Close asks; Cancel keeps the screen; OK closes and tells the shell', async () => {
+  it('a replacement start still on its way: Close asks nothing and tells the shell nothing, and a late answer is dropped', async () => {
     const ask = asks(false)
     let land: (res: Response) => void = () => {}
     const { onClose, onMfaChange, unmount } = await replacementUnderWay(
       () => new Promise<Response>(resolve => { land = resolve }))
+    // Nothing is on the page yet, and a start changes nothing on the account.
     closeIt()
-    expect(ask).toHaveBeenCalledTimes(1)
-    expect(ask).toHaveBeenLastCalledWith(expect.stringMatching(/Two-factor may be OFF for this account/))
-    expect(onClose).not.toHaveBeenCalled()
-    expect(onMfaChange).not.toHaveBeenCalled()
-    expect(screen.getByText('Two-factor is ON for this account.')).toBeInTheDocument()
-    ask.mockReturnValue(true)
-    closeIt()
+    expect(ask).not.toHaveBeenCalled()
     expect(onClose).toHaveBeenCalledTimes(1)
-    // The answer will be dropped with the screen, so "on" is no longer known.
-    expect(onMfaChange.mock.calls).toEqual([[false]])
+    expect(onMfaChange).not.toHaveBeenCalled()
     unmount()
     let wasRead: () => void = () => {}
     const read = new Promise<void>(resolve => { wasRead = resolve })
@@ -836,28 +780,7 @@ describe('Account Settings: closing while a setup is on the page', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
     // The key did not outlive the screen, and nothing more was said.
     expect(document.body.textContent).not.toContain('AAAA')
-    expect(onMfaChange.mock.calls).toEqual([[false]])
-  })
-
-  it('a replacement whose answer was lost and cannot be confirmed: Close asks then too', async () => {
-    const ask = asks(true)
-    const state = { down: false }
-    account({ enabled: true }, {
-      me: () => (state.down ? Promise.reject(new TypeError('Failed to fetch'))
-        : json({ ...ME, mfa_enabled: true, mfa_secret_unreadable: false })),
-      setup: () => { state.down = true; return Promise.reject(new TypeError('Failed to fetch')) },
-    })
-    const { onClose } = mount({ ...PAT, mfa_enabled: true })
-    fireEvent.click(tab('Two-factor'))
-    fireEvent.click(await screen.findByRole('button', { name: 'Replace authenticator' }))
-    type(screen.getByLabelText('Your password'), 'pw-right')
-    type(screen.getByLabelText('A code from the authenticator you are replacing'), '111111')
-    fireEvent.click(screen.getByRole('button', { name: 'Start replacement' }))
-    await screen.findByText('Two-factor could not be confirmed for this account.')
-    closeIt()
-    expect(ask).toHaveBeenCalledTimes(1)
-    expect(ask).toHaveBeenLastCalledWith(expect.stringMatching(/Two-factor may be OFF for this account/))
-    expect(onClose).toHaveBeenCalledTimes(1)
+    expect(onMfaChange).not.toHaveBeenCalled()
   })
 
   it('with nothing on the page, Close asks nothing', async () => {
@@ -881,8 +804,8 @@ describe('Account Settings: closing while a setup is on the page', () => {
     type(screen.getByLabelText('A code from the authenticator you are replacing'), '111111')
     fireEvent.click(screen.getByRole('button', { name: 'Start replacement' }))
     await screen.findByTestId('two-factor-key')
-    await turnOn('222222')
-    await screen.findByText('Two-factor is ON for this account.')
+    await useNew('222222')
+    await screen.findByText('The new authenticator is the one in use now.')
     closeIt()                                   // a replacement that finished
     expect(ask).not.toHaveBeenCalled()
     expect(onClose).toHaveBeenCalledTimes(6)
@@ -1008,7 +931,7 @@ describe('the shell and the account screen', () => {
           : json({ ...ME, mfa_enabled: state.enabled, mfa_secret_unreadable: false })
       }
       if (url.endsWith('/api/auth/mfa/setup') && setup) return setup(call)
-      if (url.endsWith('/api/auth/mfa/setup')) { state.enabled = false; return json(SETUP) }
+      if (url.endsWith('/api/auth/mfa/setup')) return json(SETUP)
       if (url.endsWith('/api/auth/mfa/enable')) { state.enabled = true; return json({ status: 'MFA enabled' }) }
       if (url.endsWith('/api/models')) return json({ groups: [] })
       if (url.endsWith('/api/sessions/mine')) return json({ sessions: [] })
@@ -1067,11 +990,12 @@ describe('the shell and the account screen', () => {
     expect(setups(calls)).toHaveLength(1)
   })
 
-  it('a replacement closed while its start is on the way: the shell no longer holds the account as on', async () => {
+  it('a replacement closed while its start is on the way: the shell still holds the account as on', async () => {
     const ask = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const state = { enabled: true, down: false }
-    // The start reaches the server and is never answered here.
-    const calls = shell(state, () => { state.enabled = false; return new Promise<Response>(() => {}) })
+    // The start reaches the server and is never answered here. The server
+    // changes nothing on the account before a confirm.
+    const calls = shell(state, () => new Promise<Response>(() => {}))
     await signedIn()
     await openAccount()
     fireEvent.click(tab('Two-factor'))
@@ -1081,15 +1005,16 @@ describe('the shell and the account screen', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Start replacement' }))
     await waitFor(() => expect(setups(calls)).toHaveLength(1))
     fireEvent.click(screen.getByRole('button', { name: 'Close' }))
-    expect(ask).toHaveBeenCalledTimes(1)
+    // Nothing was on the page, so nothing was asked.
+    expect(ask).not.toHaveBeenCalled()
     expect(screen.queryByText('Account Settings')).toBeNull()
     // From here the account cannot be read, so the tab shows the shell's own
-    // copy of it: and that copy must not still say "on".
+    // copy of it: still on, which is the truth.
     state.down = true
     await openAccount()
     fireEvent.click(tab('Two-factor'))
-    expect(await screen.findByText('Two-factor is OFF for this account.')).toBeInTheDocument()
-    expect(screen.queryByText('Two-factor is ON for this account.')).toBeNull()
+    expect(await screen.findByText('Two-factor is ON for this account.')).toBeInTheDocument()
+    expect(screen.queryByText('Two-factor is OFF for this account.')).toBeNull()
   })
 
   it('a guest has no account screen, so no Two-factor tab', async () => {

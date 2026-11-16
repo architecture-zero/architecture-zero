@@ -102,7 +102,7 @@ import pytest
 from app import jwt_auth, security, state_store
 from app.jwt_auth import (LOCKOUT_DURATION_MINUTES, MAX_LOGIN_ATTEMPTS,
                           create_access_token, hash_password, validate_password)
-from app.users import (create_user, deactivate_user, enable_mfa, get_user_by_id,
+from app.users import (create_user, deactivate_user, get_user_by_id,
                        get_user_by_username, lock_user, set_mfa_secret, unlock_user)
 
 LIMIT = MAX_LOGIN_ATTEMPTS
@@ -139,7 +139,6 @@ def _account(role, mfa=False):
     if mfa:
         seed = pyotp.random_base32()
         set_mfa_secret(uid, seed)
-        enable_mfa(uid)
     token = create_access_token(uid, name, role)
     return {"id": uid, "name": name, "role": role, "seed": seed,
             "headers": {"Authorization": f"Bearer {token}"}}

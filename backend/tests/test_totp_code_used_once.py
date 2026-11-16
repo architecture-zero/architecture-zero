@@ -40,8 +40,9 @@ FIX (each fails on the doors as they were):
     cannot settle puts the seed's digest, or the key's account and
     digest, into the error or a log line
   - a code for a seed that has since been replaced is a wrong code: a
-    sign-in, a re-key or a confirm held across a re-key or a new setup,
-    carrying a fresh code for the replaced seed, is refused
+    sign-in or a re-key held across a re-key and its confirm, or a confirm
+    held across a new setup, carrying a fresh code for the replaced seed,
+    is refused
   - no door checks a code any other way (read from the source): not by
     .verify(), and not by .now(), .at(), .generate_otp() or .timecode()
     on a one-time-password object built anywhere but the helper
@@ -69,7 +70,7 @@ import pytest
 from app import jwt_auth, security, state_store
 from app.jwt_auth import (LOCKOUT_DURATION_MINUTES, MAX_LOGIN_ATTEMPTS,
                           create_access_token, hash_password)
-from app.users import (create_user, deactivate_user, enable_mfa, get_user_by_id,
+from app.users import (create_user, deactivate_user, get_user_by_id,
                        increment_failed_attempts, lock_user, set_mfa_secret, unlock_user)
 
 LIMIT = MAX_LOGIN_ATTEMPTS
@@ -91,7 +92,6 @@ def _account(role="member", mfa=True):
     if mfa:
         seed = pyotp.random_base32()
         set_mfa_secret(uid, seed)
-        enable_mfa(uid)
     token = create_access_token(uid, name, role)
     return {"id": uid, "name": name, "role": role, "seed": seed,
             "headers": {"Authorization": f"Bearer {token}"}}
@@ -755,7 +755,21 @@ def test_no_seed_derived_value_reaches_an_error_or_a_log_line(accounts, monkeypa
 # that request free to finish with a fresh code from the replaced
 # authenticator - the one the re-key was meant to retire. The stored seed is
 # read again once the code is accepted. Each case holds a request after its
-# match, runs the replacement to the end, then lets it go.
+# match, runs the replacement to the end, then lets it go. Since 2026-11-15 a
+# re-key's setup only STAGES its seed and the old one stays live until the
+# confirm, so "to the end" is the setup AND the confirm
+# (test_mfa_setup_stages_the_seed.py).
+
+def _replace(client, account, code):
+    """A re-key run to the end: the setup with `code` from the live seed,
+    then the confirm with the staged seed's current code."""
+    rekey = _rekey(client, account, code)
+    assert rekey.status_code == 200 and rekey.json().get("secret"), rekey.text
+    confirm = client.post("/api/auth/mfa/enable", headers=account["headers"],
+                          json={"code": _code(rekey.json()["secret"])})
+    assert confirm.status_code == 200, confirm.text
+    return confirm
+
 
 def test_a_sign_in_held_across_a_rekey_with_a_fresh_old_seed_code_is_refused(
         client, accounts, monkeypatch):
@@ -768,10 +782,11 @@ def test_a_sign_in_held_across_a_rekey_with_a_fresh_old_seed_code_is_refused(
     held, box = _in_the_background(lambda: client.post(
         "/api/auth/mfa/complete", json={"mfa_token": token, "code": _code(old_seed, 1)}))
     assert matched.wait(20), "the sign-in never matched its code"
-    rekey = _rekey(client, someone, _code(old_seed, 0))
-    release.set()
+    try:
+        _replace(client, someone, _code(old_seed, 0))
+    finally:
+        release.set()
     held.join(30)
-    assert rekey.status_code == 200 and rekey.json().get("secret"), rekey.text
     sign_in = box["answer"]
     assert sign_in.status_code == 401 and sign_in.json() == {"detail": WRONG}, \
         f"a code from the replaced authenticator signed in: {sign_in.status_code} {sign_in.text}"
@@ -784,10 +799,11 @@ def test_a_rekey_held_across_a_rekey_with_another_old_seed_code_is_refused(
     matched, release = _hold_the_first_match(monkeypatch)
     held, box = _in_the_background(lambda: _rekey(client, someone, _code(old_seed, 1)))
     assert matched.wait(20), "the first re-key never matched its code"
-    second = _rekey(client, someone, _code(old_seed, 0))
-    release.set()
+    try:
+        _replace(client, someone, _code(old_seed, 0))
+    finally:
+        release.set()
     held.join(30)
-    assert second.status_code == 200 and second.json().get("secret"), second.text
     first = box["answer"]
     assert first.status_code == 400 and first.json() == {"detail": WRONG}, \
         f"a code from the replaced authenticator re-keyed: {first.status_code} {first.text}"
@@ -795,8 +811,9 @@ def test_a_rekey_held_across_a_rekey_with_another_old_seed_code_is_refused(
 
 def test_a_confirm_held_across_a_new_setup_does_not_turn_the_new_seed_on(
         client, accounts, monkeypatch):
-    """A confirm proves the seed it read; a second setup stored another
-    meanwhile. Turning two-factor on then would enable a seed nobody proved."""
+    """A confirm proves the seed it read; a second setup staged another
+    meanwhile. The confirm reads the staged seed again after the record's
+    write and finds it replaced: a wrong code, and nothing turned on."""
     someone = accounts(mfa=False)
     r = client.post("/api/auth/mfa/setup", headers=someone["headers"], json={"current_password": PW})
     assert r.status_code == 200, r.text

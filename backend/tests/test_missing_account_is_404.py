@@ -57,7 +57,7 @@ import pytest
 from app import jwt_auth
 from app.jwt_auth import create_access_token, hash_password
 from app.routers import users as users_router
-from app.users import (create_user, deactivate_user, enable_mfa,
+from app.users import (create_user, deactivate_user,
                        get_user_by_id_any_status, set_mfa_secret, unlock_user)
 
 PW = "OldPassw0rd!x"
@@ -75,7 +75,6 @@ def _account(role, mfa=False):
     uid = create_user(name, hash_password(PW), role=role)
     if mfa:
         set_mfa_secret(uid, pyotp.random_base32())
-        enable_mfa(uid)
     token = create_access_token(uid, name, role)
     return {"id": uid, "name": name, "role": role,
             "headers": {"Authorization": f"Bearer {token}"}}

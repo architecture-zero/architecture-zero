@@ -9,6 +9,9 @@ own page while his row read mfa_enabled=1. Two server-side facts now hold:
   1. /api/auth/me reports mfa_enabled, so a client can render the truth.
   2. /api/auth/mfa/setup refuses an enabled account unless rekey is explicit,
      and the refusal leaves the stored secret untouched.
+
+(Since 2026-11-15 even an accepted setup leaves the stored secret untouched:
+it stages the new one until the confirm - test_mfa_setup_stages_the_seed.py.)
 """
 import pyotp
 import pytest
@@ -115,9 +118,12 @@ def test_setup_rekeys_only_with_explicit_flag(client, probe):
                           "mfa_code": pyotp.TOTP(secret).now()},
                     headers=probe["headers"])
     assert r.status_code == 200, r.text
+    # Staged, not stored (2026-11-15): the account keeps its seed and stays
+    # on until a code from the new one is confirmed at /mfa/enable
+    # (test_mfa_setup_stages_the_seed.py).
     row = get_user_by_id(probe["id"])
-    assert row["mfa_secret"] != secret       # re-keyed
-    assert row["mfa_enabled"] is False       # disabled until the new verify
+    assert row["mfa_secret"] == secret and r.json()["secret"] != secret
+    assert row["mfa_enabled"] is True
 
 
 def test_setup_plain_for_unenrolled_account(client, probe):
@@ -187,7 +193,8 @@ def test_stranded_seed_reads_as_unreadable_not_as_unenrolled(client, probe):
 
 def test_unfinished_enrollment_with_unreadable_seed_is_not_stranded(client, probe):
     """mfa_enabled=False + unreadable = enrollment never finished; the seed was
-    never a factor, setup overwrites it under the current key, and login stays
+    never a factor, a confirmed setup overwrites it under the current key (the
+    setup itself stages and writes nothing to the row), and login stays
     password-only. Pins the predicate's polarity."""
     _strand(probe["id"], enabled=False)
     r = client.post("/api/auth/login", json=_USER)

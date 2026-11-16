@@ -12,8 +12,10 @@ Three facts pinned here, the template first (the fleet order):
    verified the code against the LIVE seed and answered 200 for a right one and
    401 for a wrong one, with no counter and no throttle: an unbounded oracle for
    the current code, open to a session alone. Every door that accepts a current
-   code was only as strong as that oracle. It now answers 409 on an enrolled
-   account, the same answer for any code.
+   code was only as strong as that oracle. It answered 409 on an enrolled
+   account, the same answer for any code; since 2026-11-15, when setup began
+   staging its seed, it checks the STAGED seed only and answers a 400 to
+   start again, before reading any code, when nothing is staged.
 
 3. Wrong codes count per ACCOUNT, in a bound only a right code clears. The
    account lock (failed_attempts) cannot be that bound: a correct password
@@ -121,9 +123,11 @@ def test_rekey_takes_the_current_code_as_well_as_the_password(client, probe):
 
     r = _rekey(client, probe, mfa_code=pyotp.TOTP(seed).now())
     assert r.status_code == 200, r.text
+    # Staged, not stored (2026-11-15): the live seed and the factor stay as
+    # they are until the new code is confirmed.
     row = _row(probe["id"])
-    assert row["mfa_secret"] == r.json()["secret"] != seed
-    assert row["mfa_enabled"] is False, "off until the new code verifies, as before"
+    assert row["mfa_secret"] == seed != r.json()["secret"]
+    assert row["mfa_enabled"] is True, "the live factor stays on until the confirm"
 
 
 def test_the_rekey_finishes_on_the_new_code(client, probe):
@@ -167,13 +171,16 @@ def test_a_stranded_seed_cannot_be_rekeyed_by_a_code_it_cannot_check(client, pro
 # -- 2. Enable checks a pending code only --------------------------------------
 
 def test_enable_on_an_enrolled_account_checks_no_code(client, probe):
+    """Nothing staged: refused before any code is read. A 400 to start the
+    setup again since 2026-11-15 (it was a 409 for any enrolled account; an
+    enrolled account confirming a staged re-key is now the normal case)."""
     seed = probe["secret"]
     answers = []
     for code in (pyotp.TOTP(seed).now(), _wrong_code(seed)):
         r = client.post("/api/auth/mfa/enable", headers=probe["headers"], json={"code": code})
         answers.append((r.status_code, r.json()["detail"]))
     assert answers[0] == answers[1], "a right and a wrong code must read alike"
-    assert answers[0][0] == 409, answers
+    assert answers[0][0] == 400 and "start the setup again" in answers[0][1].lower(), answers
     row = _row(probe["id"])
     assert row["mfa_secret"] == seed and row["mfa_enabled"]
 
@@ -225,15 +232,17 @@ def test_a_right_code_clears_the_bound(client, probe, monkeypatch):
 
 def test_a_mistyped_pending_code_is_a_400_not_a_401(client, probe):
     """A signed-in client reads a 401 as an expired session and signs out, so a
-    mistyped code in the middle of a re-key - with MFA off until it verifies -
-    must not answer one. The step-up doors' contract: a string 400."""
+    mistyped code in the middle of a re-key must not answer one. The step-up
+    doors' contract: a string 400. (The live factor stays on throughout since
+    2026-11-15: the re-key's seed is staged until the confirm.)"""
     r = _rekey(client, probe, mfa_code=pyotp.TOTP(probe["secret"]).now())
     assert r.status_code == 200, r.text
     fresh = r.json()["secret"]
     r = client.post("/api/auth/mfa/enable", headers=probe["headers"],
                     json={"code": _wrong_code(fresh)})
     assert r.status_code == 400 and r.json()["detail"] == "Invalid authenticator code", r.text
-    assert _row(probe["id"])["mfa_enabled"] is False
+    row = _row(probe["id"])
+    assert row["mfa_enabled"] is True and row["mfa_secret"] == probe["secret"]
 
 
 # -- 4. The pending confirm, the burst, and what may refund guesses ------------
@@ -255,13 +264,16 @@ def test_pending_codes_count_in_the_same_bound(client, probe, monkeypatch):
     r = client.post("/api/auth/mfa/enable", headers=probe["headers"],
                     json={"code": pyotp.TOTP(fresh).now()})
     assert r.status_code == 429, r.text
-    assert _row(probe["id"])["mfa_enabled"] is False
+    # Not turned on with the staged seed; the live one stays (2026-11-15).
+    row = _row(probe["id"])
+    assert row["mfa_enabled"] is True and row["mfa_secret"] == probe["secret"]
 
 
 def test_a_pending_setup_expires(client, probe):
-    """A seed setup stored may be confirmed for MFA_PENDING_TTL, then the setup
+    """A seed setup staged may be confirmed for MFA_PENDING_TTL, then the setup
     starts again - a pending seed no longer waits forever behind a door that
-    takes a session alone."""
+    takes a session alone. An expired re-key changes nothing (2026-11-15):
+    the account keeps the seed it had, on."""
     from app import state_store
     r = _rekey(client, probe, mfa_code=pyotp.TOTP(probe["secret"]).now())
     assert r.status_code == 200, r.text
@@ -271,7 +283,8 @@ def test_a_pending_setup_expires(client, probe):
     r = client.post("/api/auth/mfa/enable", headers=probe["headers"],
                     json={"code": pyotp.TOTP(fresh).now()})
     assert r.status_code == 400 and "expired" in r.json()["detail"], r.text
-    assert _row(probe["id"])["mfa_enabled"] is False
+    row = _row(probe["id"])
+    assert row["mfa_enabled"] is True and row["mfa_secret"] == probe["secret"]
 
 
 def test_the_bound_holds_against_a_burst(probe):

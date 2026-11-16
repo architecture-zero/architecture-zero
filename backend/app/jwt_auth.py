@@ -433,8 +433,9 @@ MFA_SEED_UNREADABLE_DETAIL = (
 def mfa_seed_stranded(user: dict | None) -> bool:
     """True when a second factor IS enrolled and its seed cannot be read.
     Both halves on purpose: an unreadable seed on an account that never
-    finished enrolling was never a factor, and mfa/setup overwrites it under
-    the current key, so that case self-heals and must not be blocked."""
+    finished enrolling was never a factor (a row from before setup staged
+    its seed), and a confirmed setup (mfa/enable) overwrites it under the
+    current key, so that case self-heals and must not be blocked."""
     return bool(user and user.get("mfa_enabled") and user.get("mfa_secret_unreadable"))
 
 

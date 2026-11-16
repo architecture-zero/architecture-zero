@@ -220,17 +220,15 @@ def update_user_username(user_id: int, username: str) -> bool:
 # ── MFA ──────────────────────────────────────────────────────────────────────
 
 def set_mfa_secret(user_id: int, secret: str):
-    # Enabling is a separate step: the secret is provisional until the user
-    # proves possession with a first valid code. Encrypted at rest - the
-    # column must never hold a mintable seed in the clear.
+    # The confirm's one write: a code from `secret` has just been accepted, so
+    # it becomes the account's live seed AND two-factor is on, in ONE update -
+    # never a moment with the new seed stored and the factor off. Setup
+    # writes nothing here; it stages the seed (security.stage_mfa_seed) until
+    # this confirm. Encrypted at rest - the column must never hold a mintable
+    # seed in the clear.
     with get_session() as db:
         db.query(User).filter(User.id == user_id).update(
-            {"mfa_secret": encrypt_at_rest(secret), "mfa_enabled": False})
-
-
-def enable_mfa(user_id: int):
-    with get_session() as db:
-        db.query(User).filter(User.id == user_id).update({"mfa_enabled": True})
+            {"mfa_secret": encrypt_at_rest(secret), "mfa_enabled": True})
 
 
 def disable_mfa(user_id: int):

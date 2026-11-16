@@ -273,11 +273,12 @@ def test_username_change_needs_the_callers_password_and_mints_nothing_without_it
 
 
 def test_mfa_setup_needs_the_callers_password_on_enrollment_and_rekey(client, admin_headers):
-    """POST /api/auth/mfa/setup replaces the TOTP seed; on an enrolled
-    account that disables MFA until the new code verifies, so `rekey: true`
+    """POST /api/auth/mfa/setup replaced the TOTP seed; on an enrolled
+    account that disabled MFA until the new code verified, so `rekey: true`
     on a bearer alone was a one-call second-factor strip. Intent is not
     proof: the password comes first, and a refused call leaves the stored
-    seed exactly as it was - enrolled or not."""
+    seed exactly as it was - enrolled or not. (Since 2026-11-15 even an
+    accepted setup only stages its seed until the confirm.)"""
     from app.db import get_session
     from app.models import User
     uid = _mk(client, admin_headers, "su_mfa", password="MfaDoorP1")
@@ -312,7 +313,13 @@ def test_mfa_setup_needs_the_callers_password_on_enrollment_and_rekey(client, ad
                         json={"rekey": True, "current_password": "MfaDoorP1",
                               "mfa_code": pyotp.TOTP(seed).now()})
         assert r.status_code == 200, r.text
-        assert get_user_by_id(uid)["mfa_secret"] != seed
+        # Staged until a code from it is confirmed (2026-11-15): the live
+        # seed stays, and the new one waits in the pending record.
+        from app.security import staged_mfa_seed
+        assert get_user_by_id(uid)["mfa_secret"] == seed
+        assert staged_mfa_seed(uid) == r.json()["secret"] != seed
     finally:
+        from app.security import clear_mfa_pending
+        clear_mfa_pending(uid)
         with get_session() as db:
             db.query(User).filter(User.id == uid).update({"mfa_enabled": False, "mfa_secret": None})

@@ -361,7 +361,7 @@ def burn_mfa_challenge(jti: str) -> None:
 # same five per fifteen minutes the account lock allows a password guesser.
 TOTP_MAX_FAILURES   = int(os.getenv("TOTP_MAX_FAILURES",   "5"))
 TOTP_FAILURE_WINDOW = int(os.getenv("TOTP_FAILURE_WINDOW", "900"))  # seconds
-# How long a seed that setup stored may still be confirmed. Before this a
+# How long a seed that setup staged may still be confirmed. Before this a
 # pending seed waited forever, and the confirm was a door that takes a session
 # alone (2026-10-02, the same defensive read).
 MFA_PENDING_TTL     = int(os.getenv("MFA_PENDING_TTL",     "1800"))  # seconds
@@ -407,17 +407,52 @@ def clear_totp_attempts(user_id: int) -> None:
     state_store.delete(_totp_key(user_id))
 
 
-def mark_mfa_pending(user_id: int) -> None:
-    """Setup just stored a seed nobody has proven yet: it may be confirmed
-    for MFA_PENDING_TTL seconds, then the setup must start again."""
-    state_store.put(_pending_key(user_id), {"since": time.time()}, MFA_PENDING_TTL)
+def stage_mfa_seed(user_id: int, seed: str) -> None:
+    """Setup just made a seed nobody has proven yet: it is STAGED here, not
+    written to the account, and the confirm may turn it on for
+    MFA_PENDING_TTL seconds - then the setup must start again. A second
+    setup replaces it and restarts the clock: the newest QR code wins.
+
+    Why staged and not stored on the account: the account's seed column is
+    its LIVE factor. Setup used to write the new seed there and switch
+    two-factor off until the new code was confirmed, so a re-key signed in
+    with the password alone meanwhile, and a re-key nobody confirmed left
+    two-factor off for good. Staged, the live seed and its doors are
+    untouched until the confirm writes the new seed and switches the factor
+    on in one update (users.set_mfa_secret).
+
+    Encrypted at rest like the column (crypto_at_rest): a staged seed mints
+    codes too. The store names only a key's namespace when it fails, so the
+    seed reaches no log line from here."""
+    from app.crypto_at_rest import encrypt_at_rest
+    state_store.put(_pending_key(user_id),
+                    {"since": time.time(), "seed": encrypt_at_rest(seed)},
+                    MFA_PENDING_TTL)
 
 
-def mfa_pending_live(user_id: int) -> bool:
-    return state_store.get(_pending_key(user_id)) is not None
+def staged_mfa_seed(user_id: int) -> str | None:
+    """The seed a setup staged for this account, or None. None for every way
+    there is nothing to confirm: no setup, one that expired, one an
+    operator's reset cleared, a record written before seeds were staged, and
+    a seed this instance can no longer decrypt (JWT_SECRET_KEY changed since
+    the setup). The caller answers each the same: start the setup again. It
+    never falls back to the account's live seed."""
+    from app.crypto_at_rest import is_encrypted, try_decrypt_at_rest
+    doc = state_store.get(_pending_key(user_id)) or {}
+    stored = doc.get("seed")
+    if not isinstance(stored, str) or not is_encrypted(stored):
+        return None
+    seed, readable = try_decrypt_at_rest(stored)
+    return seed if readable and seed else None
+
+
+def mfa_pending_minutes() -> int:
+    """MFA_PENDING_TTL in whole minutes, for the words a person reads."""
+    return max(1, MFA_PENDING_TTL // 60)
 
 
 def clear_mfa_pending(user_id: int) -> None:
+    """Drops the staged seed with its record."""
     state_store.delete(_pending_key(user_id))
 
 
@@ -492,14 +527,19 @@ def _matched_step(seed: str, code: str) -> int | None:
     return matched
 
 
-def totp_code_refusal(user_id: int, seed: str, code: str) -> str | None:
+def totp_code_refusal(user_id: int, seed: str, code: str, *,
+                      staged: bool = False) -> str | None:
     """None when `code` is ACCEPTED for the account: it is right for `seed`
     now, and its time step is newer than any the account has had accepted -
     and that step is recorded in the same write. Otherwise the sentence for
     the caller: CODE_WRONG for a code that is not right (text that cannot be
     encoded included - it can match no code, and comparing it would raise),
     CODE_USED for one that is right and not newer than the record. The door
-    counts either one as a miss."""
+    counts either one as a miss.
+
+    `staged` is the confirm's alone: `seed` is the one a setup staged
+    (stage_mfa_seed), not the account's live seed, so that is the one read
+    again below."""
     try:
         code.encode()
     except UnicodeEncodeError:
@@ -526,8 +566,11 @@ def totp_code_refusal(user_id: int, seed: str, code: str) -> str | None:
     # replacement - a sign-in begun before a re-key, carrying a fresh code
     # from the authenticator the re-key was meant to retire, was accepted.
     # So the stored seed is read again, after the record's write, and a code
-    # for a seed that is no longer stored is a wrong code.
-    if not _still_stored(user_id, seed):
+    # for a seed that is no longer stored is a wrong code. At the confirm
+    # that is the STAGED seed: a confirm held while a second setup staged
+    # another, or while an operator's reset cleared it, must not turn on a
+    # seed that is no longer the one waiting.
+    if not (_still_staged(user_id, seed) if staged else _still_stored(user_id, seed)):
         return CODE_WRONG
     return None
 
@@ -538,6 +581,12 @@ def _still_stored(user_id: int, seed: str) -> bool:
     row = get_user_by_id(user_id)
     stored = (row or {}).get("mfa_secret") or ""
     return bool(stored) and secrets.compare_digest(stored.encode(), seed.encode())
+
+
+def _still_staged(user_id: int, seed: str) -> bool:
+    """True when the seed staged for the account is `seed` now."""
+    staged = staged_mfa_seed(user_id) or ""
+    return bool(staged) and secrets.compare_digest(staged.encode(), seed.encode())
 
 
 # -- Password attempts at the step-up doors, per ACCOUNT ----------------------
