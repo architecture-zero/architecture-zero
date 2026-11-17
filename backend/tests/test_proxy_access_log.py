@@ -11,6 +11,14 @@ one set at the http level would add a second line, query string and all. Both
 were measured on nginx:1.30-alpine that day, with canary requests against this
 file and against the one before it.
 
+The error log takes no format and quotes the whole request line, so a
+location that reads files from disk with no try_files fallback - one a client
+can ask for a file that is not there - carries log_not_found off (also
+2026-11-16): the miss stays out of the error log, and the access line still
+records the path and the 404. Each such location is named below; every other
+location that reads files is an exact match serving one fixed file, which a
+client cannot make miss.
+
 This reads the file as text. It cannot show that nginx behaves as configured -
 that was measured in a container, by hand - only that what was measured is
 still what ships. The maps' patterns are run here with Python's re on the same
@@ -236,3 +244,90 @@ def test_control_the_probe_sees_every_server_block(rel):
     assert len(servers) == len(re.findall(r"(?<![\w$])listen\s", text))
     assert all(sum(s.split()[0] == "listen" for s in _statements(body)) == 1
                for _, _, body in servers)
+
+# Locations that read files from disk with no try_files fallback, where a
+# client can name a file that is not there: each carries log_not_found off,
+# set per location and never at the server level, where it would also quiet a
+# location nobody read for it. Exact-match locations serving one fixed file
+# are listed apart: a client cannot make them miss, and if that file is gone
+# (a broken build or mount) the error line is the operator's signal.
+QUIET_MISSES = {"frontend/nginx.conf": ["/assets/"]}
+ONE_FIXED_FILE = {"frontend/nginx.conf": ["= /index.html"]}
+
+# A location with one of these is something other than a file read: a proxy,
+# a fixed answer, the shared proxy include, or try_files (which tests for the
+# file itself and never logs a miss).
+NOT_A_FILE_READ = ("proxy_pass", "return", "include", "try_files")
+
+QUIET = [(rel, loc) for rel in CONFS for loc in QUIET_MISSES.get(rel, [])]
+
+
+def _locations(text, offset=0):
+    """Every location block, nested ones included, in file order, as
+    (label, start, end, body) with start and end as offsets into `text`."""
+    out = []
+    for head, a, b, body in _scan(text)[1]:
+        inner = text.index("{", a) + 1
+        if head[:1] == ["location"]:
+            out.append((" ".join(head[1:]), offset + a, offset + b, body))
+        out.extend(_locations(body, offset + inner))
+    return out
+
+
+def _reads_files(body):
+    return not any(s.split()[0] in NOT_A_FILE_READ for s in _statements(body))
+
+
+def _loud_misses(text, rel):
+    """The listed locations whose own directives lack log_not_found off."""
+    want = QUIET_MISSES.get(rel, [])
+    return [label for label, _, _, body in _locations(text)
+            if label in want and "log_not_found off" not in _statements(body)]
+
+
+@pytest.mark.parametrize("rel,loc", QUIET)
+def test_a_missing_file_stays_out_of_the_error_log(rel, loc):
+    """FIX: the location reads files with no try_files fallback, so a client
+    can ask it for one that is not there. log_not_found off keeps that miss -
+    and the request line the error log would quote with it, query string and
+    all - out of the error log; the access line still has the path and 404."""
+    found = [body for label, _, _, body in _locations(_text(rel)) if label == loc]
+    assert len(found) == 1, "%d locations %s" % (len(found), loc)
+    assert "log_not_found off" in _statements(found[0])
+
+
+@pytest.mark.parametrize("rel", sorted({rel for rel, _ in QUIET}))
+def test_log_not_found_is_set_per_location_only(rel):
+    """FIX: the file's log_not_found lines are the listed locations' and no
+    others - none at the top of the file or a server block's own level."""
+    text = _text(rel)
+    assert re.findall(r"(?<![\w$])log_not_found\s+(\w+)\s*;", text) == (
+        ["off"] * len(QUIET_MISSES[rel]))
+    assert not [s for s in _statements(text) if s.split()[0] == "log_not_found"]
+    for _, _, body in _servers(text):
+        assert not [s for s in _statements(body) if s.split()[0] == "log_not_found"]
+
+
+@pytest.mark.parametrize("rel,loc", QUIET)
+def test_a_location_without_log_not_found_is_caught(rel, loc):
+    """FIX: the probe bites on a single location. In a copy with the line taken
+    out of this one, exactly this one is reported."""
+    text = _text(rel)
+    spans = [(a, b) for label, a, b, _ in _locations(text) if label == loc]
+    assert len(spans) == 1, spans
+    a, b = spans[0]
+    cut, n = re.subn(r"(?<![\w$])log_not_found\s+off\s*;", "", text[a:b], count=1)
+    assert n == 1, "%s has no log_not_found off to take out" % loc
+    assert _loud_misses(text[:a] + cut + text[b:], rel) == [loc]
+
+
+@pytest.mark.parametrize("rel", CONFS)
+def test_control_every_location_that_reads_files_is_accounted_for(rel):
+    """CONTROL: the locations that read files from disk are the listed ones
+    and the exact matches serving one fixed file, nothing else - so a new
+    static location cannot arrive without someone deciding about it. Adding
+    log_not_found changes no location's kind, so this passes both ways."""
+    text = _text(rel)
+    reads = sorted(label for label, _, _, body in _locations(text) if _reads_files(body))
+    assert reads == sorted(QUIET_MISSES.get(rel, []) + ONE_FIXED_FILE.get(rel, []))
+    assert all(label.startswith("= ") for label in ONE_FIXED_FILE.get(rel, []))
