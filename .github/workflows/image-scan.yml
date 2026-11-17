@@ -1,0 +1,85 @@
+# The images the stack runs, scanned (2026-11-17).
+#
+# The repository scan (trivy, scan-type fs) reads files and lockfiles. It
+# never reads the container images the stack actually runs: the ones a
+# compose file pulls and the base image every Dockerfile builds FROM. An
+# operating-system package CVE in any of them was seen by nothing. This scans
+# those images, one matrix job each. The list is read from the files by
+# backend/scripts/list_scanned_images.py (its test pins every rule), never
+# kept by hand, so an image added to a compose file is scanned from the next
+# run on.
+#
+# Weekly and on demand, never on push or pull request: an image's findings
+# change when the vulnerability database or the image's tag moves, not when
+# this tree does, and Actions minutes are not free on a private repository.
+# Its own file so that its schedule does not re-run any other workflow's
+# scheduled jobs.
+name: Image Scan
+
+on:
+  schedule:
+    - cron: "41 9 * * 1"   # Mondays ~02:41 PT, off the top of the hour where scheduled runs queue
+  workflow_dispatch:       # and on demand, from the Actions tab
+
+permissions:
+  contents: read
+
+jobs:
+  list:
+    name: list the pulled and base images
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    outputs:
+      images: ${{ steps.list.outputs.images }}
+    steps:
+      # No job here pushes, so the token is not left in .git/config for the
+      # steps after the checkout to read.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      # The script reads compose files with PyYAML, the version the backend
+      # image carries. Nothing else is installed.
+      - run: python -m pip install --disable-pip-version-check -q pyyaml==6.0.3
+      # A listing that fails (an image named through a variable, a name that
+      # is not an image reference, no image at all) exits 2 and fails this
+      # job, so the scan never runs on a partial list.
+      - name: List the images
+        id: list
+        shell: bash
+        run: |
+          set -euo pipefail
+          images="$(python backend/scripts/list_scanned_images.py --json)"
+          echo "$images"
+          echo "images=$images" >> "$GITHUB_OUTPUT"
+
+  scan:
+    name: trivy image scan (${{ matrix.image }})
+    needs: list
+    runs-on: ubuntu-26.04
+    # A pull that hangs should not bill the default six hours.
+    timeout-minutes: 30
+    strategy:
+      # One image's finding must not cancel the others' scans and hide theirs.
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.list.outputs.images) }}
+    steps:
+      # The checkout is for .trivyignore: trivy reads it from the working
+      # directory, the same file the repository scan honours.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          # The scanner pinned to the version the repository scan uses.
+          version: v0.74.0
+          scan-type: image
+          image-ref: ${{ matrix.image }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          # A finding with no released fix is not one a deployer can act on
+          # by pulling or bumping a tag; the same rule as the repository scan.
+          ignore-unfixed: true
