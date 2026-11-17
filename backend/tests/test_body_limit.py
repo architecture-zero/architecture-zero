@@ -25,6 +25,17 @@ def _installed():
     return next(m for m in app.user_middleware if m.cls is BodySizeLimit)
 
 
+def _doors():
+    """The installed ceiling's DOORS: the paths whose own figure is wider than
+    the default (BodySizeLimit.is_door). Since 2026-11-16 per_path also holds
+    the peer door's NARROWER figure, which is a ceiling and not a door - it
+    asks no credential, and nobody may send it more than the default."""
+    m = _installed()
+    default = m.kwargs["default_limit"]
+    return [path for path, figure in m.kwargs["per_path"].items()
+            if figure is None or figure > default]
+
+
 def test_a_declared_oversize_body_is_refused_before_the_handler(client):
     body = b'{"prompt": "' + b"x" * (MAX_JSON_BODY_BYTES + 16) + b'"}'
     with patch("app.routers.chat.check_injection") as scan:
@@ -39,14 +50,19 @@ def test_the_ceiling_is_wired_with_its_document_doors():
     m = _installed()
     assert m.kwargs["default_limit"] == MAX_JSON_BODY_BYTES
     per_path = m.kwargs["per_path"]
-    # Exactly these two, so a third door has to be added on purpose.
-    assert set(per_path) == {"/api/ingest", "/api/ingest/upload"}
+    # Exactly these three, so another entry has to be added on purpose: the two
+    # document doors, and the peer door's narrower ceiling (2026-11-16).
+    assert set(per_path) == {"/api/ingest", "/api/ingest/upload", "/api/query-kb"}
+    assert per_path["/api/query-kb"] == 64 * 1024 < MAX_JSON_BODY_BYTES
+    assert set(_doors()) == {"/api/ingest", "/api/ingest/upload"}
     assert per_path["/api/ingest"] == MAX_UPLOAD_MB * 1024 * 1024      # the JSON text-ingest door
     assert per_path["/api/ingest/upload"] == (MAX_UPLOAD_MB + 1) * 1024 * 1024
     inst = BodySizeLimit(lambda *a: None, default_limit=m.kwargs["default_limit"], per_path=per_path)
     assert inst.limit_for("/api/chat") == MAX_JSON_BODY_BYTES
     assert inst.limit_for("/api/auth/login") == MAX_JSON_BODY_BYTES
     assert inst.limit_for("/api/ingest/upload") == (MAX_UPLOAD_MB + 1) * 1024 * 1024
+    assert inst.limit_for("/api/query-kb") == 64 * 1024
+    assert not inst.is_door("/api/query-kb")
 
 
 def test_the_ceiling_sits_inside_the_auth_middleware():
@@ -362,8 +378,8 @@ def test_only_true_admits():
 def test_the_installed_ceiling_asks_for_a_credential(admin_headers):
     m = _installed()
     inst = BodySizeLimit(lambda *a: None, **m.kwargs)
-    assert m.kwargs["per_path"], "no door to check"
-    for path, figure in m.kwargs["per_path"].items():
+    assert _doors(), "no door to check"
+    for path, figure in ((p, m.kwargs["per_path"][p]) for p in _doors()):
         assert figure > MAX_JSON_BODY_BYTES, path
         assert inst.limit_for(path, "") == MAX_JSON_BODY_BYTES, path
         assert inst.limit_for(path, "Bearer not-a-real-token") == MAX_JSON_BODY_BYTES, path
@@ -379,7 +395,7 @@ def test_a_document_door_answers_a_caller_with_no_credential_on_the_headers(pres
     ceiling. Holding this caller to the default let them in: behind a proxy
     that streams the doors, a stalled upload was a request held in the app."""
     import json
-    for path in _installed().kwargs["per_path"]:
+    for path in _doors():
         for headers, pieces in (({"Content-Length": "10"}, [b"x" * 10]),
                                 ({"Content-Length": str(60 * _MB)}, [b"x" * _MB] * 60),
                                 ({}, [b"x" * _MB] * 3)):
@@ -404,7 +420,7 @@ def test_a_path_with_no_figure_of_its_own_asks_nobody_who_they_are():
 def test_a_credentialed_body_over_the_default_reaches_a_document_door(admin_headers):
     """The other half, and the one that would ship green if the middleware
     stopped handing the header to the check: every real upload refused."""
-    for path in _installed().kwargs["per_path"]:
+    for path in _doors():
         seen = _through_the_installed_ceiling(
             path, {**admin_headers, "Content-Length": str(3 * _MB)}, [b"x" * _MB] * 3)
         assert seen["reached"] == 3 * _MB, path
@@ -541,7 +557,7 @@ def test_a_signed_in_account_without_the_permission_is_refused_on_the_headers(ac
     for the full figure. Now the door answers the route's 403, nothing read."""
     import json
     member = account("member")
-    for path in _installed().kwargs["per_path"]:
+    for path in _doors():
         with patch("app.body_limit.increment") as count, patch("app.body_limit.log") as record:
             seen = _through_the_installed_ceiling(
                 path, {"Authorization": member, "Content-Length": str(3 * _MB)}, [b"x" * _MB] * 3)
@@ -575,7 +591,7 @@ def test_each_door_answers_what_its_route_answers(account, admin_headers):
     }
     answers = set()
     with patch.object(auth, "WATCHER_API_KEY", "watcher-key-for-this-test"):
-        for path in _installed().kwargs["per_path"]:
+        for path in _doors():
             for who, authorization in callers.items():
                 status, detail = _route_answer(path, authorization)
                 answers.add(status)

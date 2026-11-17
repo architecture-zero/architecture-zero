@@ -44,11 +44,20 @@ PEER_MAX_RESPONSE_BYTES = int(os.getenv("PEER_MAX_RESPONSE_BYTES", str(1024 * 10
 # a resolved follow-up puts its topic first (app/routing.py, peer_lane_query).
 PEER_QUERY_MAX_BYTES = 8000
 
+# An older peer is asked by URL (the 405 fallback in query_peer_kb), and an
+# older peer sits behind an nginx whose request line holds 8k: a question of
+# 8,000 bytes percent-encodes to as many as 24,000 characters, a 414, and
+# three of those open that peer's breaker for every caller. On the GET the
+# question is held to PEER_GET_QUERY_MAX_BYTES - at most 7,500 characters
+# encoded, with room for the path and n (2026-11-16, the security read). The
+# POST keeps PEER_QUERY_MAX_BYTES.
+PEER_GET_QUERY_MAX_BYTES = 2500
 
-def clip_peer_query(query: str) -> str:
-    """`query` cut to PEER_QUERY_MAX_BYTES of UTF-8 at a word, the head kept:
+
+def clip_peer_query(query: str, max_bytes: int = PEER_QUERY_MAX_BYTES) -> str:
+    """`query` cut to `max_bytes` of UTF-8 at a word, the head kept:
     the one rule the asker (query_peer_kb) and the door both apply."""
-    return _clip_for_a_peer(query, PEER_QUERY_MAX_BYTES)
+    return _clip_for_a_peer(query, max_bytes)
 
 
 class PeerResponseTooLarge(Exception):
@@ -455,8 +464,9 @@ def query_peer_kb(peer: dict, query: str, n_results: int = 8, timeout: int = 10)
             resp = None
             log.info("Peer '%s' does not take a POST (405) - asking it by GET, an older peer",
                      name)
+            by_url = dict(asked, q=clip_peer_query(asked["q"], PEER_GET_QUERY_MAX_BYTES))
             resp = _pinned_request("GET", f"{url}/api/query-kb", ip,
-                                   params=asked, headers=headers, timeout=timeout)
+                                   params=by_url, headers=headers, timeout=timeout)
         if 300 <= resp.status_code < 400:
             # Never followed: a redirect to a NAME would be a second, unpinned
             # resolution. The operator registers the final URL instead.

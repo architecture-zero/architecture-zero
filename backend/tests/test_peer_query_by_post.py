@@ -143,7 +143,64 @@ def test_fix_an_over_long_question_is_clipped_at_a_word_by_either_method(monkeyp
     posted = json.loads(post.body)["q"]
     _clipped_at_a_word(posted, LONG_WORDS, bound)
     from urllib.parse import parse_qs, urlsplit
-    assert parse_qs(urlsplit(get.url).query)["q"] == [posted]
+    # The GET retry holds it tighter (round three): see the next test.
+    by_url = parse_qs(urlsplit(get.url).query)["q"][0]
+    _clipped_at_a_word(by_url, LONG_WORDS, peers.PEER_GET_QUERY_MAX_BYTES)
+
+
+def test_fix_the_get_retry_fits_an_older_nginx_request_line(monkeypatch, recorders):
+    """FIX (round three, the security read's INFO-3): the GET an older peer is
+    asked holds the question to PEER_GET_QUERY_MAX_BYTES, so even three-byte
+    letters with no space percent-encode to a request line under nginx's 8k -
+    an older peer never answers 414 and trips its breaker for every caller.
+    The POST keeps PEER_QUERY_MAX_BYTES."""
+    from urllib.parse import parse_qs, urlsplit
+    question = chr(0x6587) * 5000                          # 15,000 bytes, no space
+    _resolver(monkeypatch, {"peer.example.com": [PUBLIC]})
+    sent = _capture_sends(monkeypatch, route=_by_method(405))
+    peers.query_peer_kb(PEER, question)
+    post, get = sent[0][1], sent[1][1]
+    posted = json.loads(post.body)["q"]
+    assert len(posted.encode("utf-8")) > peers.PEER_QUERY_MAX_BYTES - 3
+    assert peers.PEER_GET_QUERY_MAX_BYTES == 2500
+    by_url = parse_qs(urlsplit(get.url).query)["q"][0]
+    assert 2500 - 3 < len(by_url.encode("utf-8")) <= 2500 and posted.startswith(by_url)
+    assert len("GET " + get.path_url + " HTTP/1.1") < 8192
+
+
+def test_fix_a_lone_surrogate_in_the_question_is_posted_not_raised(monkeypatch, recorders):
+    """FIX (round three, LOW-1): a lone surrogate has no UTF-8 form, and the
+    clip raised on it before anything was sent - the asker raised out of the
+    chat's peer lane. It goes as one "?"."""
+    _resolver(monkeypatch, {"peer.example.com": [PUBLIC]})
+    sent = _capture_sends(monkeypatch)
+    out = peers.query_peer_kb(PEER, "abc " + chr(0xD800) + " def", n_results=2)
+    assert [c["peer"] for c in out] == ["Peer One"]
+    assert len(sent) == 1 and sent[0][1].method == "POST"
+    assert json.loads(sent[0][1].body)["q"] == "abc ? def"
+    successes, failures = recorders
+    assert len(successes) == 1 and failures == []
+
+
+def test_fix_the_topic_clip_takes_a_lone_surrogate():
+    """FIX (round three, LOW-1): the peer lane's topic clip is the same helper;
+    a turn that carries a lone surrogate is clipped, over the bound and under
+    it, without raising."""
+    from app import routing
+    topic = ("word " * 400) + chr(0xDC00) + (" word" * 400)
+    got = routing._clip_for_a_peer(topic)
+    assert len(got.encode("utf-8")) <= routing.PEER_TOPIC_CLIP_BYTES
+    assert routing._clip_for_a_peer("a " + chr(0xD800)) == "a ?"
+
+
+def test_guard_the_clip_counts_bytes_on_its_early_return():
+    """GUARD (round three, LOW-3): 3,000 three-byte letters are 9,000 bytes but
+    3,000 characters, so a clip that compared characters to the bound would
+    hand them back whole. True on the code before too; it is here because no
+    test failed when the early return's byte count was made a character count."""
+    got = peers.clip_peer_query(chr(0x20AC) * 3000)
+    assert len(got.encode("utf-8")) <= peers.PEER_QUERY_MAX_BYTES
+    assert got == chr(0x20AC) * (peers.PEER_QUERY_MAX_BYTES // 3)
 
 
 # --- the door ------------------------------------------------------------------
@@ -220,3 +277,39 @@ def test_fix_exposure_off_a_post_meets_the_routes_403(client, door, monkeypatch)
     assert client.get("/api/query-kb", params={"q": "x"}, headers=keyed).status_code == 403
     assert client.post("/api/query-kb", json={"q": "x"}, headers=keyed).status_code == 403
     assert door == []
+
+
+def test_fix_a_lone_surrogate_in_a_posted_question_is_answered(client, door):
+    """FIX (round three, LOW-1): a JSON body can carry a lone surrogate, and
+    the door's clip raised on it - a 500 with no data in it. Now the door
+    answers, and the store is asked with one "?" in its place."""
+    r = client.post("/api/query-kb", content=b'{"q": "abc \\ud800 def", "n": 2}',
+                    headers={"X-Peer-Key": KEY, "Content-Type": "application/json"})
+    assert r.status_code == 200, r.text
+    assert door == [("abc ? def", 2, None)]
+
+
+def test_fix_a_posted_body_past_the_peer_door_ceiling_is_refused(client, door):
+    """FIX (round three, INFO-6): the POST door parsed up to the default JSON
+    ceiling from a keyed peer before it clipped; it has its own, 64 KiB -
+    what uvicorn held the GET's whole request head to. Refused before the
+    parse, the store never asked."""
+    from app.main import PEER_DOOR_BODY_BYTES, app as live_app
+    from app.body_limit import BodySizeLimit
+    assert PEER_DOOR_BODY_BYTES == 64 * 1024
+    m = next(m for m in live_app.user_middleware if m.cls is BodySizeLimit)
+    assert m.kwargs["per_path"]["/api/query-kb"] == PEER_DOOR_BODY_BYTES
+    big = json.dumps({"q": "x " * 40000}).encode()
+    assert len(big) > 64 * 1024
+    r = client.post("/api/query-kb", content=big,
+                    headers={"X-Peer-Key": KEY, "Content-Type": "application/json"})
+    assert r.status_code == 413 and door == []
+
+
+def test_control_a_posted_question_under_the_ceiling_is_answered(client, door):
+    """CONTROL: a body under 64 KiB is read and answered as before."""
+    body = json.dumps({"q": "x " * 20000}).encode()
+    assert 32 * 1024 < len(body) < 64 * 1024
+    r = client.post("/api/query-kb", content=body,
+                    headers={"X-Peer-Key": KEY, "Content-Type": "application/json"})
+    assert r.status_code == 200 and len(door) == 1

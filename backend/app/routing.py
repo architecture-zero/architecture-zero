@@ -305,10 +305,23 @@ def _clip_for_a_peer(topic: str, max_bytes: int = PEER_TOPIC_CLIP_BYTES) -> str:
     split - or cut at the bound when it holds no whitespace. The head is
     kept: the peer lane's topic comes first in its query. The re-attached
     topic is clipped to PEER_TOPIC_CLIP_BYTES; the whole peer question, on
-    both sides of the door, to PEER_QUERY_MAX_BYTES (app/peers.py)."""
-    if len(topic.encode("utf-8")) <= max_bytes:
+    both sides of the door, to PEER_QUERY_MAX_BYTES (app/peers.py).
+
+    A lone surrogate (U+D800 to U+DFFF with no partner) has no UTF-8 form,
+    and a JSON body can carry one: the encode below raised, and the peer
+    door answered 500 (the security read of 2026-11-16). Such a text is
+    normalized first - each lone surrogate becomes one "?", so the text and
+    its bytes stay aligned for the cut below - and every other text is
+    clipped exactly as before. The bound is counted in bytes on every path,
+    the early return included."""
+    try:
+        raw = topic.encode("utf-8")
+    except UnicodeEncodeError:
+        topic = topic.encode("utf-8", "replace").decode("utf-8")
+        raw = topic.encode("utf-8")
+    if len(raw) <= max_bytes:
         return topic
-    head = topic.encode("utf-8")[:max_bytes].decode("utf-8", "ignore")
+    head = raw[:max_bytes].decode("utf-8", "ignore")
     if topic[len(head)].isspace():
         return head.rstrip()
     cut = max((i for i, ch in enumerate(head) if ch.isspace()), default=0)

@@ -7,19 +7,26 @@ handshake lines, and app.main installs it at import.
 
 The first two tests start a real uvicorn with the flags the image starts the
 backend with (the Dockerfile's CMD, or the entrypoint script it runs), on a
-probe app that installs the filter the way app.main does, and read the line
-uvicorn actually wrote:
+probe app that installs the filter the way app.main does, send it raw request
+lines - the origin form, and the targets the security read of 2026-11-16
+showed keeping their query under a leading-slash rule: the absolute form, a
+target that starts with "?", one with no slash, `OPTIONS *?...`, and a
+WebSocket handshake with an absolute target - and read the lines uvicorn
+actually wrote:
 
-FIX      the access line keeps the client, method, path and status, and not the
-         query string
-CONTROL  the same probe without the install writes the query string - so the
-         probe reads the real line, and the FIX is the filter's doing
+FIX      every access line keeps the client, method, target and status, and
+         none keeps the query string; the WebSocket line neither
+CONTROL  the same probe without the install writes the query string on every
+         one of those lines - so the probe reads the real lines, and the FIX
+         is the filter's doing
 FIX      after `import app.main` each logger carries the filter exactly once,
          and installing again adds none
-FIX      a WebSocket handshake line loses its query string too
-CONTROL  an argument that is not a path keeps its "?"
+FIX      a WebSocket handshake line loses its query string, the target's first
+         character whatever it is
+FIX      on the access logger every argument is cut at its "?"
+CONTROL  on the error logger an argument that is not a path keeps its "?"
+CONTROL  an odd record is kept and never raises
 """
-import http.client
 import importlib
 import json
 import logging
@@ -37,6 +44,10 @@ CANARY = "canary-qs-7f3a1c"
 PROBE_APP = '''
 {install}
 async def app(scope, receive, send):
+    if scope["type"] == "websocket":
+        await receive()
+        await send({{"type": "websocket.close", "code": 1008}})
+        return
     if scope["type"] != "http":
         return
     await send({{"type": "http.response.start", "status": 200, "headers": []}})
@@ -44,6 +55,20 @@ async def app(scope, receive, send):
 '''
 # What app.main runs at import.
 INSTALL = "from app import access_log\naccess_log.install()\n"
+
+_HEAD = b"Host: h\r\nConnection: close\r\n\r\n"
+_Q = b"q=" + CANARY.encode() + b"&n=8"
+# (request bytes, the line the filter must leave)
+REQUESTS = [
+    (b"GET /probe?" + _Q + b" HTTP/1.1\r\n" + _HEAD, '"GET /probe HTTP/1.1" 200'),
+    (b"GET http://h/probe?" + _Q + b" HTTP/1.1\r\n" + _HEAD, '"GET http%3A//h/probe HTTP/1.1" 200'),
+    (b"GET ?" + _Q + b" HTTP/1.1\r\n" + _HEAD, '"GET  HTTP/1.1" 200'),
+    (b"GET probe?" + _Q + b" HTTP/1.1\r\n" + _HEAD, '"GET probe HTTP/1.1" 200'),
+    (b"OPTIONS *?" + _Q + b" HTTP/1.1\r\n" + _HEAD, '"OPTIONS %2A HTTP/1.1" 200'),
+    (b"GET http://h/ws?" + _Q + b" HTTP/1.1\r\nHost: h\r\nUpgrade: websocket\r\n"
+     b"Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+     b"Sec-WebSocket-Version: 13\r\n\r\n", '"WebSocket http%3A//h/ws" 403'),
+]
 
 
 def _shipped_flags():
@@ -69,9 +94,25 @@ def _shipped_flags():
     return flags
 
 
+def _status(port: int, request: bytes) -> str:
+    """Send one raw request and return the response's status line."""
+    s = socket.create_connection(("127.0.0.1", port), timeout=10)
+    data = b""
+    try:
+        s.sendall(request)
+        while b"\r\n" not in data:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+    finally:
+        s.close()
+    return data.split(b"\r\n", 1)[0].decode("latin-1")
+
+
 def _served_log(work: Path, install: bool) -> str:
-    """Start uvicorn on the probe, ask it GET /probe?q=CANARY once, and return
-    everything the server wrote."""
+    """Start uvicorn on the probe, send it every request in REQUESTS, and
+    return everything the server wrote."""
     work.mkdir()
     (work / "probe_app.py").write_text(PROBE_APP.format(install=INSTALL if install else ""),
                                        encoding="utf-8")
@@ -95,12 +136,11 @@ def _served_log(work: Path, install: bool) -> str:
                     break
                 except OSError:
                     time.sleep(0.05)
-            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
-            conn.request("GET", f"/probe?q={CANARY}&n=8")
-            assert conn.getresponse().status == 200
-            conn.close()
+            statuses = [_status(port, request) for request, _line in REQUESTS]
+            assert statuses[:5] == ["HTTP/1.1 200 OK"] * 5, statuses
+            assert statuses[5].startswith("HTTP/1.1 403"), statuses
             deadline = time.time() + 10
-            while time.time() < deadline and "/probe" not in out.read_text("utf-8", "replace"):
+            while time.time() < deadline and "WebSocket" not in out.read_text("utf-8", "replace"):
                 time.sleep(0.05)
         finally:
             proc.terminate()
@@ -108,26 +148,30 @@ def _served_log(work: Path, install: bool) -> str:
     return out.read_text("utf-8", "replace")
 
 
-def _probe_lines(text: str) -> list[str]:
-    return [ln for ln in text.splitlines() if '"GET /probe' in ln]
+def _request_lines(text: str) -> list[str]:
+    return [ln for ln in text.splitlines() if " HTTP/1.1\" " in ln or '"WebSocket ' in ln]
 
 
-def test_fix_the_access_line_keeps_the_path_and_drops_the_query(tmp_path):
-    """FIX: the line the shipped server writes names the client, the method,
-    the path and the status, and nothing that followed the "?"."""
+def test_fix_every_access_line_keeps_the_target_and_drops_the_query(tmp_path):
+    """FIX: each line the shipped server writes names the client, the method,
+    the target and the status, and nothing that followed the "?" - whatever
+    the target's first character, and on the WebSocket handshake line too."""
     text = _served_log(tmp_path / "with", install=True)
-    lines = _probe_lines(text)
-    assert len(lines) == 1, text
-    assert "127.0.0.1:" in lines[0] and '"GET /probe HTTP/1.1" 200' in lines[0], lines
-    assert CANARY not in text and "?" not in lines[0], text
+    lines = _request_lines(text)
+    assert len(lines) == len(REQUESTS), text
+    for line, (_request, kept) in zip(lines, REQUESTS):
+        assert kept in line, (kept, line)
+    assert all("127.0.0.1" in line for line in lines), lines
+    assert CANARY not in text, text
 
 
-def test_control_without_the_install_the_line_carries_the_query(tmp_path):
+def test_control_without_the_install_every_line_carries_the_query(tmp_path):
     """CONTROL: the same probe, the install left out - uvicorn writes the
-    query string, so the FIX above reads the real line."""
-    lines = _probe_lines(_served_log(tmp_path / "without", install=False))
-    assert len(lines) == 1, lines
-    assert f'"GET /probe?q={CANARY}&n=8 HTTP/1.1" 200' in lines[0], lines
+    query string on every one of those lines, so the FIX above reads the real
+    lines."""
+    lines = _request_lines(_served_log(tmp_path / "without", install=False))
+    assert len(lines) == len(REQUESTS), lines
+    assert all(CANARY in line for line in lines), lines
 
 
 def _marked(name):
@@ -150,7 +194,7 @@ def test_fix_app_main_installs_the_filter_once_on_each_logger():
 
 def _emit(name, msg, *args):
     """What one record on logger `name` formats to, with the filter on where
-    the code has one (the CONTROL below runs on the code before it too)."""
+    the code has one (the CONTROLs below run on the code before it too)."""
     try:
         from app import access_log
     except ImportError:
@@ -176,14 +220,55 @@ def _emit(name, msg, *args):
 
 
 def test_fix_a_websocket_handshake_line_drops_its_query():
-    """FIX: the handshake line uvicorn writes on uvicorn.error, in its own
-    format (protocols/websockets/websockets_impl.py)."""
+    """FIX: the handshake lines uvicorn writes on uvicorn.error, in their own
+    format (protocols/websockets/websockets_impl.py), with a path target and
+    with an absolute one."""
     got = _emit("uvicorn.error", '%s - "WebSocket %s" [accepted]',
                 ("127.0.0.1", 50000), f"/ws?token={CANARY}")
     assert got == ["('127.0.0.1', 50000) - \"WebSocket /ws\" [accepted]"]
+    got = _emit("uvicorn.error", '%s - "WebSocket %s" %d',
+                ("127.0.0.1", 50000), f"http%3A//h/ws?token={CANARY}", 403)
+    assert got == ["('127.0.0.1', 50000) - \"WebSocket http%3A//h/ws\" 403"]
+
+
+def test_fix_on_the_access_logger_every_argument_is_cut():
+    """FIX: the access line's target is cut whatever its first character."""
+    got = _emit("uvicorn.access", '%s - "%s %s HTTP/%s" %d',
+                "127.0.0.1:50000", "GET", f"?q={CANARY}", "1.1", 200)
+    assert got == ['127.0.0.1:50000 - "GET  HTTP/1.1" 200']
 
 
 def test_control_an_argument_that_is_not_a_path_keeps_its_question_mark():
-    """CONTROL: only a path-shaped argument is cut - any other line on the
-    logger reads as it did."""
+    """CONTROL: on the error logger only a path-shaped argument, or a
+    WebSocket line's target, is cut - any other line reads as it did."""
     assert _emit("uvicorn.error", "%s said %s", "who?", "what?") == ["who? said what?"]
+
+
+class _Weird:
+    def __str__(self):
+        raise RuntimeError("no str")
+
+
+def test_control_an_odd_record_is_kept_and_never_raises():
+    """CONTROL: a record whose arguments are not what uvicorn sends - a dict,
+    None, bytes, a nested tuple, an object that cannot be printed - goes
+    through the filter on both loggers without an exception and is kept."""
+    try:
+        from app import access_log
+    except ImportError:
+        return
+    filters = [access_log.DropQueryStrings()]
+    try:
+        filters.append(access_log.DropQueryStrings(every_argument=True))
+    except TypeError:
+        pass                                   # the filter before it had one rule
+    for flt in filters:
+        for msg, args in (('%s - "WebSocket %s"', (None,)), ("%s", (b"/p?q=x",)),
+                          ("%s", (("x", "/p?q=x"),)), ("%s", (_Weird(),)),
+                          (None, ("/p?q=x",)), ("m", ())):
+            rec = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, msg, args, None)
+            assert flt.filter(rec) is True
+        for odd in ({"a": "/p?q=x"}, ["/p?q=x"], "/p?q=x", None):
+            rec = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, "m", (), None)
+            rec.args = odd
+            assert flt.filter(rec) is True and rec.args is odd

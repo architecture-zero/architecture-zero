@@ -354,7 +354,9 @@ Since v0.1.x, for a script or a client of your own:
   instance: it is asked once more by GET, with the question in the URL, so
   upgrade every peer to keep questions out of URLs. Either way the question
   is held to its first 8,000 bytes (UTF-8), cut at a word - by the asker
-  before it sends and by the door on what it is handed, never refused.
+  before it sends and by the door on what it is handed, never refused; on
+  that GET the asker holds it to 2,500 bytes, so the URL fits an 8k request
+  line. A POST body over 64 KiB is answered 413 before it is read.
 - An authenticator code is accepted once per account, at whichever route
   it is sent: `POST /api/auth/mfa/complete`, the `mfa_code` of a re-key
   (`POST /api/auth/mfa/setup`) and of the caller's own unlock, and

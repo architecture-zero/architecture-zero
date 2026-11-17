@@ -117,6 +117,17 @@ async def _number_out_of_range(request: Request, exc: OverflowError):
     log("request_number_out_of_range", method=request.method,
         route=getattr(route, "path", "(no route)"))
     return JSONResponse(status_code=400, content={"detail": NUMBER_OUT_OF_RANGE})
+# The peer door's request ceiling (2026-11-16, the security read of the POST
+# door): a peer's question rides a POST body, held to PEER_QUERY_MAX_BYTES by
+# the asker and clipped to it at the door, so a body past 64 KiB - what
+# uvicorn's h11 bound held the GET's whole request head to - is no question.
+# Without it the door parsed up to the default JSON ceiling from a keyed peer
+# before the clip. NARROWER than the default, so it is not a door in
+# body_limit's sense (is_door asks only of a wider figure) and asks no
+# credential there - the X-Peer-Key gate is AuthMiddleware's; never wider
+# than the default, which would make it one.
+PEER_DOOR_BODY_BYTES = (min(64 * 1024, MAX_JSON_BODY_BYTES) if MAX_JSON_BODY_BYTES > 0
+                        else 64 * 1024)
 # INNERMOST (added first): the request-body ceiling, so the JSON parser is
 # never handed more than MAX_JSON_BODY_BYTES on any route a caller can reach
 # before authentication. The two ingest doors carry their own figure - see
@@ -130,6 +141,8 @@ app.add_middleware(
         # the file plus its multipart envelope; the handler bounds the FILE
         "/api/ingest/upload": (int(os.getenv("MAX_UPLOAD_MB", "50")) + 1) * 1024 * 1024,
         "/api/ingest": int(os.getenv("MAX_UPLOAD_MB", "50")) * 1024 * 1024,   # the JSON text-ingest door
+        # the peer door: a narrower figure (PEER_DOOR_BODY_BYTES above)
+        "/api/query-kb": PEER_DOOR_BODY_BYTES,
     },
     # A path with a wider figure is a door, and a door asks its route's own
     # question on the headers, with nothing read - whatever ENABLE_AUTH says,
