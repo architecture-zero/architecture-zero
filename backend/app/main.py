@@ -204,6 +204,12 @@ app.include_router(evals_router.router)
 app.include_router(chat_router.router)
 
 _create_schema()   # create all tables via SQLAlchemy (idempotent)
+# A database a restore put back keeps no session (2026-11-17): the restore
+# writes restored.json into the data directory, and this reads it once - on
+# the schema just settled, before anything is served - revoking every
+# session the archive carried. app/restore_flag.py says why and how it fails.
+from app.restore_flag import consume_restore_flag as _consume_restore_flag
+_consume_restore_flag()
 init_config_db()   # seed config defaults
 from app.config import encrypt_plaintext_secrets as _sweep_secrets
 from app.db import one_way_changes_allowed as _one_way_ok

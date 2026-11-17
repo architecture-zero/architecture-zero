@@ -648,7 +648,23 @@ takes both. Copy archives off the machine.
     sudo mv backend/data "$aside"
     mkdir backend/data
     sudo tar -xzf "$aside"/backups/az_backup_<timestamp>.tar.gz -C backend/data
+    printf '{"restored_at": "%s", "archive": "%s"}\n' "$(date -u +%FT%TZ)" "az_backup_<timestamp>.tar.gz" | sudo tee backend/data/restored.json >/dev/null
     docker compose up -d
+
+**Write the restore flag before the restart** (the `printf` line). The
+database in the archive carries its sessions as they were when the archive
+was taken, so every refresh token revoked since - a sign-out, a sign-out
+everywhere, a password change or reset, a deactivation - would be live again
+until its own expiry. The first boot reads `backend/data/restored.json`
+once, before it serves anything: it revokes every session in the database,
+logs `sessions_revoked_after_restore` with the count and the archive's name,
+and deletes the file. Everyone signs in again. A file that is not a small
+JSON object revokes all the same; if the revoke itself fails the file stays
+and the next boot tries again, with an ERROR line saying so; and an ERROR
+`restore_flag_not_removed` means the file could not be deleted - remove it by
+hand, or every boot signs everyone out again. Any way of putting a database
+back - one file from an archive, a Postgres dump loaded with `psql` - takes
+the same file before the restart. (`backend/app/restore_flag.py`.)
 
 An archive unpacks straight into an empty `backend/data/`. The old directory
 is set aside rather than deleted: it holds the other archives, and it is the
