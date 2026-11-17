@@ -27,6 +27,7 @@ FIX      on the access logger every argument is cut at its "?"
 CONTROL  on the error logger an argument that is not a path keeps its "?"
 CONTROL  an odd record is kept and never raises
 """
+import base64
 import importlib
 import json
 import logging
@@ -58,6 +59,9 @@ INSTALL = "from app import access_log\naccess_log.install()\n"
 
 _HEAD = b"Host: h\r\nConnection: close\r\n\r\n"
 _Q = b"q=" + CANARY.encode() + b"&n=8"
+# RFC 6455's sample handshake nonce, built here: written out, the secret
+# scan's generic rule read it as a credential (2026-11-16).
+_WS_NONCE = base64.b64encode(b"the sample nonce")
 # (request bytes, the line the filter must leave)
 REQUESTS = [
     (b"GET /probe?" + _Q + b" HTTP/1.1\r\n" + _HEAD, '"GET /probe HTTP/1.1" 200'),
@@ -66,7 +70,7 @@ REQUESTS = [
     (b"GET probe?" + _Q + b" HTTP/1.1\r\n" + _HEAD, '"GET probe HTTP/1.1" 200'),
     (b"OPTIONS *?" + _Q + b" HTTP/1.1\r\n" + _HEAD, '"OPTIONS %2A HTTP/1.1" 200'),
     (b"GET http://h/ws?" + _Q + b" HTTP/1.1\r\nHost: h\r\nUpgrade: websocket\r\n"
-     b"Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+     b"Connection: Upgrade\r\nSec-WebSocket-Key: " + _WS_NONCE + b"\r\n"
      b"Sec-WebSocket-Version: 13\r\n\r\n", '"WebSocket http%3A//h/ws" 403'),
 ]
 

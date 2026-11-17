@@ -6,3 +6,9 @@
 # which the generic-api-key rule parsed as a credential named 'secret'. Reworded in the
 # next commit; the original commit remains in history.
 5168f05f4a2483819937aadb7485a2deb3e1e493:backend/tests/test_rekey_at_rest_script.py:generic-api-key:25
+
+# 2026-11-16: RFC 6455's sample WebSocket handshake nonce (the RFC's own
+# example, base64 of a plain English phrase) in the access-log test's handshake
+# request, which the generic-api-key rule read as a credential. Not a secret;
+# the next commit builds it at runtime and the original commit stays in history.
+567a5fbe8071f52bbd18ff6bdd8e6221fa6432a9:backend/tests/test_access_log_drops_query.py:generic-api-key:69
