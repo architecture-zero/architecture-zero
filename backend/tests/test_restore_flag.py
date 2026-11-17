@@ -114,7 +114,12 @@ def _restored_instance(tmp_path: Path, owner: int) -> Path:
     con = sqlite3.connect(db)
     try:
         with con:
-            con.execute("UPDATE refresh_tokens SET revoked = 1")
+            # Every session table the copy has (the MCP door's OAuth tokens
+            # where the surface issues them), so exactly two are live.
+            for t in ("refresh_tokens", "oauth_tokens"):
+                if con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                               "AND name = ?", (t,)).fetchone():
+                    con.execute(f"UPDATE {t} SET revoked = 1")
             for n in ("token_9f8e7d6c5b4a3210", "token_0123456789abcdef"):
                 con.execute("INSERT INTO refresh_tokens (user_id, token_hash, expires_at, revoked) "
                             "VALUES (?, ?, ?, 0)", (owner, _hash(n), FUTURE))
@@ -194,9 +199,11 @@ def test_the_flag_revokes_every_live_session_once(put_back, tmp_path, owner_id, 
     got = consume_restore_flag(str(tmp_path))
 
     assert _live() == 0 and not flag.exists()
-    assert got["revoked"] is True and got["tokens_revoked"] == live and got["flag_removed"]
+    assert got["revoked"] is True and got["flag_removed"]
+    assert got["tables"]["refresh_tokens"] == live
+    assert got["tokens_revoked"] == sum(got["tables"].values())
     info = [kw for lvl, e, kw in lines if e == "sessions_revoked_after_restore"]
-    assert len(info) == 1 and info[0]["tokens_revoked"] == live, lines
+    assert len(info) == 1 and info[0]["tokens_revoked"] == got["tokens_revoked"], lines
     assert info[0]["archive"] == "az_backup_20261117.tar.gz" and info[0]["flag_readable"] is True
 
     _add_sessions(owner_id, "token_fedcba9876543210")
