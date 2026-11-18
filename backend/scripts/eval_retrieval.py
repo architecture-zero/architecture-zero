@@ -109,10 +109,15 @@ PAUSE = float(os.getenv("EVAL_QUESTION_PAUSE_SECONDS", "2.0"))
 # restores the prior values in a `finally`, so an interrupted run cannot
 # leave the instance on an experimental configuration.
 #
-# Every arm sets rerank_provider EXPLICITLY (blank = the env default, local):
-# arms run in sequence over live config, so an unlisted key would leak from a
-# previous arm - the gpu-remote arm must never leave remote-http behind for a
-# local arm to inherit. gpu-remote scores the SAME fp32 model off-box via
+# Every arm sets rerank_provider EXPLICITLY: arms run in sequence over live
+# config, so an unlisted key would leak from a previous arm - the gpu-remote
+# arm must never leave remote-http behind for a local arm to inherit. An arm
+# named for a local model pins "local" by name (2026-11-17). It used to set
+# blank, read as "the env default, local" - but blank means whatever
+# RERANK_PROVIDER says, so on a deployment whose env default is hosted-api
+# every "local" arm was scored by the hosted vendor under a local model's
+# label. no-reranker scores nothing; it pins local anyway, so no arm's
+# provider is left to the host. gpu-remote scores the SAME fp32 model off-box via
 # rerank.py's remote-http provider (any endpoint speaking that contract) -
 # the hardware is the variable, so accuracy should hold by construction and
 # the run measures whether it actually does, plus the latency. The int8 arm
@@ -120,13 +125,13 @@ PAUSE = float(os.getenv("EVAL_QUESTION_PAUSE_SECONDS", "2.0"))
 # model); its speedup is architecture-dependent - measure, never assume.
 AB_CONFIGS = [
     ("no-reranker", {"rerank_enabled": "false", "rerank_model": "",
-                     "rerank_provider": ""}),
+                     "rerank_provider": "local"}),
     ("ms-marco",    {"rerank_enabled": "true",
                      "rerank_model": "Xenova/ms-marco-MiniLM-L-6-v2",
-                     "rerank_provider": ""}),
+                     "rerank_provider": "local"}),
     ("int8-cpu",    {"rerank_enabled": "true",
                      "rerank_model": "Xenova/ms-marco-MiniLM-L-6-v2-int8",
-                     "rerank_provider": ""}),
+                     "rerank_provider": "local"}),
     ("gpu-remote",  {"rerank_enabled": "true",
                      "rerank_model": "Xenova/ms-marco-MiniLM-L-6-v2",
                      "rerank_provider": "remote-http"}),
@@ -586,6 +591,10 @@ def run_ab(questions, top_k, misses_only, arms: list[str] | None = None):
 
     # Snapshot the UNION of keys any arm flips - restoring a subset would
     # leave a later-added key stuck on the last arm's value after the run.
+    # A key with no row snapshots as "" and is written back as a blank row
+    # (2026-11-17, read for the provider pin): rerank.py's _cfg reads blank
+    # as unset, so the key reads its env default after the run exactly as
+    # the absent row did.
     all_keys = sorted({k for _, cfg in AB_CONFIGS for k in cfg})
     prior = {k: get_config(k, "") for k in all_keys}
     results = []

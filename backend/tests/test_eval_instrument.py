@@ -281,8 +281,13 @@ def test_ab_configs_are_the_four_arms_and_flip_the_live_keys():
     assert cfgs["ms-marco"]["rerank_model"]
     assert cfgs["int8-cpu"]["rerank_enabled"] == "true"
     assert cfgs["int8-cpu"]["rerank_model"]
+    # A local arm names its provider (2026-11-17): blank meant the env
+    # default, which a deployment may set to hosted-api. The filter read
+    # blank as local, so it would have matched nothing once the arms said so.
     local_models = [c["rerank_model"] for label, c in ev.AB_CONFIGS
-                    if c.get("rerank_enabled") == "true" and not c.get("rerank_provider")]
+                    if c.get("rerank_enabled") == "true"
+                    and c.get("rerank_provider") == "local"]
+    assert local_models
     assert len(set(local_models)) == len(local_models)
     # gpu-remote: same fp32 model as ms-marco ON PURPOSE (isolates hardware),
     # distinguished by provider, never by a fake model name.
