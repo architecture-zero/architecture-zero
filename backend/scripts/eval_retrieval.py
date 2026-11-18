@@ -174,23 +174,37 @@ def _mean(vals: list[float]) -> float | None:
     return round(sum(vals) / len(vals), 4) if vals else None
 
 
-def _tier_rule_note(state: dict, kept_off: int, pools: int,
-                    local_model: str) -> str | None:
-    """The tier rule on a run's record (2026-11-17), or None when it moved no
-    pool. `state` is rerank.status() as the run read it at its start, whose
-    "model" names the model the provider in effect scores with. Under
-    hosted-api a pool that is not all public is never sent: the local model
-    scores it (the tier rule, at rerank._score_hosted), and the turn's
-    receipt says so. Without this line a run asked past the global
-    collection was scored partly or wholly by the local model while its tag
-    named the hosted model alone."""
-    if not kept_off:
+def _local_scoring_note(state: dict, pools: int, kept_off: int, fell_back: int,
+                        local_model: str) -> str | None:
+    """The pools the local model scored under another provider's tag, on a
+    run's record (2026-11-17), or None when there were none. `state` is
+    rerank.status() as the run read it at its start, whose "model" names the
+    model the provider in effect scores with. Two causes, each counted as
+    itself:
+      kept_off   under hosted-api a pool that is not all public is never
+                 sent: the local model scores it (the tier rule, at
+                 rerank._score_hosted).
+      fell_back  the provider's scoring call failed (an error, a timeout, a
+                 missing key) and rerank's fallback chain gave the pool to
+                 the local model: a vendor fallback under hosted-api, a
+                 remote one under remote-http.
+    Without this line such a run was scored partly or wholly by the local
+    model while its tag named the provider's model alone."""
+    if not kept_off and not fell_back:
         return None
-    via = state.get("provider") or "?"
+    provider = state.get("provider") or "?"
+    via = provider
     if state.get("hosted_vendor"):
         via += f" ({state['hosted_vendor']})"
-    return (f"reranker: {state.get('model')} via {via}; tier rule: {kept_off} of "
-            f"{pools} pools scored locally ({local_model})")
+    parts = []
+    if kept_off:
+        parts.append(f"tier rule: {kept_off} of {pools} pools scored locally "
+                     f"({local_model})")
+    if fell_back:
+        who = {"hosted-api": "vendor", "remote-http": "remote"}.get(provider, provider)
+        parts.append(f"{who} fallback: {fell_back} of {pools} pools scored locally "
+                     f"({local_model})")
+    return f"reranker: {state.get('model')} via {via}; " + "; ".join(parts)
 
 
 def _matches(needle: str, source: str) -> bool:
@@ -470,12 +484,14 @@ def run_cohort(questions, top_k, misses_only, label="", stamp=False):
     real_rerank = rr.rerank
     slice_ms: dict[str, int] = {}
     pool_sizes: list[int] = []
-    # The tier rule, counted for the run's record (2026-11-17): the pools
-    # whose scoring ran, and of those the ones the rule kept off the vendor
-    # (the turn's receipt, rerank_hosted_skipped). The local model scored
-    # those, whatever the tag above names. Counting reads the receipt only;
-    # what is scored, sent or refused is rerank's alone.
-    tier = {"pools": 0, "local": 0}
+    # The pools the local model scored, counted for the run's record
+    # (2026-11-17): the pools whose scoring ran, and of those the ones the
+    # tier rule kept off the vendor (the turn's receipt,
+    # rerank_hosted_skipped) and the ones a failed provider call left to the
+    # local model (rerank_provider "local-fallback" with no tier reason). The
+    # local model scored both, whatever the tag above names. Counting reads
+    # the receipt only; what is scored, sent or refused is rerank's alone.
+    counts = {"pools": 0, "tier_rule": 0, "fallback": 0}
     local_model = rr.rerank_model()
 
     def timed_rerank(query, candidates, top_k=None, **kw):
@@ -494,9 +510,11 @@ def run_cohort(questions, top_k, misses_only, label="", stamp=False):
         if caller is not None:
             caller.update(receipt)
         if "rerank_provider" in receipt:
-            tier["pools"] += 1
+            counts["pools"] += 1
             if receipt.get("rerank_hosted_skipped"):
-                tier["local"] += 1
+                counts["tier_rule"] += 1
+            elif receipt["rerank_provider"] == "local-fallback":
+                counts["fallback"] += 1
         return out
 
     rr.rerank = timed_rerank
@@ -521,7 +539,13 @@ def run_cohort(questions, top_k, misses_only, label="", stamp=False):
             slice_ms.pop("last", None)
             t0 = time.time()
             try:
-                results = retrieve(query, top_k=top_k)
+                # At the question's own clearance (2026-11-17), as the answer
+                # run retrieves it (eval_runner: user_level=as_level). None is
+                # Owner, the trusted caller's default. Without it a row
+                # stamped Member or Guest was retrieved at Owner here and at
+                # its own level there: two passes, two systems.
+                results = retrieve(query, top_k=top_k,
+                                   user_level=getattr(q, "as_level", None))
             except RetrievalUnavailable as e:
                 # The index is DOWN (an outage - see database.RetrievalUnavailable). Scored,
                 # the rest of the pass would count the outage as misses and
@@ -575,15 +599,18 @@ def run_cohort(questions, top_k, misses_only, label="", stamp=False):
         "rerank_p50": kt[len(kt) // 2] if kt else None,
         "pool_avg": round(sum(pool_sizes) / len(pool_sizes), 1) if pool_sizes else None,
         "misses": {q.id for q, _, _ in misses},
-        "tier_rule_local": tier["local"], "tier_rule_pools": tier["pools"],
+        "tier_rule_local": counts["tier_rule"], "tier_rule_pools": counts["pools"],
+        "fallback_local": counts["fallback"],
     }
     print(f"\n  recall {hits}/{scored} = {pct}%   rank-1 {rank1}/{hits}   "
           f"unscored {unscored}")
     print(f"  nDCG@{top_k} {out['ndcg']}   MRR {out['mrr']}")
     print(f"  retrieve p50 {out['retrieve_p50']}ms   rerank p50 {out['rerank_p50']}ms   "
           f"avg pool {out['pool_avg']}   cohort wall-clock {out['retrieve_total_s']}s")
-    # Beside the tag, when the tier rule moved any pool to the local model.
-    note = _tier_rule_note(state, tier["local"], tier["pools"], local_model)
+    # Beside the tag, when the tier rule or a fallback moved any pool to the
+    # local model.
+    note = _local_scoring_note(state, counts["pools"], counts["tier_rule"],
+                               counts["fallback"], local_model)
     if note:
         print(f"  {note}")
     print("  per category:")
