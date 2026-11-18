@@ -174,6 +174,25 @@ def _mean(vals: list[float]) -> float | None:
     return round(sum(vals) / len(vals), 4) if vals else None
 
 
+def _tier_rule_note(state: dict, kept_off: int, pools: int,
+                    local_model: str) -> str | None:
+    """The tier rule on a run's record (2026-11-17), or None when it moved no
+    pool. `state` is rerank.status() as the run read it at its start, whose
+    "model" names the model the provider in effect scores with. Under
+    hosted-api a pool that is not all public is never sent: the local model
+    scores it (the tier rule, at rerank._score_hosted), and the turn's
+    receipt says so. Without this line a run asked past the global
+    collection was scored partly or wholly by the local model while its tag
+    named the hosted model alone."""
+    if not kept_off:
+        return None
+    via = state.get("provider") or "?"
+    if state.get("hosted_vendor"):
+        via += f" ({state['hosted_vendor']})"
+    return (f"reranker: {state.get('model')} via {via}; tier rule: {kept_off} of "
+            f"{pools} pools scored locally ({local_model})")
+
+
 def _matches(needle: str, source: str) -> bool:
     """The scorer's own rule (eval_runner._source_matches), not a copy of it:
     a separate copy keeps the old rule whenever the scorer changes, and the
@@ -451,6 +470,13 @@ def run_cohort(questions, top_k, misses_only, label="", stamp=False):
     real_rerank = rr.rerank
     slice_ms: dict[str, int] = {}
     pool_sizes: list[int] = []
+    # The tier rule, counted for the run's record (2026-11-17): the pools
+    # whose scoring ran, and of those the ones the rule kept off the vendor
+    # (the turn's receipt, rerank_hosted_skipped). The local model scored
+    # those, whatever the tag above names. Counting reads the receipt only;
+    # what is scored, sent or refused is rerank's alone.
+    tier = {"pools": 0, "local": 0}
+    local_model = rr.rerank_model()
 
     def timed_rerank(query, candidates, top_k=None, **kw):
         # **kw: the wrapper must accept whatever retrieve() passes the real
@@ -459,9 +485,18 @@ def run_cohort(questions, top_k, misses_only, label="", stamp=False):
         # 2026-09-05, the first A/B after the stats param landed. Forwarding
         # kwargs makes the class unrepeatable).
         pool_sizes.append(len(candidates))
+        # A fresh receipt per call, handed on to a caller that passed its own.
+        caller = kw.pop("stats", None)
+        receipt: dict = {}
         t0 = time.time()
-        out = real_rerank(query, candidates, top_k, **kw)
+        out = real_rerank(query, candidates, top_k, stats=receipt, **kw)
         slice_ms["last"] = int((time.time() - t0) * 1000)
+        if caller is not None:
+            caller.update(receipt)
+        if "rerank_provider" in receipt:
+            tier["pools"] += 1
+            if receipt.get("rerank_hosted_skipped"):
+                tier["local"] += 1
         return out
 
     rr.rerank = timed_rerank
@@ -540,12 +575,17 @@ def run_cohort(questions, top_k, misses_only, label="", stamp=False):
         "rerank_p50": kt[len(kt) // 2] if kt else None,
         "pool_avg": round(sum(pool_sizes) / len(pool_sizes), 1) if pool_sizes else None,
         "misses": {q.id for q, _, _ in misses},
+        "tier_rule_local": tier["local"], "tier_rule_pools": tier["pools"],
     }
     print(f"\n  recall {hits}/{scored} = {pct}%   rank-1 {rank1}/{hits}   "
           f"unscored {unscored}")
     print(f"  nDCG@{top_k} {out['ndcg']}   MRR {out['mrr']}")
     print(f"  retrieve p50 {out['retrieve_p50']}ms   rerank p50 {out['rerank_p50']}ms   "
           f"avg pool {out['pool_avg']}   cohort wall-clock {out['retrieve_total_s']}s")
+    # Beside the tag, when the tier rule moved any pool to the local model.
+    note = _tier_rule_note(state, tier["local"], tier["pools"], local_model)
+    if note:
+        print(f"  {note}")
     print("  per category:")
     for cat, (h, n) in sorted(per_cat.items()):
         print(f"    {cat:<24} {h}/{n}")
