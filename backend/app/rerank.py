@@ -178,6 +178,28 @@ def hosted_vendor() -> str:
     return _cfg("rerank_hosted_vendor", RERANK_HOSTED_VENDOR_DEFAULT).lower()
 
 
+def hosted_model(vendor: str | None = None) -> str:
+    """The model the hosted arm sends its vendor: the rerank_hosted_model key
+    when set, else that vendor's own default. One rule for the send
+    (_score_hosted) and for the label (scoring_model, status) since
+    2026-11-17: status() named the local encoder's model under hosted-api, so
+    a run the vendor scored went on record under a model that never saw it.
+    Never raises: an unknown vendor has no default, so the answer is the key
+    or empty, and status() reports the unknown vendor as its error."""
+    spec = _HOSTED.get(hosted_vendor() if vendor is None else vendor)
+    return (_cfg("rerank_hosted_model", RERANK_HOSTED_MODEL_DEFAULT).strip()
+            or (spec["default_model"] if spec else ""))
+
+
+def scoring_model(provider: str | None = None) -> str:
+    """The model that scores under the provider in effect: the name a record
+    of a run carries (2026-11-17). hosted-api sends hosted_model(); local
+    loads rerank_model(), and remote-http sends it as the request's model.
+    Config reads only - no self-test, no request."""
+    p = rerank_provider() if provider is None else provider
+    return hosted_model() if p == "hosted-api" else rerank_model()
+
+
 def _hosted_unavailable() -> str | None:
     from app.rag_config import RERANK_HOSTED_ALLOWED
     vendor = hosted_vendor()
@@ -294,7 +316,7 @@ def _score_hosted(query: str, texts: list[str],
         raise HostedTierRefused(refused)
     vendor = hosted_vendor()
     spec = _HOSTED[vendor]
-    model = _cfg("rerank_hosted_model", RERANK_HOSTED_MODEL_DEFAULT).strip() or spec["default_model"]
+    model = hosted_model(vendor)
     from app.rag_config import RERANK_REMOTE_TIMEOUT
     r = requests.post(spec["url"],
                       json={"model": model, "query": query, "documents": list(texts)},
@@ -420,7 +442,11 @@ def status() -> dict:
     url, closed latch, missing key NAME - never a value)."""
     provider = rerank_provider()
     model = rerank_model()
-    info = {"enabled": rerank_enabled(), "provider": provider, "model": model,
+    # "model" names the model that scores under this provider (2026-11-17).
+    # It read rerank_model() whatever the provider, so under hosted-api an
+    # eval run's tag named the local encoder while the vendor scored the run.
+    info = {"enabled": rerank_enabled(), "provider": provider,
+            "model": scoring_model(provider),
             "cache_dir": _CACHE_DIR, "loaded": False, "error": None, "self_test": None}
     if not info["enabled"]:
         info["error"] = "reranking is disabled (config rerank_enabled / RERANK_ENABLED)"

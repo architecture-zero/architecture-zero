@@ -167,7 +167,7 @@ def _snapshot() -> dict:
     from app.agent import get_tool_config
     from app.providers import get_provider_config
     from app.corpus_scan import INJECTION_SCAN_MODE
-    from app.rerank import rerank_enabled, rerank_provider, rerank_model
+    from app.rerank import rerank_enabled, rerank_provider, scoring_model
     from app.runtime_config import (ALLOW_GUEST_MODE, RAG_ONLY_MODE, PII_SCAN_MODE,
                                     PII_OUTPUT_MODE, COMP_FIGURE_GUARD,
                                     _config_or_default,
@@ -209,7 +209,11 @@ def _snapshot() -> dict:
         or _config_or_default("default_model", DEFAULT_MODEL))
     snap["rerank_enabled"] = rerank_enabled()
     snap["rerank_provider"] = rerank_provider()
-    snap["rerank_model"] = rerank_model()
+    # The model that scores under that provider (2026-11-17). This read the
+    # local encoder's name whatever the provider, so under hosted-api the
+    # record the assistant reads as current truth named a model that was not
+    # scoring.
+    snap["rerank_model"] = scoring_model(snap["rerank_provider"])
     snap["build"] = os.getenv("GIT_SHA", "")
 
     # Accounts: existence and per-role counts. Never a username - the roster is
