@@ -423,18 +423,28 @@ def _peer_pieces(query: str, as_level) -> list[dict]:
     the same consume floor the chat applies to the caller's clearance
     (PEER_CONSUME_MIN_LEVEL, the chat router's constant). The question's as_level
     stands for the caller; None is Owner, as retrieval reads it. A peer that
-    raises costs its pieces and a log line, never the run."""
+    raises costs its pieces and a log line, never the run.
+
+    A question asked at the guest rung stands for a guest, and asks what a
+    guest turn asks (2026-11-20; the chat's _guest_peers): only the enabled
+    peers GUEST_PEER_IDS names, none when it names none. It asked every
+    enabled peer before, so with the floor lowered a run measured peers no
+    guest is served. It is not counted against the guests' lookup caps: a
+    run is the Owner's measurement, not visitor traffic, and counting it
+    would spend real visitors' daily cap."""
     from app import peer_boundary
     from app.peers import get_peers, query_peer_kb
-    from app.permissions import OWNER_LEVEL
+    from app.permissions import GUEST_LEVEL, OWNER_LEVEL
     from app.rerank import rerank
     from app.routers.chat import PEER_CONSUME_MIN_LEVEL
-    from app.runtime_config import RAG_SIMILARITY_THRESHOLD
+    from app.runtime_config import GUEST_PEER_IDS, RAG_SIMILARITY_THRESHOLD
     level = OWNER_LEVEL if as_level is None else int(as_level)
     if level < PEER_CONSUME_MIN_LEVEL:
         log("eval_peer_query_refused", caller_level=level, required=PEER_CONSUME_MIN_LEVEL)
         return []
     peers = [p for p in get_peers() if p.get("enabled")]
+    if level <= GUEST_LEVEL:
+        peers = [p for p in peers if p.get("id") in GUEST_PEER_IDS]
     if not peers:
         return []
     sent: list[dict] = []

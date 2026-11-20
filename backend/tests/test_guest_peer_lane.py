@@ -296,6 +296,40 @@ def test_fix_the_boot_line_says_a_lowered_floor_with_no_list_asks_no_peer():
     assert said_at(MEMBER_LEVEL, {"docs"}) == ([], [])
 
 
+# -- The eval measures what a guest is served ------------------------------------------
+
+def _eval_pieces(as_level, *, allow, floor):
+    """The eval runner's peer lane for one question asked as `as_level`, with
+    both peers registered and the chat's selection passing the pieces through
+    (the wiring is under test, not the rank). Returns the peer ids asked."""
+    from app import eval_runner
+    asked: list = []
+
+    def fake_query(peer, query, n_results=8, timeout=10):
+        asked.append(peer["id"])
+        return _pieces_for(peer)
+
+    with patch("app.peers.get_peers", return_value=[dict(p) for p in PEERS]), \
+         patch("app.peers.query_peer_kb", side_effect=fake_query), \
+         patch("app.peer_boundary.select",
+               side_effect=lambda q, pieces, threshold, rank, on_event=None, report=None: list(pieces)), \
+         patch("app.routers.chat.PEER_CONSUME_MIN_LEVEL", floor), \
+         patch("app.runtime_config.GUEST_PEER_IDS", frozenset(allow), create=True):
+        eval_runner._peer_pieces(QUESTION, as_level)
+    return asked
+
+
+def test_fix_an_eval_question_asked_as_a_guest_asks_the_guests_peers():
+    """FIX: a run's question asked at the guest rung stands for a guest, so it
+    asks what a guest turn asks - the listed peers, none with the list empty -
+    and spends none of the visitors' counts (the Owner's measurement is not
+    visitor traffic). Before, with the floor lowered, it asked every enabled
+    peer: it measured peers a guest is never served."""
+    assert _eval_pieces(GUEST_LEVEL, allow={"docs"}, floor=GUEST_LEVEL) == ["docs"]
+    assert _eval_pieces(GUEST_LEVEL, allow=(), floor=GUEST_LEVEL) == []
+    assert _counted() == []
+
+
 # -- CONTROL: what must not change -----------------------------------------------------
 
 def test_control_default_floor_a_guest_asking_for_peers_is_refused_as_before(client):
@@ -361,6 +395,13 @@ def test_control_the_help_lane_never_asks_a_peer_for_a_guest(client):
     assert r.status_code == 200, r.text
     assert asked == []
     assert _counted() == []
+
+
+def test_control_an_eval_question_above_the_guest_rung_asks_every_enabled_peer():
+    """CONTROL: the list is the guest rung's. A question asked as a member,
+    or as the Owner (as_level None), asks every enabled peer as before."""
+    assert sorted(_eval_pieces(MEMBER_LEVEL, allow={"docs"}, floor=GUEST_LEVEL)) == ["docs", "ops"]
+    assert sorted(_eval_pieces(None, allow={"docs"}, floor=MEMBER_LEVEL)) == ["docs", "ops"]
 
 
 def test_control_the_default_floor_still_shuts_guests_out():
