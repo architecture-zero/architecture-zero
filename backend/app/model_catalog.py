@@ -103,9 +103,11 @@ def _store(models: list) -> None:
 
 def _refresh_behind() -> None:
     """Refresh a STALE list on a thread of its own, one at a time, keeping the
-    stale list if the read fails (and asking again sooner). A chat answers
-    from the list it has meanwhile: the read is a blocking HTTP call, and the
-    chat edge runs inside the server's event loop."""
+    stale list if the read fails (and asking again sooner). A caller answers
+    from the list it has meanwhile: the read is a blocking HTTP call of up to
+    5 s, and no request should wait on it. (The chat route runs its gates on a
+    worker thread since 2026-11-20, so even the inline first read below holds
+    one request, never the event loop.)"""
     if not _refresh_lock.acquire(blocking=False):
         return
 
