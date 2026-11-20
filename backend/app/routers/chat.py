@@ -29,6 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from typing import Literal
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
+import anyio.to_thread  # binds anyio too: chat() runs its gates on a worker
 
 from app import model_catalog
 from app.agent import (get_active_tools, execute_tool, TurnToolBudget,
@@ -701,7 +702,12 @@ async def chat(request: ChatRequest, req: Request, current_user: dict | None = D
     # Split into three functions 2026-09-28 (one turn at a time) so the guard
     # could sit between the gates and retrieval without re-indenting the body:
     # a refused turn must cost nothing - no rerank, no model, no row.
-    _chat_gates(request, req, current_user)
+    # On a worker thread since 2026-11-20: the gates read the rate limit's
+    # window and config, and the first family alias after a restart reads
+    # Anthropic's model list inline (up to 5 s) - on the event loop, every
+    # other request waited. A refusal raised there is raised here, unchanged;
+    # request.model is resolved in place.
+    await anyio.to_thread.run_sync(_chat_gates, request, req, current_user)
     # ONE TURN AT A TIME per caller and session (app/turn_guard.py carries the
     # rule and the reasons - refuse, not queue). Taken here so a double-tap, a
     # resend or a second tab is refused before retrieval; freed by
