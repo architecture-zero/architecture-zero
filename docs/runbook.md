@@ -357,6 +357,20 @@ Since v0.1.x, for a script or a client of your own:
   before it sends and by the door on what it is handed, never refused; on
   that GET the asker holds it to 2,500 bytes, so the URL fits an 8k request
   line. A POST body over 64 KiB is answered 413 before it is read.
+- A guest's `use_peers` no longer decides anything (2026-11-20). At the
+  shipped `PEER_CONSUME_MIN_LEVEL` (1) a guest asking for peers is refused
+  them, as before. Where an operator lowered it to 0, a guest used to ask
+  every enabled peer whenever its body said `use_peers`, uncounted; now the
+  server decides for every guest turn, whatever the body says: the enabled
+  peers `GUEST_PEER_IDS` names, none when it names none (the default - so
+  lowering the floor alone no longer opens the lane, and the backend's log
+  says so at start, as an error line, `guest_peer_lane`). Each guest lookup
+  is counted, `GUEST_PEER_MAX_LOOKUPS` per `GUEST_PEER_WINDOW` seconds per
+  address and then `GUEST_PEER_DAILY_LIMIT` per UTC day across addresses;
+  past either, or when a count cannot be read, the turn is answered without
+  its peers, never refused, and `guest_peer_lookup_skipped` names why. An
+  evaluation question asked at the guest rung asks the same listed peers,
+  uncounted. Signed-in callers are unchanged.
 - An authenticator code is accepted once per account, at whichever route
   it is sent: `POST /api/auth/mfa/complete`, the `mfa_code` of a re-key
   (`POST /api/auth/mfa/setup`) and of the caller's own unlock, and

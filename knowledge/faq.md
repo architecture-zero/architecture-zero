@@ -102,6 +102,14 @@ opt-in (ECO_EXPOSE_KB plus per-peer keys, each scoped `public`, `all`, or
 stops below the Owner-only departments and reaching those takes `owner`). A down peer is skipped by a circuit breaker instead of
 stalling every chat, and per-peer health is visible at /api/peers/status.
 
+Guests do not reach the peers by default: PEER_CONSUME_MIN_LEVEL keeps
+peer content for members and above. Lowering it to 0 is not enough on its
+own. A guest then asks only the peers GUEST_PEER_IDS names (none until you
+name some), whatever its request says, and each guest lookup is counted per
+address and per day (GUEST_PEER_MAX_LOOKUPS, GUEST_PEER_WINDOW,
+GUEST_PEER_DAILY_LIMIT); past either count the guest still gets an answer,
+from this instance's own documents.
+
 ## Can the assistant browse the web?
 
 No - by design, and it will say so. This core has no web access and no
