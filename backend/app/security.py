@@ -782,9 +782,11 @@ def release_own_unlock(user_id: int, window: float) -> None:
 # Tune the limit high enough that real visitors never reach it - it's a backstop, not a gate.
 
 
-def check_daily_guest_budget(limit: int) -> None:
-    if limit <= 0:
-        return
+def _bump_daily_count(redis_prefix: str, db_prefix: str, degraded_event: str) -> int:
+    """Add one to today's count (the UTC day) under a name and return the new
+    count: in Redis when Redis is reachable, the database otherwise. The guest
+    budget's own body until 2026-11-20, when the guest peer cap below became
+    its second caller; the budget's keys and its log line are unchanged."""
     from datetime import datetime, timezone
     day = datetime.now(timezone.utc).strftime("%Y%m%d")
     from app.redis_client import get_redis
@@ -792,7 +794,7 @@ def check_daily_guest_budget(limit: int) -> None:
     count = None
     if r:
         try:
-            key = f"az:guestbudget:{day}"
+            key = f"{redis_prefix}:{day}"
             count = r.incr(key)
             if count == 1:
                 r.expire(key, 90000)  # ~25h, so the daily key self-cleans
@@ -805,17 +807,67 @@ def check_daily_guest_budget(limit: int) -> None:
             # protect. Logged, never silent - a security control that quietly
             # changes scope is the worse failure.
             from app.logger import log_error
-            log_error("guest_budget_redis_degraded", error=f"{type(e).__name__}: {e}"[:300])
+            log_error(degraded_event, error=f"{type(e).__name__}: {e}"[:300])
             count = None
     if count is None:
         # Database fallback: one counter per UTC day, expiring ~25h after its
         # first hit so the key self-cleans like the Redis one.
-        count = state_store.bump_counter(f"guest_budget:{day}", 90000)
+        count = state_store.bump_counter(f"{db_prefix}:{day}", 90000)
+    return count
+
+
+def check_daily_guest_budget(limit: int) -> None:
+    if limit <= 0:
+        return
+    count = _bump_daily_count("az:guestbudget", "guest_budget", "guest_budget_redis_degraded")
     if count > limit:
         raise HTTPException(
             status_code=429,
             detail="The demo is seeing high demand right now - please try again a little later.",
         )
+
+
+# -- Guest peer lookups (2026-11-20) -------------------------------------------
+# A guest turn the Eco Mode consume floor admits - only where an operator
+# lowered it to the guest rung - asks the peers GUEST_PEER_IDS names
+# (app/runtime_config.py holds the setting, its figures and the reasoning).
+# Each such turn is one LOOKUP, and a lookup costs work this instance does
+# not own: a request to every listed peer, the peer's own retrieval, a rank
+# here of what comes back - and three failures open a peer's breaker for
+# every caller. So a guest lookup is bounded twice, the shape of the guest
+# controls above:
+#   - per address, `max_lookups` per `window` seconds (a sliding window in
+#     the database, the auth throttles' store);
+#   - in all, `daily_limit` per UTC day across every address (the guest
+#     budget's counter), for traffic spread over many addresses.
+# Past either the turn is ANSWERED without its peers - never refused: the
+# guest still gets this instance's own answer. There is no off switch while
+# the list names a peer, and a figure of 0 asks no peer.
+
+
+def guest_peer_lookup_refusal(client_ip: str, *, max_lookups: int, window: int,
+                              daily_limit: int) -> str | None:
+    """None when this guest turn may ask its peers, and the lookup is counted;
+    otherwise why not, one word for the log line: "address" (over the
+    per-address window), "daily" (over the daily cap) or "unavailable" (a
+    count could not be read or written, so no peer is asked - closed, not
+    open). Never raises: the turn goes on either way.
+
+    The address is checked first, and a lookup it refuses is not counted
+    against the day, so one busy address cannot spend everyone's cap."""
+    try:
+        _, allowed = state_store.bump_window(f"guest_peer:{client_ip}",
+                                            max(window, 1), max(max_lookups, 0))
+        if not allowed:
+            return "address"
+        if _bump_daily_count("az:guestpeerbudget", "guest_peer_budget",
+                             "guest_peer_budget_redis_degraded") > max(daily_limit, 0):
+            return "daily"
+        return None
+    except Exception as e:
+        from app.logger import log_error
+        log_error("guest_peer_count_failed", error=f"{type(e).__name__}: {e}"[:300])
+        return "unavailable"
 
 
 # ── Prompt injection detection ────────────────────────────────────────────────

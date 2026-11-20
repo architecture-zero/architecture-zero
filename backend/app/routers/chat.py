@@ -45,17 +45,19 @@ from app.jwt_auth import check_permission, require_permission, within_stored_ran
 from app.logger import log, log_error
 from app.metrics import increment, record_request
 from app.peers import clip_peer_query, get_peers, query_peer_kb
-from app.permissions import MEMBER_LEVEL
+from app.permissions import GUEST_LEVEL, MEMBER_LEVEL
 from app.providers import (stream_chat_events, non_stream_tool_call, supports_tools,
                            _provider_for_model, offered_providers,
                            bounded_window_tokens)
 from app.security import (check_rate_limit, check_injection, client_ip_from_request,
-                          check_daily_guest_budget)
+                          check_daily_guest_budget, guest_peer_lookup_refusal)
 from app import turn_guard
 from app.runtime_config import (_config_or_default, DEFAULT_MODEL, RAG_ONLY_MODE,
                                 RAG_SIMILARITY_THRESHOLD,
                                 guest_chat_available,
                                 DEMO_DAILY_GUEST_LIMIT, GUEST_MODEL,
+                                GUEST_PEER_IDS, GUEST_PEER_MAX_LOOKUPS,
+                                GUEST_PEER_WINDOW, GUEST_PEER_DAILY_LIMIT,
                                 CHAT_MAX_INPUT_CHARS, GUEST_MAX_INPUT_CHARS,
                                 CHAT_MAX_HISTORY_MESSAGES, CHAT_MAX_FIELD_CHARS,
                                 CHAT_MAX_MODEL_CHARS,
@@ -136,7 +138,9 @@ GUEST_MAX_TOKENS             = int(os.getenv("GUEST_MAX_TOKENS", "1024"))
 # content may enter their answer. Member by default - a guest on a public demo
 # surface has no business reading another instance's corpus. See the gate in
 # the chat handler for why this is a local floor and not a level shipped to
-# the peer.
+# the peer. Lowered to the guest rung it no longer opens the lane on its own
+# (2026-11-20): a guest then asks only the peers GUEST_PEER_IDS names, each
+# lookup counted - _guest_peers below.
 PEER_CONSUME_MIN_LEVEL       = int(os.getenv("PEER_CONSUME_MIN_LEVEL", str(MEMBER_LEVEL)))
 # Identity card - the owner's profile, pinned into the OWNER's chat turns so
 # the assistant knows who it's talking to independent of RAG retrieval
@@ -580,6 +584,50 @@ def _say_the_bounds() -> None:
 _say_the_bounds()
 
 
+def _guest_peers(req: Request, session_id: str) -> list[dict]:
+    """The peers a guest turn asks once the consume floor has admitted it
+    (2026-11-20): the server's choice, never the body's. Only an enabled peer
+    whose `id` GUEST_PEER_IDS names - a registered peer the list leaves out
+    is never asked for a guest - and only when the lookup passes the guest
+    counts (security.guest_peer_lookup_refusal: the address's window, then
+    the day's cap). An empty list asks none and says nothing per turn (the
+    boot line says it once); a list that names no enabled peer asks none and
+    counts nothing (none_enabled). Past a count, or when one cannot be read,
+    none - and the turn is still answered, from this instance's own
+    retrieval, with the reason in the log."""
+    if not GUEST_PEER_IDS:
+        return []
+    listed = [p for p in get_peers() if p.get("enabled") and p.get("id") in GUEST_PEER_IDS]
+    why_not = (guest_peer_lookup_refusal(client_ip_from_request(req),
+                                         max_lookups=GUEST_PEER_MAX_LOOKUPS,
+                                         window=GUEST_PEER_WINDOW,
+                                         daily_limit=GUEST_PEER_DAILY_LIMIT)
+               if listed else "none_enabled")
+    if why_not:
+        increment("guest_peer_lookup_skipped_total")
+        log("guest_peer_lookup_skipped", session_id=session_id, reason=why_not)
+        return []
+    return listed
+
+
+def _say_the_guest_peer_lane() -> None:
+    """Said once, at import, when the consume floor admits a guest: the peers
+    a guest turn asks and the counts in force - as an ERROR when
+    GUEST_PEER_IDS names none, because the floor the operator lowered then
+    opens nothing (since 2026-11-20; until then lowering it was all it took),
+    and a lane that stays shut without a word reads as a fault. At the
+    shipped floor a guest never reaches the lane, and nothing is said."""
+    if PEER_CONSUME_MIN_LEVEL > GUEST_LEVEL:
+        return
+    (log if GUEST_PEER_IDS else log_error)(
+        "guest_peer_lane", peers=sorted(GUEST_PEER_IDS),
+        max_lookups=GUEST_PEER_MAX_LOOKUPS, window=GUEST_PEER_WINDOW,
+        daily_limit=GUEST_PEER_DAILY_LIMIT)
+
+
+_say_the_guest_peer_lane()
+
+
 def _refuse_oversize(reason: str, detail: str, **figures) -> None:
     """The one exit for a size refusal, so each is counted and logged the same
     way: the reason and the figures, never the caller's text. Until 2026-09-28
@@ -910,6 +958,7 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
     # the access ladder - see query_kb_for_peer), and the CONSUME side decides
     # who may RECEIVE it, here. Both halves answer to the same ladder, and
     # neither depends on the other being honest.
+    enabled_peers: list[dict] = []   # the peers this turn asks
     if help_mode:
         pass   # the help lane never asks a peer: product help is local by definition
     elif request.use_peers and caller_level < PEER_CONSUME_MIN_LEVEL:
@@ -917,32 +966,45 @@ async def _chat_answer(request: ChatRequest, req: Request, current_user: dict | 
                     caller_level, PEER_CONSUME_MIN_LEVEL)
         log("peer_query_refused", caller_level=caller_level,
             required=PEER_CONSUME_MIN_LEVEL)
+    elif current_user is None and caller_level >= PEER_CONSUME_MIN_LEVEL:
+        # A GUEST THE FLOOR ADMITS (2026-11-20) - only where an operator
+        # lowered it to the guest rung. Until this, the BODY decided from
+        # here: a guest that sent use_peers asked every enabled peer, on every
+        # turn, uncounted. Now the server decides: the body's use_peers is not
+        # read, _guest_peers picks the peers GUEST_PEER_IDS names and counts
+        # the lookup, and a turn it gives none asks none - with peer_sources
+        # NULL, since no peer was asked. At the shipped floor a guest never
+        # reaches this branch: the refusal above, or no peer lane at all.
+        enabled_peers = _guest_peers(req, request.session_id)
+        _peers_asked = bool(enabled_peers)
     elif request.use_peers:
         _peers_asked = True
+        all_peers = get_peers()
+        enabled_peers = [p for p in all_peers if p.get("enabled")]
+        logger.info("Peer query requested - %d peers registered, %d enabled", len(all_peers), len(enabled_peers))
+        if not enabled_peers:
+            logger.warning("use_peers=True but no enabled peers found in config")
+    if enabled_peers:
         # THE PEER QUERY (2026-11-16): what every peer is asked and what their
         # pieces are ranked against below. routing.peer_lane_query holds the
         # rule: off by default (PEER_FOLLOWUP_RESOLVED), the prompt itself,
         # byte for byte; switched on, a bare follow-up is asked with its
         # subject, resolved from the user's own words only and never from an
-        # answer. The model and the saved history keep request.prompt.
+        # answer. The model and the saved history keep request.prompt. (Out
+        # of the signed-in branch since 2026-11-20, so a guest's lookup asks
+        # the way a signed-in one does.)
         from app.routing import peer_lane_query
         peer_query = peer_lane_query(request.prompt, request.history)
-        all_peers = get_peers()
-        enabled_peers = [p for p in all_peers if p.get("enabled")]
-        logger.info("Peer query requested - %d peers registered, %d enabled", len(all_peers), len(enabled_peers))
-        if enabled_peers:
-            loop = asyncio.get_running_loop()
-            results = await asyncio.gather(
-                *[loop.run_in_executor(None, lambda p=p: query_peer_kb(p, peer_query)) for p in enabled_peers],
-                return_exceptions=True,
-            )
-            for peer, result in zip(enabled_peers, results):
-                if isinstance(result, Exception):
-                    logger.error("Peer '%s' raised an exception: %s", peer.get("name"), result)
-                elif isinstance(result, list):
-                    peer_chunks.extend(result)
-        else:
-            logger.warning("use_peers=True but no enabled peers found in config")
+        loop = asyncio.get_running_loop()
+        results = await asyncio.gather(
+            *[loop.run_in_executor(None, lambda p=p: query_peer_kb(p, peer_query)) for p in enabled_peers],
+            return_exceptions=True,
+        )
+        for peer, result in zip(enabled_peers, results):
+            if isinstance(result, Exception):
+                logger.error("Peer '%s' raised an exception: %s", peer.get("name"), result)
+            elif isinstance(result, list):
+                peer_chunks.extend(result)
 
     # The peer lane (app/peer_boundary.select): what is not a piece goes before
     # any field of it is read, then the score filter (a score that cannot

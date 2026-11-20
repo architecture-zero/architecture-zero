@@ -33,7 +33,7 @@ Contract:
   INSERT that either lands or does not, decided by the primary key.
 - Values are small JSON documents. Keys are namespaced by the caller
   (`rate:`, `auth:`, `setup:`, `mfa:`, `totp_fail:`, `totp_used:`, `pw_fail:`,
-  `guest_budget:`, `sso_jti:`).
+  `guest_budget:`, `guest_peer:`, `guest_peer_budget:`, `sso_jti:`).
 """
 import json
 import random

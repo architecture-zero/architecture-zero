@@ -131,6 +131,40 @@ MAX_JSON_BODY_BYTES         = _env_num("MAX_JSON_BODY_BYTES", str(2 * 1024 * 102
 # resolution chain (the chat_model pin, else default_model). The request's
 # model field is ignored for a guest either way.
 GUEST_MODEL                 = os.getenv("GUEST_MODEL", "").strip()
+
+
+def _peer_ids(raw: str | None) -> frozenset:
+    """A comma-separated list of peer ids as a set: each id trimmed, empty
+    entries dropped. An id is matched to a registered peer's `id` exactly,
+    case included; one that names no peer matches nothing."""
+    return frozenset(i.strip() for i in (raw or "").split(",") if i.strip())
+
+
+# THE PEERS A GUEST TURN MAY ASK, AND HOW OFTEN (2026-11-20). The Eco Mode
+# consume floor (PEER_CONSUME_MIN_LEVEL, app/routers/chat.py) keeps a guest out
+# of federation at its default, Member. Lowered to the guest rung, it used to
+# be all it took: the request BODY then decided whether a guest turn asked the
+# peers, every enabled peer was asked, and nothing counted the lookups - so a
+# caller with no account could make this instance fan out to every peer on
+# every turn, each one a request to the peer, the peer's own retrieval and a
+# rank here, and three failed lookups open a peer's breaker for every caller,
+# signed-in ones too. Now, for a guest the floor admits, the server decides:
+#   - GUEST_PEER_IDS names the peers a guest turn asks (the `id` of each
+#     registered peer, comma-separated): only those, only while enabled,
+#     whatever the body says. Unset or empty, the default, no guest turn asks
+#     a peer - the floor lowered or not. Lowering the floor alone opens
+#     nothing, and the boot log says so (chat._say_the_guest_peer_lane).
+#   - each lookup is counted (app/security.py, guest_peer_lookup_refusal):
+#     GUEST_PEER_MAX_LOOKUPS per GUEST_PEER_WINDOW seconds per address, then
+#     GUEST_PEER_DAILY_LIMIT per UTC day across every address. Past either,
+#     or when the count cannot be read, the turn is answered without its
+#     peers - never refused. 0 asks no peer: unlike DEMO_DAILY_GUEST_LIMIT's
+#     0, which switches that bound off, these have no unbounded setting.
+# Signed-in callers are untouched by all four.
+GUEST_PEER_IDS              = _peer_ids(os.getenv("GUEST_PEER_IDS"))
+GUEST_PEER_MAX_LOOKUPS      = _env_num("GUEST_PEER_MAX_LOOKUPS", "20", int)
+GUEST_PEER_WINDOW           = _env_num("GUEST_PEER_WINDOW", "3600", int)   # seconds
+GUEST_PEER_DAILY_LIMIT      = _env_num("GUEST_PEER_DAILY_LIMIT", "200", int)
 # In-product help (2026-09-21): sync the help pages shipped in the image into
 # their reserved collection at boot, honour the chat route's help lane, and
 # tell the client to show the Help button. Off = none of the three.
