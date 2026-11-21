@@ -32,6 +32,9 @@ N = 20000
 # slowest takes 0.01 s. 0.5 s is fifty times the linear cost, which leaves
 # room for a slow shared runner, and still under a third of the fastest
 # quadratic case.
+# Timed in CPU seconds (time.process_time), not on the wall clock: what this pins is
+# the work itself, and a loaded runner's wait for a core is not part of it (a deploy
+# gate failed on the wall clock twice under load, 2026-11-20).
 CEILING_S = 0.5
 
 OLD = {
@@ -70,9 +73,9 @@ SHAPES = {
 @pytest.mark.parametrize("name", list(SHAPES))
 def test_a_run_costs_the_scan_linear_time(name):
     text = SHAPES[name]
-    t0 = time.perf_counter()
+    t0 = time.process_time()
     corpus_scan.scan(text)
-    assert time.perf_counter() - t0 < CEILING_S
+    assert time.process_time() - t0 < CEILING_S
 
 
 def test_a_run_laced_with_invisible_characters_costs_the_peer_path_linear_time(monkeypatch):
@@ -80,9 +83,9 @@ def test_a_run_laced_with_invisible_characters_costs_the_peer_path_linear_time(m
     monkeypatch.setattr(pb, "PIECE_MAX_CHARS", 0)          # let a long piece through
     text = "a" + (LF + ZW) * N
     assert pb._for_scan(text) == text                     # no run of three for the cut
-    t0 = time.perf_counter()
+    t0 = time.process_time()
     pb.scan_pieces([{"peer": "p", "source": "doc.md", "score": 0.9, "text": text}])
-    assert time.perf_counter() - t0 < CEILING_S
+    assert time.process_time() - t0 < CEILING_S
 
 
 # -- CONTROL ------------------------------------------------------------------

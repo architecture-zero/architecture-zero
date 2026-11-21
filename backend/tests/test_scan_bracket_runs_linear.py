@@ -31,6 +31,11 @@ N = 100000
 # slowest 5.0 s; after it, the slowest 0.08 s (the repeated image opening).
 # 0.5 s leaves six times that for a slow shared runner and is still under
 # half the fastest case before.
+# Timed in CPU seconds (time.process_time), not on the wall clock: what this pins is
+# the work itself, and a loaded runner's wait for a core is not part of it (a deploy
+# gate failed on the wall clock twice under load, 2026-11-20).
+# CPU time counts this process only, so every timed text stays at or under
+# corpus_scan.SCAN_IN_CHILD_ABOVE, read in process (pinned below).
 CEILING_S = 0.5
 
 
@@ -48,7 +53,7 @@ SHAPES = {
     "an image URL then a run of {{": "![a](http://x" + _rep("{{"),
     "a link URL then a run of {{": "[a](http://x" + _rep("{{"),
     "a link URL then a run of ${": "[a](http://x" + _rep("${"),
-    "a link URL then a run of %7b": "[a](http://x" + _rep("%7b", 2 * N),
+    "a link URL then a run of %7b": "[a](http://x" + _rep("%7b", 2 * N - 12),   # 199,998: in process
     # n * n * n before, so kept short: 16,000 and 20,000 characters, where the
     # old forms took about 2 and 4 s.
     "an image opening with a ? repeated": _rep("![a](http://x?", 16000),
@@ -59,9 +64,9 @@ SHAPES = {
 @pytest.mark.parametrize("name", list(SHAPES))
 def test_a_bracket_shape_costs_the_scan_linear_time(name):
     text = SHAPES[name]
-    t0 = time.perf_counter()
+    t0 = time.process_time()
     corpus_scan.scan(text)
-    assert time.perf_counter() - t0 < CEILING_S
+    assert time.process_time() - t0 < CEILING_S
 
 
 # -- CONTROL ------------------------------------------------------------------
@@ -76,9 +81,9 @@ QUICK_BEFORE = {
 @pytest.mark.parametrize("name", list(QUICK_BEFORE))
 def test_a_shape_that_was_not_slow_is_not_slow(name):
     text = QUICK_BEFORE[name]
-    t0 = time.perf_counter()
+    t0 = time.process_time()
     corpus_scan.scan(text)
-    assert time.perf_counter() - t0 < CEILING_S
+    assert time.process_time() - t0 < CEILING_S
 
 
 FOUND = {
@@ -102,3 +107,9 @@ FOUND = {
 def test_what_the_four_rules_found_they_still_find(name):
     text, finding = FOUND[name]
     assert finding in {(f["type"], f["severity"]) for f in corpus_scan.scan(text)}
+
+
+def test_every_timed_text_is_read_in_process():
+    # Above SCAN_IN_CHILD_ABOVE scan() reads in a child, whose CPU time the clock
+    # above cannot see: a text past it would time as free.
+    assert max(len(t) for t in list(SHAPES.values()) + list(QUICK_BEFORE.values())) <= corpus_scan.SCAN_IN_CHILD_ABOVE

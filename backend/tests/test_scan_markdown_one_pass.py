@@ -31,6 +31,11 @@ from app import corpus_scan
 # copies read: before the change the fastest took 3.4 s at 80,000 characters
 # and the slowest 39 s at 160,000; after it the slowest takes 0.1 s.
 # 0.5 s leaves five times that for a slow shared runner.
+# Timed in CPU seconds (time.process_time), not on the wall clock: what this pins is
+# the work itself, and a loaded runner's wait for a core is not part of it (a deploy
+# gate failed on the wall clock twice under load, 2026-11-20).
+# CPU time counts this process only, so every timed text stays at or under
+# corpus_scan.SCAN_IN_CHILD_ABOVE, read in process (pinned below).
 CEILING_S = 0.5
 
 THREE_COPIES = chr(0x200B) + "  "     # the stripped copy and the folded copy both differ
@@ -60,9 +65,9 @@ def _shape(unit, n):
 
 
 def _timed_scan(text):
-    t0 = time.perf_counter()
+    t0 = time.process_time()
     found = corpus_scan.scan(text)
-    return time.perf_counter() - t0, found
+    return time.process_time() - t0, found
 
 
 # -- FIX ----------------------------------------------------------------------
@@ -190,3 +195,9 @@ FOUND = {
 def test_what_the_markdown_rules_found_they_still_find(name):
     text, severity = FOUND[name]
     assert ("exfiltration", severity) in {(f["type"], f["severity"]) for f in corpus_scan.scan(text)}
+
+
+def test_every_timed_text_is_read_in_process():
+    # Above SCAN_IN_CHILD_ABOVE scan() reads in a child, whose CPU time the clock
+    # above cannot see: a text past it would time as free.
+    assert max(len(t) for t in [_shape(u, 160000) for u in list(REPEATED_OPENINGS.values()) + list(DENSE.values())]) <= corpus_scan.SCAN_IN_CHILD_ABOVE

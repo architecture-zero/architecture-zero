@@ -17,6 +17,9 @@ def test_a_follow_up_is_still_a_follow_up():
 
 def test_a_long_message_is_never_one_and_costs_nothing():
     assert not is_followup("x" * (FOLLOWUP_MAX_CHARS + 1))
-    t0 = time.monotonic()
+    # Timed in CPU seconds (time.process_time), not on the wall clock: what this pins is
+    # the work itself, and a loaded runner's wait for a core is not part of it (a deploy
+    # gate failed on the wall clock twice under load, 2026-11-20).
+    t0 = time.process_time()
     assert not is_followup("now" + " " * 200000 + "x")
-    assert time.monotonic() - t0 < 0.1
+    assert time.process_time() - t0 < 0.1

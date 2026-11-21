@@ -38,6 +38,9 @@ N = 80_000
 # Picked from one workstation: the old pattern took about 3 s on these shapes
 # at 80,000 characters, the new one about 0.01 s. 0.5 s is far above the
 # linear cost (room for a slow shared runner) and far below the old one.
+# Timed in CPU seconds (time.process_time), not on the wall clock: what this pins is
+# the work itself, and a loaded runner's wait for a core is not part of it (a deploy
+# gate failed on the wall clock twice under load, 2026-11-20).
 CEILING_S = 0.5
 
 SHAPES = {
@@ -59,18 +62,18 @@ def _shape(unit: str, tail: str) -> str:
 @pytest.mark.parametrize("name", sorted(SHAPES))
 def test_a_run_of_address_characters_costs_linear_time(name, tail):
     text = _shape(SHAPES[name], tail)
-    t0 = time.perf_counter()
+    t0 = time.process_time()
     pii.scan_pii(text)
     pii.redact_pii(text)
-    assert time.perf_counter() - t0 < CEILING_S
+    assert time.process_time() - t0 < CEILING_S
 
 
 def test_the_answer_filter_count_costs_linear_time():
     # The filter's flush reads the whole answer through scan_pii.
     f = pii.OutputFilter("warn")
-    t0 = time.perf_counter()
+    t0 = time.process_time()
     f.apply(_shape("a.", ""))
-    assert time.perf_counter() - t0 < CEILING_S
+    assert time.process_time() - t0 < CEILING_S
 
 
 _LOCAL = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._%+-"
