@@ -2,49 +2,69 @@
 
 The authorization sweep, the no-500 sweep and the missing-account sweep each
 check the routes tests/route_table.py hands them, and each passes when it is
-handed none. On fastapi 0.162.7 the walk they used before read 0 of this
-app's 100 path operations. This file is what makes a short walk fail: the
-walk must yield exactly as many path operations as the app's code declares.
+handed none. On fastapi 0.162.7 the walk they used before read none of the
+app's path operations. This file is what makes a short walk fail: every path
+operation the app's code declares must come out of the walk, matched by its
+endpoint, and nothing may come out that the code does not declare. A route
+declared inside an `if` (registered only behind a flag) may be absent; the
+tests that own those flags say when it must be there.
 """
 import ast
+from collections import Counter
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, FastAPI
 
 from app.main import app
-from tests.route_table import api_routes, flat_params
+from tests.route_table import all_routes, api_routes, flat_params
 
-APP_DIR = Path(__file__).resolve().parent.parent / "app"
+BACKEND = Path(__file__).resolve().parent.parent
 VERBS = {"get", "post", "put", "patch", "delete", "head", "options", "trace", "api_route"}
 
 
-def _declared_path_operations():
-    """Path operations declared in app/: each @router.<verb>(...) or
-    @app.<verb>(...) decorator, and each add_api_route(...) call."""
-    found = []
-    for path in sorted(APP_DIR.rglob("*.py")):
+def _declared():
+    """(always, behind_a_flag): Counters of (module, function) for each
+    @router.<verb>(...) or @app.<verb>(...) decorator in app/ - one per
+    decorator, so a function serving two paths counts twice."""
+    always, flagged = Counter(), Counter()
+    for path in sorted((BACKEND / "app").rglob("*.py")):
+        module = ".".join(path.relative_to(BACKEND).with_suffix("").parts)
         tree = ast.parse(path.read_text(encoding="utf-8"))
+        parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
         for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                for d in node.decorator_list:
-                    if (isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
-                            and d.func.attr in VERBS and isinstance(d.func.value, ast.Name)
-                            and d.func.value.id in {"router", "app"}):
-                        found.append(f"{path.name}:{node.lineno} {node.name}")
-            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "add_api_route"):
-                found.append(f"{path.name}:{node.lineno} add_api_route")
-    return found
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            n = sum(1 for d in node.decorator_list
+                    if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+                    and d.func.attr in VERBS and isinstance(d.func.value, ast.Name)
+                    and d.func.value.id in {"router", "app"})
+            if not n:
+                continue
+            up, behind_if = parents.get(node), False
+            while up is not None:
+                behind_if = behind_if or isinstance(up, ast.If)
+                up = parents.get(up)
+            (flagged if behind_if else always)[(module, node.name)] += n
+    return always, flagged
 
 
 def test_the_walk_yields_every_path_operation_the_code_declares():
-    declared = _declared_path_operations()
-    walked = api_routes(app)
-    assert len(declared) >= 90, declared  # the floor: this app declared 100 on 2026-11-22
-    assert len(walked) == len(declared), (
-        f"the route walk yields {len(walked)} path operations and app/ declares "
-        f"{len(declared)} - every sweep built on tests/route_table.py checks only "
-        "what the walk yields")
+    always, flagged = _declared()
+    walked = Counter((r.endpoint.__module__, r.endpoint.__name__) for r in api_routes(app))
+    assert sum(always.values()) >= 90, always  # the floor: a source read that finds little is broken
+    missing = always - walked
+    assert not missing, (
+        f"declared in app/ but not in the route walk: {sorted(missing)} - every sweep "
+        "built on tests/route_table.py checks only what the walk yields")
+    undeclared = walked - always - flagged
+    assert not undeclared, f"walked but not declared as a path operation in app/: {sorted(undeclared)}"
+
+
+def test_all_routes_holds_the_path_operations_and_the_rest():
+    paths = {r.path for r in all_routes(app)}
+    assert {r.path for r in api_routes(app)} <= paths
+    if app.openapi_url:  # None when the app is configured to serve no schema
+        assert app.openapi_url in paths
 
 
 def test_the_walk_reads_paths_and_dependencies_through_an_include():
@@ -60,9 +80,8 @@ def test_the_walk_reads_paths_and_dependencies_through_an_include():
         return {}
 
     probe = FastAPI()
-    probe.include_router(router, prefix="/outer", dependencies=[])
-    probe.include_router(router, prefix="/guarded",
-                         dependencies=[Depends(guard)])
+    probe.include_router(router, prefix="/outer")
+    probe.include_router(router, prefix="/guarded", dependencies=[Depends(guard)])
     got = {r.path: [d.call for d in r.dependant.dependencies] for r in api_routes(probe)}
     assert got == {"/outer/inner": [], "/guarded/inner": [guard]}, got
 
