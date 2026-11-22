@@ -538,8 +538,8 @@ def _route_answer(path, authorization):
     from fastapi import Depends, FastAPI
     from fastapi.testclient import TestClient
     from app.main import app
-    route = next(r for r in app.routes
-                 if getattr(r, "path", None) == path and "POST" in getattr(r, "methods", ()))
+    from tests.route_table import api_routes
+    route = next(r for r in api_routes(app) if r.path == path and "POST" in r.methods)
     assert route.dependant.dependencies, f"{path} declares no guard"
     probe = FastAPI()
 

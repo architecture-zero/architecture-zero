@@ -1101,13 +1101,14 @@ def test_no_route_with_a_user_id_in_its_path_raises_for_an_id_past_the_range(cli
     raises, and none answers a server error. Each answers what it answers
     for an id that names no account."""
     from app.main import app
+    from tests.route_table import api_routes
     top = accounts("owner")
     body = {"current_password": PW, "role": "admin", "department": "general",
             "permissions": ["chat"], "new_password": NEW_PW, "username": "utp_never_r",
             "email": "utp-never@example.com", "groups": [], "external_ids": [],
             "enabled": False}
-    routes = sorted((sorted(route.methods)[0], route.path) for route in app.routes
-                    if "{user_id}" in getattr(route, "path", ""))
+    routes = sorted((sorted(route.methods)[0], route.path) for route in api_routes(app)
+                    if "{user_id}" in route.path)
     assert len(routes) >= 6, routes
     for method, path in routes:
         answer = _send(client, method, path.replace("{user_id}", str(PAST_THE_RANGE)),

@@ -243,8 +243,9 @@ _PASSES = {"current_password": PW, "role": "admin", "department": "general",
 
 def _routes_with_a_user_id():
     from app.main import app
-    return sorted((method, route.path) for route in app.routes
-                  if "{user_id}" in getattr(route, "path", "")
+    from tests.route_table import api_routes
+    return sorted((method, route.path) for route in api_routes(app)
+                  if "{user_id}" in route.path
                   for method in sorted(route.methods))
 
 

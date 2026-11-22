@@ -2,7 +2,7 @@
 
 The middleware is the OUTER layer only. The real enforcement is route-level:
 every non-public route carries Depends(get_current_user), and a wiring test
-sweeps app.routes to keep that true - so authorization holds even with
+sweeps the route table to keep that true - so authorization holds even with
 ENABLE_AUTH=false (the test suite's own mode, and the reason a
 middleware-only gate is invisible to tests).
 """

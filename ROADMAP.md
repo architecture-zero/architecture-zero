@@ -76,20 +76,23 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   unable to write. Deferred with that reasoning in `.trivyignore` rather than
   dropped out of the scanner's range, because a suppression nobody can read
   is how a finding stops existing.
-- **FastAPI and starlette onto a fixed line** - seven starlette findings sit
-  behind the pin at fastapi 0.115.5, and clearing them needs starlette 1.3.1
-  or later, which only arrives with a FastAPI major bump. Two of the seven
-  are reachable here rather than theoretical: a parsing slowdown on large
-  multipart bodies, which the admin upload route accepts, and a Host header
-  that goes unvalidated into `request.url.path`, which matters to anyone
-  running path-based rules in a proxy in front of this. They are deferred
-  rather than accepted, and the distinction is the whole point - an
-  acceptance says a finding cannot reach you, while this one says it can and
-  the fix has a cost worth naming. That cost is changing the web framework
-  underneath everyone who deploys this template, which wants the acceptance
-  suite run against it rather than a version number edited to turn a scanner
-  green. The ignore list in `.github/workflows/ci.yml` names each finding and
-  why it is still there.
+- ~~**FastAPI and starlette onto a fixed line**~~ - SHIPPED 2026-11-22:
+  fastapi 0.162.7 and starlette 1.10.0, with starlette pinned on its own
+  because fastapi no longer caps it. The seven starlette findings are out of
+  the ignore list in `.github/workflows/ci.yml`, so a new one fails the build
+  again. What changes for anyone deploying this: a JSON request body must
+  carry `Content-Type: application/json`, because FastAPI checks it by
+  default since 0.132 (the bundled frontend, the peer client and
+  `scripts/acceptance.sh` already send it; a client of your own that leaves
+  the header off now gets a 422). The startup and shutdown hooks keep
+  working through FastAPI's own `on_event`, which it kept after starlette
+  1.0 removed starlette's; moving them to a lifespan handler is a change of
+  its own. The test sweeps that check every route (authorization, no 500s,
+  the missing-account answers) walk the route table with FastAPI's
+  `iter_route_contexts`, because 0.137 stopped flattening included routers
+  and the old walk found none of this app's 100 routes, and a sweep handed
+  no routes passes. `backend/tests/test_route_table.py` holds the walk to the
+  number of routes the code declares.
 - **Widen client test coverage** - the tests that mount the chat client cover
   the stored-row invariant across every stream outcome, which is where the
   defects were, and since 2026-10-02 the paths that touch it or the user's

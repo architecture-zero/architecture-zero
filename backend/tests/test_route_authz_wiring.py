@@ -18,7 +18,7 @@ owner-only, scoped and any-authenticated all answer it identically - a guard
 retyped at the wrong level during a refactor was invisible to every test in the
 suite until REQUIRED_GUARD existed.
 """
-from fastapi.routing import APIRoute
+from tests.route_table import api_routes
 
 from app import jwt_auth as _ja
 from app.jwt_auth import get_current_user, require_owner
@@ -97,9 +97,7 @@ def _route_protected(route) -> bool:
 
 def test_every_route_is_protected_or_deliberately_public():
     unprotected = set()
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
-            continue  # docs/openapi (starlette Routes) and websockets
+    for route in api_routes(app):
         if not _route_protected(route):
             for method in route.methods - {"HEAD", "OPTIONS"}:
                 unprotected.add((method, route.path))
@@ -408,9 +406,7 @@ def _actual_guards():
     `=` until 2026-09-23, so the LAST registration described the pair);
     test_no_two_routes_share_a_method_and_path refuses the duplicate itself."""
     out = {}
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
-            continue
+    for route in api_routes(app):
         for method in route.methods - {"HEAD", "OPTIONS"}:
             out.setdefault((method, route.path), _guard_identity(route))
     return out
@@ -419,9 +415,7 @@ def _actual_guards():
 def _registrations():
     """Every (METHOD, path) registration, duplicates included."""
     seen = []
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
-            continue
+    for route in api_routes(app):
         for method in route.methods - {"HEAD", "OPTIONS"}:
             seen.append((method, route.path))
     return seen
@@ -546,7 +540,7 @@ def test_the_guard_match_is_by_identity_not_name():
 
     probe = FastAPI()
     probe.include_router(router)
-    got = {r.path: _guard_identity(r) for r in probe.routes if isinstance(r, APIRoute)}
+    got = {r.path: _guard_identity(r) for r in api_routes(probe)}
     assert got["/pin-probe/forged-apex"] == "public", got
     assert got["/pin-probe/forged-scope"] == "public", got
     assert got["/pin-probe/real-apex"] == "require_owner", got

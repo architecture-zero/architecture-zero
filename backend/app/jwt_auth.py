@@ -781,7 +781,7 @@ def user_from_token(token: str) -> dict:
 async def get_current_user(credentials=Depends(oauth2_scheme)) -> dict:
     """The enforcing dependency: raises 401 on missing or invalid
     credentials. Used route-level on every non-public route (a wiring test
-    sweeps app.routes to keep that true), so authorization holds even if the
+    sweeps the route table to keep that true), so authorization holds even if the
     middleware layer is ever disabled."""
     if not credentials:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")

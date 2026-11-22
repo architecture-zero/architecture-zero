@@ -127,20 +127,16 @@ jobs:
           # pin ALGORITHM), so the ECDSA paths never run. Re-triage if an ES*
           # or RS* algorithm is ever adopted.
           #
-          # DEFERRED, which is a different claim than accepted - starlette
-          # 0.41.3, seven findings, transitive via fastapi 0.115.5. These have
-          # fixes. Taking them needs starlette >= 1.3.1, which arrives through
-          # a FastAPI major bump that changes the framework underneath a
-          # template other people deploy, so it wants its own change and its
-          # own acceptance run rather than a bump made to turn a scanner green.
-          # Tracked in ROADMAP.md instead of being quietly parked here. What is
-          # reachable meanwhile, stated rather than waved off: CVE-2025-54121
-          # is a parsing slowdown on large multipart bodies, and this app takes
-          # multipart at the admin KB upload route (authenticated, admin-only);
-          # CVE-2026-48710 poisons request.url.path when the Host header goes
-          # unvalidated, which matters to anyone putting path-based rules in a
-          # proxy in front of this. The rest are denial-of-service shapes on
-          # the same surface.
+          # CLOSED 2026-11-22 - the starlette deferral (seven findings on
+          # starlette 0.41.3, transitive via fastapi 0.115.5, deferred rather
+          # than accepted because they had fixes and two were reachable: a
+          # multipart parsing slowdown at the admin upload route, and a Host
+          # header that went unvalidated into request.url.path). fastapi 0.162.7
+          # and starlette 1.10.0 (pinned on its own: fastapi no longer caps it)
+          # took the fixes in their own change with the whole suite run against
+          # them, and the seven ids are out of the list below, so a starlette
+          # advisory fails this job again like any other. ROADMAP.md has what
+          # changed for anyone deploying this.
           #
           # ACCEPTED (triaged 2026-10-05) - CVE-2026-85394 / GHSA-3qf3-8w2g-rqmx, python-jose through
           # 3.5.0: an HS256 token verified against a DER-encoded PUBLIC key when
@@ -177,13 +173,6 @@ jobs:
             CVE-2026-45833
             PYSEC-2026-1325
             CVE-2026-85394
-            CVE-2025-54121
-            CVE-2025-62727
-            CVE-2026-48817
-            CVE-2026-48818
-            CVE-2026-54282
-            CVE-2026-54283
-            PYSEC-2026-161
 
   # SAST over this repository's own Python rather than its dependencies:
   # injection shapes, unsafe deserialization, weak crypto, credentials in

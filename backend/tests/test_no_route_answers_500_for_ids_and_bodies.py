@@ -68,13 +68,12 @@ import textwrap
 import typing
 
 import pytest
-from fastapi.dependencies.utils import get_flat_dependant
-from fastapi.routing import APIRoute
 from pydantic import BaseModel, ValidationError
 
 from app import jwt_auth, state_store
 from app.jwt_auth import create_access_token, hash_password
 from app.main import app
+from tests.route_table import api_routes, flat_params
 from app.users import create_user, deactivate_user, get_user_by_id_any_status, unlock_user
 
 PW = "OldPassw0rd!x"
@@ -134,8 +133,8 @@ def _is_server_error(answer):
 # -- The route table -----------------------------------------------------------
 
 def _api_routes():
-    return sorted(((method, route.path, route) for route in app.routes
-                   if isinstance(route, APIRoute) for method in sorted(route.methods)),
+    return sorted(((method, route.path, route) for route in api_routes(app)
+                   for method in sorted(route.methods)),
                   key=lambda r: (r[1], r[0]))
 
 
@@ -143,7 +142,7 @@ def _path_ids(route):
     """{name in the path: type} for every parameter the route's path
     carries, through its dependencies too. By ALIAS: a guard's own parameter
     has a name of its own and carries the path's name as its alias."""
-    return {p.alias: p.type_ for p in get_flat_dependant(route.dependant).path_params}
+    return {p.alias: p.field_info.annotation for p in flat_params(route.dependant, "path_params")}
 
 
 def _fill(path, values):
@@ -156,11 +155,11 @@ def _schema(route):
     """("none", None), ("schema", Model), ("object", None) for a body taken
     as a plain object, or ("other", names) for anything else (a form, a
     file)."""
-    params = get_flat_dependant(route.dependant).body_params
+    params = flat_params(route.dependant, "body_params")
     if not params:
         return "none", None
     if len(params) == 1:
-        declared = params[0].type_
+        declared = params[0].field_info.annotation
         for kind in (declared,) + typing.get_args(declared):
             if isinstance(kind, type) and issubclass(kind, BaseModel):
                 return "schema", kind
@@ -256,11 +255,11 @@ def test_no_route_takes_a_whole_number_id_from_its_path_as_a_bare_int():
     seen, bare = 0, []
     for method, path, route in _ROUTES:
         for param in route.dependant.path_params:
-            if param.type_ is int:
+            if param.field_info.annotation is int:
                 bare.append((method, path, param.name))
         for sub in route.dependant.dependencies:
             for param in sub.path_params:
-                if param.type_ is not int:
+                if param.field_info.annotation is not int:
                     continue
                 seen += 1
                 # By module and name, not identity: other files of this
@@ -631,7 +630,8 @@ _EDGE = 2 ** 63 - 1
 
 
 def _int_query_params(route):
-    return [p for p in get_flat_dependant(route.dependant).query_params if p.type_ is int]
+    return [p for p in flat_params(route.dependant, "query_params")
+            if p.field_info.annotation is int]
 
 
 _QUERY_ROUTES = [(m, p) for m, p, r in _ROUTES if _int_query_params(r)]
@@ -686,8 +686,9 @@ def test_a_whole_number_past_the_range_in_a_query_string_is_answered_like_the_la
     url = _fill(path, {n: (NAMES_NOTHING if k is int else TEXT_NAMES_NOTHING)
                        for n, k in _path_ids(route).items()})
     body = _passing_body(route)
-    required = {p.alias: (1 if p.type_ is int else "probe")
-                for p in get_flat_dependant(route.dependant).query_params if p.required}
+    required = {p.alias: (1 if p.field_info.annotation is int else "probe")
+                for p in flat_params(route.dependant, "query_params")
+                if p.field_info.is_required()}
     for param in _int_query_params(route):
         for edge, past in ((_EDGE, (2 ** 63, 2 ** 70)), (-_EDGE - 1, (-(2 ** 63) - 1, -(2 ** 70)))):
             expected = _send_query(client, method, url, top["headers"],
