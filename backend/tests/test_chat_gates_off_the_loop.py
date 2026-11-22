@@ -20,7 +20,7 @@ import asyncio
 import threading
 import time
 
-import httpx
+import httpx2
 import pytest
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
@@ -67,8 +67,8 @@ def _held_request(client, method, path, stub, **kwargs):
     is held. Returns (entered, health, still_held, response)."""
 
     async def go():
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver",
+        transport = httpx2.ASGITransport(app=app)
+        async with httpx2.AsyncClient(transport=transport, base_url="http://testserver",
                                      timeout=HOLD * 4) as c:
             call = asyncio.create_task(c.request(method, path, **kwargs))
             try:

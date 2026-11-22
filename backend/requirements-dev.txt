@@ -1,3 +1,11 @@
 -r requirements.txt
 pytest==9.1.1
 httpx==0.28.1
+# The test client's HTTP library (2026-11-22): starlette 1.x's TestClient
+# uses httpx2 when it is installed and warns on httpx. httpx stays: chromadb
+# needs it at run time. 2.16.0 is past the two-week hold (its 2.16.1 and
+# 2.16.2 fix redirects, proxies, Digest auth and type hints, nothing a
+# test client reaches); it pins its own httpcore2, and truststore is
+# pinned here, the one other package it brings.
+httpx2==2.16.0
+truststore==0.10.5

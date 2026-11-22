@@ -198,7 +198,7 @@ def test_a_non_ascii_bearer_is_refused_not_a_500(monkeypatch):
     route any unauthenticated caller can reach. Comparing bytes fixes it.
 
     The dependency is called DIRECTLY here because the test client cannot send
-    this request: httpx encodes header values as ASCII and raises client-side.
+    this request: httpx2 encodes header values as ASCII and raises client-side.
     A real server does not get that protection - uvicorn decodes header bytes as
     latin-1, so a raw socket sending byte 0xE9 hands Python a str containing an
     accented character. Verified against the running container with a raw

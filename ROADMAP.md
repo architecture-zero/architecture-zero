@@ -84,11 +84,15 @@ modules and their graduation policy live in [MODULES.md](MODULES.md).
   carry `Content-Type: application/json`, because FastAPI checks it by
   default since 0.132 (the bundled frontend, the peer client and
   `scripts/acceptance.sh` already send it; a client of your own that leaves
-  the header off now gets a 422). The startup and shutdown hooks keep
-  working through FastAPI's own `on_event`, which it kept after starlette
-  1.0 removed starlette's; moving them to a lifespan handler is a change of
-  its own. The test sweeps that check every route (authorization, no 500s,
-  the missing-account answers) walk the route table with FastAPI's
+  the header off now gets a 422). The startup and shutdown hooks run through
+  one lifespan handler since the same day (`_lifespan` in
+  `backend/app/main.py`): FastAPI marks `on_event` deprecated, and an app
+  given a lifespan never runs a hook registered that way, so a hook of your
+  own goes in `STARTUP_HOOKS` or `SHUTDOWN_HOOKS`, where
+  `backend/tests/test_lifespan.py` holds it and the order. The tests'
+  client runs on httpx2, which starlette 1.x's TestClient asks for. The
+  test sweeps that check every route (authorization, no 500s, the
+  missing-account answers) walk the route table with FastAPI's
   `iter_route_contexts`, because 0.137 stopped flattening included routers
   and the old walk found none of this app's 100 routes, and a sweep handed
   no routes passes. `backend/tests/test_route_table.py` holds the walk to the
