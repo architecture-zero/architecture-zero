@@ -22,14 +22,40 @@ BACKEND = Path(__file__).resolve().parent.parent
 VERBS = {"get", "post", "put", "patch", "delete", "head", "options", "trace", "api_route"}
 
 
+def _router_names(tree):
+    """The names a module binds to an APIRouter(...) or FastAPI(...) - the
+    objects its path-operation decorators hang on, whatever they are called
+    (router, public_radio_router, app), the class imported under an alias
+    (`from fastapi import APIRouter as _APIRouter`) included."""
+    makers = {"APIRouter", "FastAPI"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("fastapi"):
+            makers |= {a.asname for a in node.names if a.name in {"APIRouter", "FastAPI"} and a.asname}
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        else:
+            continue
+        if isinstance(value, ast.Call):
+            called = getattr(value.func, "id", None) or getattr(value.func, "attr", None)
+            if called in makers:
+                names |= {t.id for t in targets if isinstance(t, ast.Name)}
+    return names
+
+
 def _declared():
     """(always, behind_a_flag): Counters of (module, function) for each
-    @router.<verb>(...) or @app.<verb>(...) decorator in app/ - one per
-    decorator, so a function serving two paths counts twice."""
+    <router>.<verb>(...) decorator in app/, where <router> is a name the module
+    binds to an APIRouter or a FastAPI app - one per decorator, so a function
+    serving two paths counts twice."""
     always, flagged = Counter(), Counter()
     for path in sorted((BACKEND / "app").rglob("*.py")):
         module = ".".join(path.relative_to(BACKEND).with_suffix("").parts)
         tree = ast.parse(path.read_text(encoding="utf-8"))
+        routers = _router_names(tree)
         parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -37,7 +63,7 @@ def _declared():
             n = sum(1 for d in node.decorator_list
                     if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
                     and d.func.attr in VERBS and isinstance(d.func.value, ast.Name)
-                    and d.func.value.id in {"router", "app"})
+                    and d.func.value.id in routers)
             if not n:
                 continue
             up, behind_if = parents.get(node), False
