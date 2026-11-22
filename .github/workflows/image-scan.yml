@@ -2,12 +2,17 @@
 #
 # The repository scan (trivy, scan-type fs) reads files and lockfiles. It
 # never reads the container images the stack actually runs: the ones a
-# compose file pulls and the base image every Dockerfile builds FROM. An
-# operating-system package CVE in any of them was seen by nothing. This scans
-# those images, one matrix job each. The list is read from the files by
+# compose file pulls and the ones it builds. An operating-system package CVE
+# in any of them was seen by nothing. This scans those images, one matrix job
+# each. The list is read from the files by
 # backend/scripts/list_scanned_images.py (its test pins every rule), never
 # kept by hand, so an image added to a compose file is scanned from the next
 # run on.
+#
+# Built images are built here, then scanned (2026-11-21). Scanning a
+# Dockerfile's FROM as pulled read a build stage's base that ships nothing,
+# and never saw the OS package upgrade each Dockerfile applies on top of its
+# base. The image the scan reads is now the image a deployment builds.
 #
 # Weekly and on demand, never on push or pull request: an image's findings
 # change when the vulnerability database or the image's tag moves, not when
@@ -26,11 +31,11 @@ permissions:
 
 jobs:
   list:
-    name: list the pulled and base images
+    name: list the pulled and built images
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     outputs:
-      images: ${{ steps.list.outputs.images }}
+      entries: ${{ steps.list.outputs.entries }}
     steps:
       # No job here pushes, so the token is not left in .git/config for the
       # steps after the checkout to read.
@@ -43,41 +48,59 @@ jobs:
       # The script reads compose files with PyYAML, the version the backend
       # image carries. Nothing else is installed.
       - run: python -m pip install --disable-pip-version-check -q pyyaml==6.0.3
-      # A listing that fails (an image named through a variable, a name that
-      # is not an image reference, no image at all) exits 2 and fails this
-      # job, so the scan never runs on a partial list.
+      # A listing that fails (an image named through a variable, a build this
+      # checkout cannot reproduce, nothing at all) exits 2 and fails this job,
+      # so the scan never runs on a partial list.
       - name: List the images
         id: list
         shell: bash
         run: |
           set -euo pipefail
-          images="$(python backend/scripts/list_scanned_images.py --json)"
-          echo "$images"
-          echo "images=$images" >> "$GITHUB_OUTPUT"
+          entries="$(python backend/scripts/list_scanned_images.py --json)"
+          echo "$entries"
+          echo "entries=$entries" >> "$GITHUB_OUTPUT"
 
   scan:
-    name: trivy image scan (${{ matrix.image }})
+    name: trivy image scan (${{ matrix.entry.name }})
     needs: list
     runs-on: ubuntu-26.04
-    # A pull that hangs should not bill the default six hours.
+    # A pull or a build that hangs should not bill the default six hours.
     timeout-minutes: 30
     strategy:
       # One image's finding must not cancel the others' scans and hide theirs.
       fail-fast: false
       matrix:
-        image: ${{ fromJSON(needs.list.outputs.images) }}
+        entry: ${{ fromJSON(needs.list.outputs.entries) }}
     steps:
-      # The checkout is for .trivyignore: trivy reads it from the working
-      # directory, the same file the repository scan honours.
+      # The checkout is the build context, and holds .trivyignore: trivy reads
+      # it from the working directory, the same file the repository scan
+      # honours.
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      # A build entry: the image a deployment builds, from a freshly pulled
+      # base. The paths arrive as environment variables, never pasted into
+      # the script.
+      - name: Build the image
+        if: ${{ matrix.entry.dockerfile }}
+        shell: bash
+        env:
+          BUILD_CONTEXT: ${{ matrix.entry.context }}
+          BUILD_DOCKERFILE: ${{ matrix.entry.dockerfile }}
+          BUILD_TARGET: ${{ matrix.entry.target }}
+        run: |
+          set -euo pipefail
+          target=()
+          if [ -n "$BUILD_TARGET" ]; then target=(--target "$BUILD_TARGET"); fi
+          docker build --pull -f "$BUILD_DOCKERFILE" "${target[@]}" -t image-scan/built:scan "$BUILD_CONTEXT"
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
           # The scanner pinned to the version the repository scan uses.
           version: v0.74.0
           scan-type: image
-          image-ref: ${{ matrix.image }}
+          # A pull entry names its image; a build entry scans what the step
+          # above built.
+          image-ref: ${{ matrix.entry.image || 'image-scan/built:scan' }}
           severity: HIGH,CRITICAL
           exit-code: "1"
           # A finding with no released fix is not one a deployer can act on

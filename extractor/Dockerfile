@@ -9,6 +9,11 @@
 # proven from inside it by check_locks.py.
 FROM python:3.11-slim
 WORKDIR /extractor
+# The base image's own packages, patched: the same upgrade, for the same
+# reason, as backend/Dockerfile.
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY server.py worker.py check_locks.py ./

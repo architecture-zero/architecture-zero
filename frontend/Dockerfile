@@ -25,6 +25,12 @@ RUN npm run build
 # never pulls again keeps building on it. A stable branch ends when the
 # next is cut (about once a year): check nginx.org when you touch this.
 FROM nginx:1.30-alpine
+# The base image's own packages, patched. The tag is rebuilt upstream on its
+# own schedule, so an Alpine security fix released since its last rebuild is
+# missing from it until the next one (the weekly image scan found libxml2's,
+# 2026-11-21). The build stage above needs no such line: nothing from it but
+# the bundle reaches this image.
+RUN apk upgrade --no-cache
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 # The shared /api proxy directives, included by both API locations. Not a

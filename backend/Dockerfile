@@ -2,8 +2,16 @@
 # segfaults at interpreter teardown (harmless to data, noisy on every stop).
 FROM python:3.11-slim
 WORKDIR /app
-# libgomp1: onnxruntime (fastembed's runtime) links against it.
-RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*
+# The base image's own packages, patched. A python:3.11-slim tag is rebuilt
+# upstream on its own schedule, so a Debian security fix released since its
+# last rebuild is missing from it until the next one; the upgrade takes every
+# fix the archive holds when this image is built (the weekly image scan found
+# zlib's that way, 2026-11-21). libgomp1: onnxruntime (fastembed's runtime)
+# links against it.
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 # Bake the cross-encoder reranker into the image so the first request never

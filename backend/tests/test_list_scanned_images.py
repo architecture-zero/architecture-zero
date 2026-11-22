@@ -1,24 +1,35 @@
 """list_scanned_images.py, and the weekly image scan it feeds (2026-11-17).
 
 The repository scan reads files and lockfiles. Nothing read the container
-images the stack runs: the ones a compose file pulls and the base image every
-Dockerfile builds FROM. .github/workflows/image-scan.yml scans them, one
-matrix job per image, and the list is read from the files by the script.
-These pin what the list holds, what it leaves out and why, and the wiring of
-the workflow that consumes it.
+images the stack runs: the ones a compose file pulls and the ones it builds.
+.github/workflows/image-scan.yml scans them, one matrix job per entry, and the
+list is read from the files by the script. These pin what the list holds,
+what it leaves out and why, and the wiring of the workflow that consumes it.
+
+Since 2026-11-21 a Dockerfile a compose service builds is built by the scan
+job and the result scanned, instead of its FROM lines scanned as pulled: a
+build stage's base ships nothing, and the OS upgrade a Dockerfile applies on
+top of its base was never seen.
 
 FIX (each fails where the script or the workflow is missing):
   - a compose service's image: is listed; a commented-out service is not
-  - every Dockerfile's FROM is listed: nested, suffixed and prefixed file
-    names, a continued line, a --platform flag stepped over
+  - a compose service's build: is listed as a build (a path, or a mapping
+    with its Dockerfile read against its context and its target stage), once
+    however many services share it, and the Dockerfile it builds has its
+    bases left out of the pulls
+  - every FROM of a Dockerfile no compose service builds is listed: nested,
+    suffixed and prefixed file names, a continued line, a --platform flag
+    stepped over
   - the same image spelled twice is listed once, an untagged one as :latest
-  - an image named through a variable, or a name that is not an image
-    reference, stops the listing (exit 2) instead of being dropped from it
+  - an image or a build named through a variable, a name that is not an
+    image reference, or a build this checkout cannot reproduce stops the
+    listing (exit 2) instead of being dropped from it
   - an empty tree is exit 2, never an empty list
-  - --json prints the list as one line of JSON
+  - --json prints the entries as one line of JSON
   - the workflow: weekly and on demand only; contents: read and nothing
     more, no token left by a checkout; a matrix over the listing with
-    fail-fast off; the repository scan's trivy pin, version and runner in
+    fail-fast off; a build entry built from a fresh base and its image the
+    one scanned; the repository scan's trivy pin, version and runner in
     image mode with the same flags; no expression pasted into a shell
 CONTROL (one per skip rule; each fixture holds the thing the rule leaves out
 beside a real image, so with the rule removed the wrong name is listed and
@@ -26,10 +37,12 @@ the test fails - each was mutation-checked that way when it was written):
   - a stage an earlier FROM named (FROM deps AS builder), any case
   - scratch
   - an image a compose service builds itself, and a service that runs it
+  - the bases of a Dockerfile a compose service builds
   - a Dockerfile under node_modules
   - a Dockerfile inside a nested checkout (a git worktree)
 GUARD:
-  - this repository's own files list clean: at least one image, each tagged
+  - this repository's own files list clean: at least one entry, each image
+    tagged, each build's Dockerfile there
 """
 import importlib.util
 import json
@@ -77,9 +90,77 @@ def test_a_compose_service_image_is_listed_and_a_commented_one_is_not(lsi, tmp_p
     assert _listed(lsi, tmp_path) == ["postgres:16-alpine"]
 
 
+def test_a_compose_build_is_listed_as_built_and_its_bases_are_not_pulled(lsi, tmp_path):
+    """FIX and CONTROL: each build: is one build, its Dockerfile read against
+    its context, its target kept; two services building the same thing are
+    one build. The bases of a built Dockerfile are not pulls (with that rule
+    removed, python:3.11-slim and node:24-alpine are listed); a Dockerfile no
+    service builds keeps its bases scanned as pulled."""
+    _write(tmp_path, "docker-compose.yml",
+           "services:\n"
+           "  api:\n"
+           "    build: ./api\n"
+           "  api-peer:\n"
+           "    build:\n"
+           "      context: api\n"
+           "  web:\n"
+           "    build:\n"
+           "      context: ./web\n"
+           "      dockerfile: Dockerfile.web\n"
+           "      target: runtime\n"
+           "      args:\n"
+           "        GIT_SHA: ${GIT_SHA:-unknown}\n"
+           "  worker:\n"
+           "    build:\n"
+           "      dockerfile: tools/worker.Dockerfile\n")
+    _write(tmp_path, "api/Dockerfile", "FROM python:3.11-slim\n")
+    _write(tmp_path, "web/Dockerfile.web", "FROM node:24-alpine AS build\nFROM nginx:1.30-alpine AS runtime\n")
+    _write(tmp_path, "tools/worker.Dockerfile", "FROM python:3.11-slim\n")
+    _write(tmp_path, "other/Dockerfile", "FROM golang:1.23\n")
+    assert lsi.list_builds(str(tmp_path)) == [
+        (".", "tools/worker.Dockerfile", ""),
+        ("api", "api/Dockerfile", ""),
+        ("web", "web/Dockerfile.web", "runtime"),
+    ]
+    assert _listed(lsi, tmp_path) == ["golang:1.23"]
+
+
+@pytest.mark.parametrize("build, says", [
+    ("${APP_DIR}", "through a variable"),
+    ("{context: ./api, dockerfile: \"${DOCKERFILE}\"}", "through a variable"),
+    ("https://github.com/example/app.git", "remote context"),
+    ("{context: ./api, dockerfile_inline: \"FROM alpine:3.20\"}", "dockerfile_inline"),
+    ("../elsewhere", "outside the repository"),
+    ("{context: ./api, dockerfile: ../../Dockerfile}", "outside the repository"),
+    ("./missing", "not a directory"),
+    ("{context: ./api, dockerfile: Dockerfile.gone}", "not there"),
+    ("{context: ./api, target: \"run time\"}", "not a stage name"),
+    ("[./api]", "neither a path nor a mapping"),
+], ids=["variable-context", "variable-dockerfile", "remote", "inline", "context-outside",
+        "dockerfile-outside", "no-context", "no-dockerfile", "bad-target", "not-a-build"])
+def test_a_build_this_checkout_cannot_reproduce_stops_the_listing(lsi, tmp_path, capsys, build, says):
+    """FIX: a build the scan job could not run from this checkout, or could
+    only run as something other than what compose builds, is exit 2 with the
+    reason, never a list without it."""
+    _write(tmp_path, "api/Dockerfile", "FROM python:3.11-slim\n")
+    _write(tmp_path, "docker-compose.yml",
+           "services:\n"
+           "  cache:\n"
+           "    image: redis:7.4-alpine\n"
+           "  app:\n"
+           "    build: %s\n" % build)
+    with pytest.raises(lsi.ListingError):
+        _listed(lsi, tmp_path)
+    assert lsi.main(["--root", str(tmp_path), "--json"]) == 2
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert out.err.startswith("list_scanned_images: ") and says in out.err
+
+
 def test_every_dockerfile_from_is_listed(lsi, tmp_path):
-    """FIX: every Dockerfile in the tree, whatever its spelling, every FROM in
-    it; a continued line is joined and a --platform flag is not an image."""
+    """FIX: every Dockerfile in the tree no compose service builds, whatever
+    its spelling, every FROM in it; a continued line is joined and a
+    --platform flag is not an image."""
     _write(tmp_path, "api/Dockerfile", "FROM python:3.11-slim\nRUN true\n")
     _write(tmp_path, "web/Dockerfile.web",
            "# FROM commented:1\nFROM --platform=linux/amd64 node:24-alpine\n")
@@ -138,16 +219,62 @@ def test_an_empty_tree_is_exit_2_not_an_empty_list(lsi, tmp_path, capsys):
     assert capsys.readouterr().out == ""
 
 
-def test_json_prints_the_list_on_one_line(lsi, tmp_path, capsys):
+def test_json_prints_the_entries_on_one_line(lsi, tmp_path, capsys):
     """FIX: --json is one line, because the workflow writes it to
-    $GITHUB_OUTPUT as name=value; without it, one image per line."""
+    $GITHUB_OUTPUT as name=value: a pull names its image, a build its
+    context, Dockerfile and (only when compose names one) target. Without
+    --json, one name per line."""
     _write(tmp_path, "Dockerfile", "FROM python:3.11-slim\nFROM nginx:1.30-alpine\n")
+    _write(tmp_path, "docker-compose.yml",
+           "services:\n"
+           "  app:\n"
+           "    build: ./app\n"
+           "  web:\n"
+           "    build: {context: ./app, target: web}\n")
+    _write(tmp_path, "app/Dockerfile", "FROM node:24-alpine AS web\n")
     assert lsi.main(["--root", str(tmp_path), "--json"]) == 0
     out = capsys.readouterr().out
     assert out.count("\n") == 1
-    assert json.loads(out) == ["nginx:1.30-alpine", "python:3.11-slim"]
+    assert json.loads(out) == [
+        {"name": "nginx:1.30-alpine", "image": "nginx:1.30-alpine"},
+        {"name": "python:3.11-slim", "image": "python:3.11-slim"},
+        {"name": "app/Dockerfile", "context": "app", "dockerfile": "app/Dockerfile"},
+        {"name": "app/Dockerfile (stage web)", "context": "app", "dockerfile": "app/Dockerfile",
+         "target": "web"},
+    ]
     assert lsi.main(["--root", str(tmp_path)]) == 0
-    assert capsys.readouterr().out.splitlines() == ["nginx:1.30-alpine", "python:3.11-slim"]
+    assert capsys.readouterr().out.splitlines() == [
+        "nginx:1.30-alpine", "python:3.11-slim", "app/Dockerfile", "app/Dockerfile (stage web)"]
+
+
+def test_bases_prints_every_dockerfile_base_built_or_not(lsi, tmp_path, capsys, monkeypatch):
+    """FIX: --bases is what a build host pulls before it builds: the bases of
+    every Dockerfile, the ones compose builds included (the scan leaves those
+    out, a host must not), stages and scratch still not images. It reads no
+    compose file, so it runs where PyYAML is not installed."""
+    _write(tmp_path, "docker-compose.yml",
+           "services:\n"
+           "  app:\n"
+           "    build: ./app\n"
+           "  db:\n"
+           "    image: postgres:16-alpine\n")
+    _write(tmp_path, "app/Dockerfile", "FROM node:24-alpine AS build\nFROM build\nFROM nginx:1.30-alpine\n")
+    _write(tmp_path, "tools/Dockerfile", "FROM golang:1.23 AS b\nFROM scratch\n")
+    expected = ["golang:1.23", "nginx:1.30-alpine", "node:24-alpine"]
+    assert lsi.list_bases(str(tmp_path)) == expected
+    monkeypatch.setattr(lsi, "yaml", None)
+    assert lsi.main(["--root", str(tmp_path), "--bases"]) == 0
+    assert capsys.readouterr().out.splitlines() == expected
+    # The scan's listing does need the compose file, and says so.
+    assert lsi.main(["--root", str(tmp_path), "--json"]) == 2
+    assert "PyYAML is not installed" in capsys.readouterr().err
+
+
+def test_bases_with_no_dockerfile_is_exit_2(lsi, tmp_path, capsys):
+    """FIX: no base at all is a broken reading for --bases too."""
+    _write(tmp_path, "docker-compose.yml", "services:\n  db:\n    image: postgres:16-alpine\n")
+    assert lsi.main(["--root", str(tmp_path), "--bases"]) == 2
+    assert capsys.readouterr().out == ""
 
 
 # --- what it leaves out, one rule each -------------------------------------
@@ -187,6 +314,7 @@ def test_control_an_image_the_repo_builds_is_not_pulled(lsi, tmp_path):
            "services:\n"
            "  peer:\n"
            "    image: example-backend:latest\n")
+    _write(tmp_path, "backend/Dockerfile", "FROM python:3.11-slim\n")
     assert _listed(lsi, tmp_path) == ["postgres:16-alpine"]
 
 
@@ -213,11 +341,33 @@ def test_control_a_nested_checkout_is_not_walked(lsi, tmp_path):
 
 def test_guard_this_repository_lists_clean(lsi):
     """GUARD: what the weekly run's first job will print, read here first: no
-    error, at least one image, every one tagged or pinned by digest."""
-    images = _listed(lsi, REPO)
-    assert images
-    for img in images:
-        assert "@" in img or ":" in img.rsplit("/", 1)[-1], img
+    error, at least one entry, every image tagged or pinned by digest, every
+    build's Dockerfile there."""
+    entries = lsi.list_entries(str(REPO))
+    assert entries
+    for entry in entries:
+        if "image" in entry:
+            img = entry["image"]
+            assert "@" in img or ":" in img.rsplit("/", 1)[-1], img
+        else:
+            assert (REPO / entry["dockerfile"]).is_file(), entry
+            assert (REPO / entry["context"]).is_dir(), entry
+
+
+def test_guard_no_compose_service_runs_a_base_by_its_tag(lsi):
+    """GUARD: a build host may pull every Dockerfile base by name before it
+    builds (--bases). A service in the compose file a bare `docker compose`
+    runs there, running one of those tags as its own image, would then be
+    recreated at its next `compose up -d` whenever the tag moved, dropping its
+    open connections unplanned. A service image that is also a base is pinned
+    to its exact version instead. Other compose files (a client deployment's,
+    named with -f) run on hosts that pull their own way."""
+    default = [p for p in lsi.compose_files(str(REPO))
+               if Path(p).name in ("docker-compose.yml", "docker-compose.yaml",
+                                   "compose.yml", "compose.yaml")]
+    bases = set(lsi.list_bases(str(REPO)))
+    images, _builds = lsi.read_compose(str(REPO), default)
+    assert not bases & set(images), sorted(bases & set(images))
 
 
 # --- the workflow -----------------------------------------------------------
@@ -257,16 +407,41 @@ def test_the_workflow_reads_nothing_but_contents():
 
 
 def test_the_scan_is_a_matrix_over_the_listing():
-    """FIX: the first job prints the list, the scan runs once per image, and
+    """FIX: the first job prints the list, the scan runs once per entry, and
     one image's finding does not cancel the others."""
     jobs = _workflow()["jobs"]
     listing, scan = jobs["list"], jobs["scan"]
     runs = "\n".join(s.get("run", "") for s in listing["steps"])
     assert "python backend/scripts/list_scanned_images.py --json" in runs
-    assert listing["outputs"]["images"] == "${{ steps.list.outputs.images }}"
+    assert listing["outputs"]["entries"] == "${{ steps.list.outputs.entries }}"
     assert scan["needs"] == "list"
     assert scan["strategy"]["fail-fast"] is False
-    assert scan["strategy"]["matrix"]["image"] == "${{ fromJSON(needs.list.outputs.images) }}"
+    assert scan["strategy"]["matrix"]["entry"] == "${{ fromJSON(needs.list.outputs.entries) }}"
+
+
+def test_a_build_entry_is_built_and_its_image_is_the_one_scanned():
+    """FIX: a build entry (and only a build entry) is built after the
+    checkout, from a freshly pulled base, with its context, Dockerfile and
+    target handed over as environment variables; the scan reads the tag that
+    build wrote, and a pull entry's own image otherwise."""
+    scan = _workflow()["jobs"]["scan"]
+    steps = scan["steps"]
+    builds = [s for s in steps if "docker build" in s.get("run", "")]
+    (build,) = builds
+    assert steps.index(build) > 0 and steps[0]["uses"].startswith("actions/checkout@")
+    assert build["if"] == "${{ matrix.entry.dockerfile }}"
+    assert build["env"] == {
+        "BUILD_CONTEXT": "${{ matrix.entry.context }}",
+        "BUILD_DOCKERFILE": "${{ matrix.entry.dockerfile }}",
+        "BUILD_TARGET": "${{ matrix.entry.target }}",
+    }
+    run = build["run"]
+    assert "--pull" in run
+    assert '-f "$BUILD_DOCKERFILE"' in run and '"$BUILD_CONTEXT"' in run and "$BUILD_TARGET" in run
+    tag = run.split(" -t ", 1)[1].split()[0]
+    (trivy,) = _trivy_steps(scan)
+    assert steps.index(trivy) > steps.index(build)
+    assert trivy["with"]["image-ref"] == "${{ matrix.entry.image || '%s' }}" % tag
 
 
 def test_the_scan_uses_the_repository_scans_trivy_pin_in_image_mode():
@@ -296,7 +471,7 @@ def test_the_scan_uses_the_repository_scans_trivy_pin_in_image_mode():
     assert scan["steps"][0]["uses"].startswith("actions/checkout@")
     w = mine["with"]
     assert w["scan-type"] == "image"
-    assert w["image-ref"] == "${{ matrix.image }}"
+    assert w["image-ref"].startswith("${{ matrix.entry.image")
     assert w["severity"] == "HIGH,CRITICAL"
     assert w["ignore-unfixed"] is True
     assert str(w["exit-code"]) == "1"
