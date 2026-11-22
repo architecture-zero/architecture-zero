@@ -13,5 +13,7 @@ sqlalchemy==2.0.36
 fastembed==0.9.1
 # setuptools: pinned past the base image's 79.0.1, whose vendored jaraco.context
 # and wheel carry fixed HIGH CVEs (the weekly image scan, 2026-11-21). 81 and
-# later ship no pkg_resources; nothing installed here imports it.
+# later ship no pkg_resources; nothing on the app's path needs it (read in
+# the built images: a few off-path scripts import it, and pytz falls back to it
+# only when its own zone files are missing).
 setuptools==84.2.1
