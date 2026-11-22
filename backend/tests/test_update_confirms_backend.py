@@ -86,8 +86,20 @@ def test_the_script_the_runbook_names_is_in_the_repository():
     assert (REPO / SCRIPT).is_file()
 
 
+def test_the_update_pulls_the_base_images_before_it_builds():
+    """FIX (2026-11-21): after the pull of the code and before the build, so the
+    build starts from the bases' current releases, not the host's first pull
+    (pull_bases.sh's behavior: test_pull_bases.py)."""
+    block = _first_block()
+    call = "bash backend/scripts/pull_bases.sh"
+    assert block.index(call) == block.index("git pull") + 1, block
+    assert block.index(call) + 1 == block.index("docker compose up -d --build"), block
+    assert (REPO / "backend" / "scripts" / "pull_bases.sh").is_file()
+
+
 def test_control_the_four_commands_are_still_there_in_their_order():
-    assert _first_block()[:4] == BEFORE
+    block = _first_block()
+    assert [c for c in block if c in BEFORE] == BEFORE
 
 
 def test_control_the_backend_is_still_named_and_still_restarted_unless_stopped():

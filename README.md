@@ -217,9 +217,11 @@ beyond the core and how modules graduate into it.
 - `backend/tests/` - the suite CI runs on every push and on the daily schedule
 - `backend/scripts/` - the measurement harness (retrieval A/B arms, noise
   bands, answer-layer runs, outside-model holdout authoring, the live-fire
-  injection probe), and `wait_backend_healthy.sh`, the check an update ends
-  with: it waits for the backend to answer after `docker compose up` and
-  fails if it never does
+  injection probe), `pull_bases.sh`, which an update runs before it builds
+  so the images start from the base images' current releases rather than
+  whatever the host pulled first, and `wait_backend_healthy.sh`, the check an
+  update ends with: it waits for the backend to answer after
+  `docker compose up` and fails if it never does
 - `frontend/` - the reference web client (React + Vite, served by nginx)
 - `extractor/` - the locked box every PDF and Word file is parsed in
   (server, per-file worker, the lock checker, its own tests)

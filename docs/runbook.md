@@ -76,6 +76,7 @@ override was added; the README carries the same note).
     docker compose stop
     sudo cp -a backend/data ../data-before-update-$(date +%Y%m%d-%H%M%S)
     git pull
+    bash backend/scripts/pull_bases.sh
     docker compose up -d --build
     bash backend/scripts/wait_backend_healthy.sh az_backend
 
@@ -90,6 +91,13 @@ application database runs in WAL mode (its newest commits sit in the -wal file
 until a checkpoint), the vector store's database does not, and the vector
 index flushes its tail on a graceful stop. Keep `JWT_SECRET_KEY` as it is in `.env`; it is also the key the secrets
 in the database are encrypted under.
+
+`pull_bases.sh` pulls each base image the Dockerfiles name (python, node,
+nginx) before the build. Docker builds on the copy of a base this host pulled
+first and never looks for a newer one on its own, so without it every rebuild
+keeps the operating-system packages and the nginx release of that first pull,
+fixes included or not. A pull that fails (the registry is down) only warns,
+and the build goes on from the cached copy.
 
 The last line asks the new backend whether it came up, and the update is not
 done until it says so. `docker compose up -d` returns as soon as the
