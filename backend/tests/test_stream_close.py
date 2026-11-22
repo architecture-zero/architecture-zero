@@ -12,11 +12,21 @@ drop a socket), the way uvicorn 0.32 reports it (ASGI http spec 2.3: an
 http.disconnect message), and read the stream's state the moment the response
 returns, inside the event loop - after the loop shuts down, its async-generator
 cleanup would close the generator too and hide the difference.
+
+A server on ASGI http spec 2.4 reports the same disconnect differently: no
+http.disconnect message, but an OSError from send(). Starlette lets that error
+out of the response (1.x as ClientDisconnect) before it awaits the background
+task - read on 0.41.3 and 1.10.0 alike, 2026-11-22 - so on that path the turn's
+BackgroundTask release does not run, and the generator's close
+(turn_guard.guarded_stream's finally) is the release. uvicorn 0.32 speaks 2.3;
+the 2.4 tests below hold the guarantee for the day a server upgrade moves to 2.4.
 """
 import asyncio
 import json
 from unittest.mock import patch
 
+import pytest
+from starlette.background import BackgroundTask
 from starlette.responses import StreamingResponse
 
 from app import turn_guard
@@ -81,6 +91,69 @@ def test_the_closing_response_closes_the_generator_after_a_disconnect():
     assert seen["closed"] is True
 
 
+_SCOPE_2_4 = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"}}
+
+
+async def _drive_2_4(asgi, scope, *, request_body=None, leave_when=lambda chunk: True):
+    """The same client against an ASGI http spec 2.4 server: it never sends
+    http.disconnect; once it has gone, the server's send() raises OSError.
+    Returns what the app let out (starlette 1.x: ClientDisconnect), or None."""
+    gone = False
+    body_sent = False
+
+    async def receive():
+        nonlocal body_sent
+        if request_body is not None and not body_sent:
+            body_sent = True
+            return {"type": "http.request", "body": request_body, "more_body": False}
+        await asyncio.Event().wait()
+
+    async def send(message):
+        nonlocal gone
+        if gone:
+            raise OSError("the client went away")
+        if (message["type"] == "http.response.body" and message.get("body")
+                and leave_when(message["body"])):
+            gone = True
+
+    try:
+        await asyncio.wait_for(asgi(scope, receive, send), timeout=30)
+    except asyncio.TimeoutError:
+        raise
+    except Exception as e:  # noqa: BLE001 - the app's answer to a lost client is the point
+        return e
+    return None
+
+
+def test_on_asgi_2_4_starlette_skips_the_background_task_after_a_disconnect():
+    """Why the generator close has to carry the release on its own: on a 2.4
+    server starlette never reaches the background task once send() has failed
+    (0.41.3 and 1.10.0 alike). If this starts failing, starlette runs it on that
+    path now, and the release has a second leg there too."""
+    state, ran = {"produced": 0, "closed": False}, []
+    response = StreamingResponse(_tracked(state), background=BackgroundTask(ran.append, 1))
+
+    async def main():
+        return await _drive_2_4(response, _SCOPE_2_4)
+
+    let_out = asyncio.run(main())
+    assert let_out is not None, "the lost client reached no exception"
+    assert 0 < state["produced"] < _LONG
+    assert ran == []
+
+
+def test_the_closing_response_closes_the_generator_on_asgi_2_4_too():
+    state = {"produced": 0, "closed": False}
+
+    async def main():
+        await _drive_2_4(ClosingStreamingResponse(_tracked(state)), _SCOPE_2_4)
+        return dict(state)
+
+    seen = asyncio.run(main())
+    assert 0 < seen["produced"] < _LONG
+    assert seen["closed"] is True
+
+
 def test_a_stream_that_runs_to_the_end_is_whole_and_closing_it_again_is_harmless():
     state = {"produced": 0, "closed": False}
     body = []
@@ -115,7 +188,8 @@ def _guest_cfg(key, default=None):
     return "true" if key == "guest_mode_enabled" else default
 
 
-def test_a_stop_in_the_chat_client_closes_the_provider_stream(client):
+@pytest.mark.parametrize("spec", ["2.3", "2.4"])
+def test_a_stop_in_the_chat_client_closes_the_provider_stream(client, spec):
     """The whole route, with a provider stream that records whether it was
     closed: the client leaves after the first token, and by the time the
     response returns the provider's stream is closed and the turn slot free."""
@@ -131,10 +205,10 @@ def test_a_stop_in_the_chat_client_closes_the_provider_stream(client):
         finally:
             provider["closed"] = True
 
-    session = "sc-stop"
+    session = f"sc-stop-{spec}"
     body = json.dumps({"prompt": "Hi", "model": "test-model",
                        "session_id": session, "history": []}).encode()
-    scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"},
+    scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": spec},
              "http_version": "1.1", "method": "POST", "path": "/api/chat",
              "raw_path": b"/api/chat", "root_path": "", "scheme": "http",
              "query_string": b"", "client": ("testclient", 50000),
@@ -144,8 +218,9 @@ def test_a_stop_in_the_chat_client_closes_the_provider_stream(client):
                          (b"content-length", str(len(body)).encode())]}
 
     async def main():
-        await _drive(app, scope, request_body=body,
-                     leave_when=lambda chunk: b'"token"' in chunk)
+        drive = _drive if spec == "2.3" else _drive_2_4
+        await drive(app, scope, request_body=body,
+                    leave_when=lambda chunk: b'"token"' in chunk)
         return dict(provider)
 
     with patch("app.routers.chat.guest_chat_available", return_value=True), \
