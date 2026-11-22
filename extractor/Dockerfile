@@ -16,6 +16,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+# The base image's setuptools and wheel, removed: nothing in this box builds or
+# installs a package after the line above, and the base's setuptools 79.0.1
+# vendors jaraco.context and wheel releases with fixed HIGH CVEs (the weekly
+# image scan, 2026-11-21). The box keeps what it runs.
+RUN pip uninstall -y -q setuptools wheel
 COPY server.py worker.py check_locks.py ./
 # A user with no shell and no home, and the socket folder it may write. 1777
 # so the folder works whichever container first mounts the shared volume.
