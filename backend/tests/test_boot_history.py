@@ -370,7 +370,7 @@ def test_the_first_startup_hook_stamps_the_boot(store):
     task that runs chroma maintenance - was still counted."""
     import asyncio
     from app import main
-    assert main.app.router.on_startup[0] is main._record_boot_on_startup
+    assert main.STARTUP_HOOKS[0] is main._record_boot_on_startup
     asyncio.run(main._record_boot_on_startup())
     saved = json.loads((store / bh.HISTORY_FILE).read_text())
     assert [b["sha"] for b in saved] == ["abc1234"]

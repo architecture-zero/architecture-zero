@@ -1,8 +1,9 @@
 """Application assembly.
 
 After the router split this file builds the app and nothing else: middleware,
-the ten include_router calls, the boot-time side effects, and the seven
-lifecycle hooks. No routes, no models, no handlers, no business logic.
+the ten include_router calls, the boot-time side effects, and the lifecycle
+hooks with the one lifespan handler that runs them. No routes, no models, no
+handlers, no business logic.
 
 Direction is one-way and enforced by tests/test_module_hygiene.py: main imports
 routers and the shared modules; nothing under app/ imports main.
@@ -25,6 +26,8 @@ _check_on_off_settings()
 import os
 import logging
 import asyncio
+import inspect
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -67,6 +70,34 @@ logging.basicConfig(
 # app - app/access_log.py says where that was read.
 access_log.install()
 
+# -- Startup and shutdown (2026-11-22) -----------------------------------------
+# One lifespan handler runs the boot's hooks, in the order STARTUP_HOOKS names
+# them at the bottom of this file, and SHUTDOWN_HOOKS when the app stops.
+# FastAPI 0.162 keeps @app.on_event but marks it deprecated (starlette 1.0
+# removed its own), and an app given a lifespan never runs a hook registered
+# that way, so a new hook goes in one of the two tuples or it does not run;
+# tests/test_lifespan.py holds that and the order. The rest is FastAPI's own
+# default for those hooks, kept: a startup hook that raises stops the boot
+# and runs no shutdown hook, the shutdown hooks run on any exit after a
+# completed startup (an error included), and a plain function hook runs as
+# well as a coroutine.
+@asynccontextmanager
+async def _lifespan(_app):
+    for hook in STARTUP_HOOKS:
+        await _run_hook(hook)
+    try:
+        yield
+    finally:
+        for hook in SHUTDOWN_HOOKS:
+            await _run_hook(hook)
+
+
+async def _run_hook(hook):
+    result = hook()
+    if inspect.isawaitable(result):
+        await result
+
+
 # API docs UI (/docs, /redoc, /openapi.json) is OFF by default - it publishes
 # the full API surface. Enable only in local dev with ENABLE_API_DOCS=true.
 _API_DOCS = flag("ENABLE_API_DOCS")
@@ -76,6 +107,7 @@ app = FastAPI(
     docs_url="/docs" if _API_DOCS else None,
     redoc_url="/redoc" if _API_DOCS else None,
     openapi_url="/openapi.json" if _API_DOCS else None,
+    lifespan=_lifespan,
 )
 
 
@@ -166,7 +198,7 @@ app.add_middleware(
 
 # Routers. Registered at IMPORT time, not in a startup hook: conftest does
 # `from app.main import app` and expects a populated route table the moment that
-# import returns. An include_router inside @app.on_event leaves the TestClient
+# import returns. An include_router inside a startup hook leaves the TestClient
 # short a router with no error message to say so.
 #
 # And AHEAD of the schema step below. The auth router refuses at import on a
@@ -223,7 +255,6 @@ if ENABLE_AUDIT_LOG:
 
 
 
-@app.on_event("startup")
 async def _record_boot_on_startup():
     """Stamp this boot BEFORE anything that can hang or die.
 
@@ -247,7 +278,6 @@ async def _record_boot_on_startup():
         log_error("boot_history_unavailable", error=type(e).__name__)
 
 
-@app.on_event("startup")
 async def _claim_code_on_startup():
     """Print the first-Owner claim code while this deployment is UNCLAIMED.
 
@@ -306,7 +336,6 @@ async def _claim_code_on_startup():
         log_error("setup_claim_gate_crashed", error=f"{type(e).__name__}: {e}"[:300])
 
 
-@app.on_event("startup")
 async def _require_mfa_on_startup():
     """One line per boot saying whether a password sign-in requires an
     enrolled authenticator: `require_mfa`, state on or off.
@@ -331,7 +360,6 @@ async def _require_mfa_on_startup():
         log_error("require_mfa_line_crashed", error=f"{type(e).__name__}: {e}"[:300])
 
 
-@app.on_event("startup")
 async def _on_off_settings_on_startup():
     """One line per boot naming every on/off setting the host's environment
     carries and which way each was read: `on_off_settings`, with one field
@@ -359,7 +387,6 @@ async def _on_off_settings_on_startup():
         log_error("on_off_settings_line_crashed", error=f"{type(e).__name__}: {e}"[:300])
 
 
-@app.on_event("startup")
 async def _system_prompt_divergence_on_startup():
     """Report a persona that the 2026-08-27 DB-first change moved.
 
@@ -406,7 +433,6 @@ def _boot_sync_enabled() -> bool:
     return flag("BOOT_BACKGROUND_SYNC")
 
 
-@app.on_event("startup")
 async def startup_tasks():
     # The test suite's switch (2026-10-29), decided before the flag below is
     # armed, so an instance booted without the background sync never reads as
@@ -632,7 +658,6 @@ async def startup_tasks():
         rag_probe=lambda: probe_retrieval_lane(RAG_ONLY_MODE, corpus_expected=_knowledge_dir_has_documents())))
 
 
-@app.on_event("shutdown")
 async def _flush_chroma_on_shutdown():
     """Graceful stops must not lose the un-flushed HNSW tail. chroma 0.5.23
     never persists on close (stop() only closes file handles), so this hook
@@ -646,3 +671,19 @@ async def _flush_chroma_on_shutdown():
         log("chroma_shutdown_flush", **res)
     except Exception as e:
         log_error("chroma_shutdown_flush_failed", error=f"{type(e).__name__}: {e}"[:300])
+
+
+# The order the lifespan runs them in (_lifespan, near the top). It is the
+# order the @app.on_event decorators registered them in before 2026-11-22:
+# the boot stamp first, so a boot that dies later was still counted.
+STARTUP_HOOKS = (
+    _record_boot_on_startup,
+    _claim_code_on_startup,
+    _require_mfa_on_startup,
+    _on_off_settings_on_startup,
+    _system_prompt_divergence_on_startup,
+    startup_tasks,
+)
+SHUTDOWN_HOOKS = (
+    _flush_chroma_on_shutdown,
+)

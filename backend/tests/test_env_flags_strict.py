@@ -833,7 +833,7 @@ def test_each_boot_logs_every_setting_on_or_off(monkeypatch):
 def test_the_boot_line_is_a_registered_startup_hook():
     """FIX. The def is not the line, the registration is."""
     from app import main
-    assert main._on_off_settings_on_startup in main.app.router.on_startup
+    assert main._on_off_settings_on_startup in main.STARTUP_HOOKS
 
 
 def test_a_boot_line_that_cannot_be_written_does_not_stop_the_boot(monkeypatch):

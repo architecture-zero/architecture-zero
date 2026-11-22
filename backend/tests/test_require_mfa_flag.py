@@ -322,7 +322,7 @@ def test_the_boot_line_is_a_registered_startup_hook():
     """FIX. The def is not the guard, the registration is: a hook nothing
     registered would be a line no boot ever logs."""
     from app import main
-    assert main._require_mfa_on_startup in main.app.router.on_startup
+    assert main._require_mfa_on_startup in main.STARTUP_HOOKS
 
 
 def test_a_boot_line_that_cannot_be_written_does_not_stop_the_boot(monkeypatch):
