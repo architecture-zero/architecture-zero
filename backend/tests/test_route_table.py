@@ -77,7 +77,9 @@ def _declared():
 def test_the_walk_yields_every_path_operation_the_code_declares():
     always, flagged = _declared()
     walked = Counter((r.endpoint.__module__, r.endpoint.__name__) for r in api_routes(app))
-    assert sum(always.values()) >= 90, always  # the floor: a source read that finds little is broken
+    # The floor catches a source read that finds next to nothing (a parse that
+    # matches no decorator). The five surfaces declared 80 to 342 on 2026-11-22.
+    assert sum(always.values()) >= 50, always
     missing = always - walked
     assert not missing, (
         f"declared in app/ but not in the route walk: {sorted(missing)} - every sweep "
