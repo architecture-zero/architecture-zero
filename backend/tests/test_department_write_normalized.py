@@ -71,7 +71,15 @@ def test_the_three_doors_take_the_listing_spelling(client, finance_headers, monk
     deleted, added = [], []
     monkeypatch.setattr(kb, "delete_source", lambda s, department=None: deleted.append(department))
     monkeypatch.setattr(kb, "chunk_metadata", lambda ids, dept: {})
-    monkeypatch.setattr(kb, "add_document", lambda *a, **k: added.append(k.get("department")))
+    # /api/ingest gates and embeds through _prepare_chunk, then writes through
+    # _write_chunk (2026-11-24); the department its write goes to is the one
+    # handed to the first.
+    def _prepare(doc_id, text, meta, department=None):
+        added.append(department)
+        return None, meta, []
+
+    monkeypatch.setattr(kb, "_prepare_chunk", _prepare)
+    monkeypatch.setattr(kb, "_write_chunk", lambda *a, **k: None)
     monkeypatch.setattr(kb, "_ingest_upload",
                         lambda name, ext, data, dept, user: {"status": "ingested"})
 

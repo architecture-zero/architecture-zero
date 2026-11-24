@@ -354,9 +354,11 @@ def test_a_caller_cannot_dress_content_as_a_live_system_record(client, admin_hea
 
     def _capture(doc_id, text, metadata=None, **kw):
         captured.update(metadata or {})
-        return 1
+        return None, metadata, []
 
-    with patch("app.routers.kb.add_document", side_effect=_capture):
+    # The route gates and embeds through _prepare_chunk, which is handed the
+    # metadata it will write, then writes through _write_chunk (2026-11-24).
+    with patch("app.routers.kb._prepare_chunk", side_effect=_capture),             patch("app.routers.kb._write_chunk"):
         r = client.post("/api/ingest",
                         json={"doc_id": "forge-probe", "text": "Harmless text.",
                               "department": "general",
@@ -364,6 +366,7 @@ def test_a_caller_cannot_dress_content_as_a_live_system_record(client, admin_hea
                                            "auto_generated": "true"}},
                         headers=admin_headers)
     assert r.status_code == 200, r.text
+    assert captured.get("source") == "forge-probe", "the capture saw no write"
     # The route writes "false" itself since 2026-10-29 (an upsert merges, so a
     # dropped key let a stored "true" survive); every reader asks == "true".
     assert captured.get("auto_generated") != "true", "caller forged the live-record label"

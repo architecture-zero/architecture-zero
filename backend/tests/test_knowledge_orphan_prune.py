@@ -429,9 +429,11 @@ def test_api_ingest_drops_a_claimed_from_file(client, admin_headers):
 
     def _capture(doc_id, text, metadata=None, **kw):
         captured.update(metadata or {})
-        return 1
+        return None, metadata, []
 
-    with patch("app.routers.kb.add_document", side_effect=_capture):
+    # The route gates and embeds through _prepare_chunk, which is handed the
+    # metadata it will write, then writes through _write_chunk (2026-11-24).
+    with patch("app.routers.kb._prepare_chunk", side_effect=_capture),             patch("app.routers.kb._write_chunk"):
         r = client.post("/api/ingest",
                         json={"doc_id": "stamp-probe", "text": "Harmless text.",
                               "department": "general",
@@ -501,7 +503,10 @@ def test_api_ingest_refuses_a_system_records_id_before_any_scan_or_write(
     monkeypatch.setattr(kb, "PII_SCAN_MODE", "tag")
     monkeypatch.setattr(kb, "scan_pii", lambda text: calls.append("pii scan") or [])
     monkeypatch.setattr(corpus_scan, "scan", lambda text: calls.append("injection scan") or [])
-    monkeypatch.setattr(kb, "add_document", lambda *a, **kw: calls.append("write"))
+    # The route's gate and embed, then its write (2026-11-24: it no longer
+    # calls add_document).
+    monkeypatch.setattr(kb, "_prepare_chunk", lambda *a, **kw: calls.append("embed"))
+    monkeypatch.setattr(kb, "_write_chunk", lambda *a, **kw: calls.append("write"))
     r = _api_ingest(client, admin_headers, "record-id", "API-ingested text.",
                     department=dept, source=system_records.POSTURE_SOURCE)
     assert r.status_code == 409, r.text
