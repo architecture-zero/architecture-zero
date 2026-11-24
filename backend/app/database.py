@@ -55,7 +55,8 @@ def store_write_lock():
     add_document's delete-before-upsert (_drop_held_rows) and its upsert
     (_write_chunk), the same pair for each add_documents_batch slice,
     restamp_reused_chunks' whole writes and its metadata updates with the
-    re-read each update takes first, restore_chunk_metadata and put_rows_back
+    re-read each update takes first, restore_chunk_metadata with the read of
+    the text it restores onto, and put_rows_back
     - and chroma_maintenance's collection rebuild, which re-adds every row of
     a collection; and POST /api/ingest's read of who holds its id together
     with the write that follows it.
@@ -1147,22 +1148,69 @@ def chunk_metadata(ids: list[str], department: str | None = None) -> dict[str, d
     return out
 
 
-def restore_chunk_metadata(snapshot: dict[str, dict], department: str | None = None) -> int:
+def restore_chunk_metadata(snapshot: dict[str, dict], department: str | None = None,
+                           first_read: dict | None = None) -> int:
     """Write a chunk_metadata snapshot back: every key each row held returns
     to its value - the from_file stamp and the trust tier among them. A key
     written since that the row did not hold stays (chroma's update MERGES
     metadata and its API refuses None, so a key cannot be removed). No
-    re-embed. Returns the count written."""
+    re-embed. Returns the count written.
+
+    first_read (2026-11-24): the caller's whole read of these rows from
+    before it wrote anything (get_rows: id -> (text, metadata, vector)).
+    The update merges onto whatever text the row holds when it runs, and a
+    row the caller restamped reads as the caller's own until this restore -
+    no writer's stamp - so /api/ingest may replace it in between; the update
+    then put the writer's stamp (from_file "true", the curated tier) on the
+    caller's text. With first_read, each slice reads its rows' text under
+    the store write lock: a row still holding its first-read text is
+    restored by the update alone; one holding other text goes back WHOLE -
+    the first-read text and vector with the snapshot's metadata
+    (_replace_rows). A row with no vector in the first read is embedded
+    outside the lock, then written; a row absent from the read is updated as
+    before (the store ignores an update of an id it does not hold)."""
     col = _existing_collection(department) if snapshot else None
     if col is None:
         return 0
     ids = list(snapshot)
+    late: list[tuple[str, str, dict]] = []
+    whole = 0
     for start in range(0, len(ids), EMBED_BATCH_SIZE):
         sl = ids[start:start + EMBED_BATCH_SIZE]
         # It writes a writer's stamps back, so it takes the store write lock
-        # like every writer (2026-11-24).
+        # like every writer (2026-11-24) - and reads the text it restores
+        # them onto inside the same hold.
         with store_write_lock():
-            col.update(ids=sl, metadatas=[snapshot[i] for i in sl])
+            same, again = list(sl), []
+            if first_read is not None:
+                got = col.get(ids=sl, include=["documents"])
+                now = dict(zip(got.get("ids") or [], got.get("documents") or []))
+                same = []
+                for doc_id in sl:
+                    earlier = first_read.get(doc_id)
+                    if doc_id not in now or earlier is None or now[doc_id] == earlier[0]:
+                        same.append(doc_id)
+                    elif earlier[2] is None:
+                        late.append((doc_id, earlier[0], snapshot[doc_id]))
+                    else:
+                        vector = earlier[2]
+                        again.append((doc_id, earlier[0], snapshot[doc_id],
+                                      vector.tolist() if hasattr(vector, "tolist")
+                                      else list(vector)))
+            if same:
+                col.update(ids=same, metadatas=[snapshot[i] for i in same])
+            if again:
+                _replace_rows(col, again)
+                whole += len(again)
+    for start in range(0, len(late), EMBED_BATCH_SIZE):
+        sl = late[start:start + EMBED_BATCH_SIZE]
+        vectors = _embed_batch([t for _, t, _ in sl])
+        _replace_rows(col, [(i, t, m, v) for (i, t, m), v in zip(sl, vectors)])
+        whole += len(sl)
+    if whole:
+        log.warning("restore: %d row(s) in %s held other text than the first read; "
+                    "put back whole", whole, col.name)
+        _invalidate_lexical_index(col.name)
     return len(ids)
 
 

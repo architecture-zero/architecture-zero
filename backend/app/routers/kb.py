@@ -288,10 +288,18 @@ def admin_release_quarantine(item_id: QuarantineItemId,
             # of the held text written whole for a key the release does not
             # write (2026-10-29) is handed it back like the others.
             # The row of a caller's text is put back whole below.
+            #
+            # The restore is handed `before`, the whole read made before
+            # anything was written (2026-11-24): after the restamp a reused
+            # row reads as this release's (no file stamp), so /api/ingest may
+            # replace it before this runs, and the restore's update merged
+            # the file's stamp onto the caller's text. A row no longer
+            # holding its `before` text goes back whole from it now
+            # (database.restore_chunk_metadata says how).
             reused_before = {i: m for i, m in reused_before.items() if i not in rewritten}
             if reused_before:
                 try:
-                    restore_chunk_metadata(reused_before, department)
+                    restore_chunk_metadata(reused_before, department, first_read=before)
                 except Exception:
                     logger.exception(
                         "quarantine release rollback FAILED for %s - %d reused chunks "
