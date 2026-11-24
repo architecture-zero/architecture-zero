@@ -1,9 +1,11 @@
+import contextlib
 import hashlib
 import json
 import os
 import logging
 import math
 import re
+import threading
 import time
 from datetime import date, datetime, timezone
 
@@ -38,6 +40,68 @@ client = chromadb.PersistentClient(
     path=os.path.abspath(_CHROMA_PATH),
     settings=chromadb.Settings(anonymized_telemetry=False),
 )
+
+# The store write lock (2026-11-24): store_write_lock below says what it is.
+# Re-entrant on purpose; read at each take, so a test can swap it.
+_STORE_WRITE_LOCK = threading.RLock()
+
+
+@contextlib.contextmanager
+def store_write_lock():
+    """A hold, for `with`, on the ONE process-wide lock that every write of
+    chunk rows takes (2026-11-24).
+
+    What it serializes: the writes this module makes to chunk rows -
+    add_document's delete-before-upsert (_drop_held_rows) and its upsert, the
+    same pair for each add_documents_batch slice, restamp_reused_chunks'
+    whole writes and metadata updates, restore_chunk_metadata and
+    put_rows_back - and chroma_maintenance's collection rebuild, which re-adds
+    every row of a collection; and POST /api/ingest's read of who holds its
+    id together with the add_document that follows it.
+
+    Why: /api/ingest refuses an id a system writer holds (from_file or
+    auto_generated "true" - the knowledge file sync, the system records), and
+    that refusal is a read followed by a write. The writers serialized per
+    SOURCE (ingest_sync._source_lock), the system records took no lock, and a
+    predicted content-addressed id names no source the route could lock - so
+    a writer that landed the id between the route's read and its write had
+    its row replaced by the caller's text. Now the route holds this lock from
+    its read through its write and every writer takes it around its own
+    write, so a writer's row lands either before the read (and is refused
+    with a 409) or after the route's write (and replaces the caller's row).
+
+    Re-entrant: the route holds it and then calls add_document, which takes it
+    again on the same thread. A plain Lock deadlocks there, and the
+    caller's-own-id control in tests/test_ingest_ownership_race.py fails on
+    its join timeout.
+
+    Held around the write, not the embed, where the function's shape allows:
+    add_document and each batch slice embed first and then take it for the
+    delete and the upsert, so writers do not queue behind one another's calls
+    to the embedding service. Two holds are longer: the route's, whose read
+    and write are one step, so its scans and its one embed run inside it;
+    and a collection rebuild at boot, which re-adds every row (no embed).
+
+    Taken last: nothing that holds it takes a source lock or the upload lock,
+    so the lock order written beside ingest_sync._source_lock stands.
+    The deletes (delete_source, delete_file_chunks, delete_documents) do not
+    take it: removing a row cannot put a caller's text where a writer's row
+    was, and a delete that lands inside the route's hold leaves the end state
+    a delete before its read would.
+
+    NOT a caller-held index lock. Some forks carry a plain lock (named
+    INDEX_WRITE_LOCK there) that callers hold across whole operations; this
+    one is taken inside the write functions, so a new caller of a writer is
+    covered without doing anything.
+
+    Scope: one process. The backend runs as ONE uvicorn process (the
+    Dockerfile's CMD passes no --workers), so a thread lock covers every
+    writer in it: the routes, the startup syncs, the knowledge watcher, the
+    queued-ingest worker. A maintenance script run as its own process
+    (scripts/injection_probe.py beside a live server) is outside it."""
+    with _STORE_WRITE_LOCK:
+        yield
+
 
 GLOBAL_COLLECTION = "knowledge_base"
 
@@ -664,14 +728,17 @@ def add_document(doc_id: str, text: str, metadata: dict, department: str | None 
     meta = _gate_chunk(doc_id, text, metadata, department, quarantine_exempt)
     col = _get_collection(department)
     embedding = _embed(text)
-    _drop_held_rows(col, [doc_id])
-    col.upsert(
-        ids=[doc_id],
-        embeddings=[embedding],
-        documents=[text],
-        metadatas=[meta]
-    )
-    _invalidate_lexical_index(col.name)
+    # The write, and only the write, under the store write lock (2026-11-24;
+    # store_write_lock says why): the embed above runs outside it.
+    with store_write_lock():
+        _drop_held_rows(col, [doc_id])
+        col.upsert(
+            ids=[doc_id],
+            embeddings=[embedding],
+            documents=[text],
+            metadatas=[meta]
+        )
+        _invalidate_lexical_index(col.name)
 
 
 def _drop_held_rows(col, ids: list[str]) -> None:
@@ -766,9 +833,12 @@ def add_documents_batch(entries: list[tuple[str, str, dict]],
     for start in range(0, len(ids), EMBED_BATCH_SIZE):
         sl = slice(start, start + EMBED_BATCH_SIZE)
         embeddings = _embed_batch(texts[sl])
-        _drop_held_rows(col, ids[sl])   # a write replaces, never merges (2026-10-29)
-        col.upsert(ids=ids[sl], embeddings=embeddings,
-                   documents=texts[sl], metadatas=metas[sl])
+        # Each slice embeds first, then takes the store write lock for its
+        # write alone (2026-11-24; store_write_lock says why).
+        with store_write_lock():
+            _drop_held_rows(col, ids[sl])   # a write replaces, never merges (2026-10-29)
+            col.upsert(ids=ids[sl], embeddings=embeddings,
+                       documents=texts[sl], metadatas=metas[sl])
     _invalidate_lexical_index(col.name)
     return len(ids)
 
@@ -965,16 +1035,20 @@ def restamp_reused_chunks(entries: list[tuple[str, str, dict]],
     if rewritten is not None:
         rewritten.extend(foreign)
     whole = [(i, t, m, e) for (i, t, m), e in zip(fresh, embeddings)] + reuse
+    # The writes under the store write lock (2026-11-24; store_write_lock says
+    # why), every embed above already made. Per slice, like the batch.
     for start in range(0, len(whole), EMBED_BATCH_SIZE):
         sl = whole[start:start + EMBED_BATCH_SIZE]
-        col.delete(ids=[w[0] for w in sl])
-        col.upsert(ids=[w[0] for w in sl], embeddings=[w[3] for w in sl],
-                   documents=[w[1] for w in sl], metadatas=[w[2] for w in sl])
+        with store_write_lock():
+            col.delete(ids=[w[0] for w in sl])
+            col.upsert(ids=[w[0] for w in sl], embeddings=[w[3] for w in sl],
+                       documents=[w[1] for w in sl], metadatas=[w[2] for w in sl])
     if whole:
         _invalidate_lexical_index(col.name)
     for start in range(0, len(ids), EMBED_BATCH_SIZE):
         sl = slice(start, start + EMBED_BATCH_SIZE)
-        col.update(ids=ids[sl], metadatas=metas[sl])
+        with store_write_lock():
+            col.update(ids=ids[sl], metadatas=metas[sl])
     return len(ids) + len(whole)
 
 
@@ -1007,7 +1081,10 @@ def restore_chunk_metadata(snapshot: dict[str, dict], department: str | None = N
     ids = list(snapshot)
     for start in range(0, len(ids), EMBED_BATCH_SIZE):
         sl = ids[start:start + EMBED_BATCH_SIZE]
-        col.update(ids=sl, metadatas=[snapshot[i] for i in sl])
+        # It writes a writer's stamps back, so it takes the store write lock
+        # like every writer (2026-11-24).
+        with store_write_lock():
+            col.update(ids=sl, metadatas=[snapshot[i] for i in sl])
     return len(ids)
 
 
@@ -1059,35 +1136,39 @@ def put_rows_back(rows: dict[str, tuple[str | None, dict, object]],
                 vectors.append(_embed(rows[doc_id][0]))
             else:
                 vectors.append(vector.tolist() if hasattr(vector, "tolist") else list(vector))
-        held = col.get(ids=sl, include=["metadatas", "documents"])
-        wider = [doc_id for doc_id, meta in zip(held["ids"], held["metadatas"])
-                 if set(meta or {}) - set(rows[doc_id][1])]
-        other_text = [doc_id for doc_id, doc in zip(held["ids"], held["documents"])
-                      if doc != rows[doc_id][0]]
-        try:
-            col.upsert(ids=sl, embeddings=vectors, documents=[rows[i][0] for i in sl],
-                       metadatas=[rows[i][1] for i in sl])
-        except Exception:
-            # Read again first: an upsert that wrote and then raised
-            # has already put the earlier text back, and the read made before
-            # it would delete rows it restored. Only a row whose stored text is
-            # not the text being put back is deleted; when this read fails too,
-            # the read made before the write decides.
+        # It puts writers' rows back, so it takes the store write lock like
+        # every writer (2026-11-24): from its read of what is held through its
+        # last write of the slice, any embed above already made.
+        with store_write_lock():
+            held = col.get(ids=sl, include=["metadatas", "documents"])
+            wider = [doc_id for doc_id, meta in zip(held["ids"], held["metadatas"])
+                     if set(meta or {}) - set(rows[doc_id][1])]
+            other_text = [doc_id for doc_id, doc in zip(held["ids"], held["documents"])
+                          if doc != rows[doc_id][0]]
             try:
-                now = col.get(ids=sl, include=["documents"])
-                other_text = [i for i, doc in zip(now["ids"], now["documents"])
-                              if doc != rows[i][0]]
+                col.upsert(ids=sl, embeddings=vectors, documents=[rows[i][0] for i in sl],
+                           metadatas=[rows[i][1] for i in sl])
             except Exception:
-                pass
-            if other_text:
-                col.delete(ids=other_text)
-            raise
-        if wider:
-            at = {doc_id: n for n, doc_id in enumerate(sl)}
-            col.delete(ids=wider)
-            col.upsert(ids=wider, embeddings=[vectors[at[i]] for i in wider],
-                       documents=[rows[i][0] for i in wider],
-                       metadatas=[rows[i][1] for i in wider])
+                # Read again first: an upsert that wrote and then raised
+                # has already put the earlier text back, and the read made before
+                # it would delete rows it restored. Only a row whose stored text is
+                # not the text being put back is deleted; when this read fails too,
+                # the read made before the write decides.
+                try:
+                    now = col.get(ids=sl, include=["documents"])
+                    other_text = [i for i, doc in zip(now["ids"], now["documents"])
+                                  if doc != rows[i][0]]
+                except Exception:
+                    pass
+                if other_text:
+                    col.delete(ids=other_text)
+                raise
+            if wider:
+                at = {doc_id: n for n, doc_id in enumerate(sl)}
+                col.delete(ids=wider)
+                col.upsert(ids=wider, embeddings=[vectors[at[i]] for i in wider],
+                           documents=[rows[i][0] for i in wider],
+                           metadatas=[rows[i][1] for i in wider])
     _invalidate_lexical_index(col.name)
     return len(ids)
 

@@ -35,7 +35,7 @@ from app.database import (add_document, list_sources, delete_source,
                           delete_documents, restamp_reused_chunks,
                           chunk_metadata, restore_chunk_metadata,
                           get_rows, put_rows_back,
-                          department_name_refusal)
+                          department_name_refusal, store_write_lock)
 from app.db import get_session
 from app.ingest_sync import (KNOWLEDGE_DIR, _sync_knowledge_dir, _sync_docs,
                              _prune_orphan_docs, _prune_orphan_knowledge,
@@ -469,56 +469,75 @@ def ingest(request: IngestRequest, current_user: dict = Depends(require_permissi
     # metadata, none of this route's keys (2026-10-29,
     # database._kept_metadata_differs). The refusal still matters for an
     # id that exists: the file sync re-runs a file only when it changes.
-    held = chunk_metadata([request.doc_id], request.department).get(request.doc_id) or {}
-    if held.get("from_file") == "true" or held.get("auto_generated") == "true":
-        raise HTTPException(status_code=409,
-                            detail="That doc_id belongs to a knowledge file or a "
-                                   "system record; choose another id.")
-    text = request.text
-    meta = dict(request.metadata)
-    # `auto_generated` is not a caller's to claim. It is what marks content as a
-    # LIVE SYSTEM RECORD in the label the model reads, and what lifts a chunk to
-    # the front of the pool on status questions - so a caller who can set it can
-    # dress arbitrary text as the instance's own live truth, whatever trust tier
-    # the line below then assigns. Only app.system_records writes it.
     #
-    # Written "false", not just dropped (2026-10-29), for the reason given for
-    # from_file below: the upsert MERGED metadata on a stored id, so a doc_id
-    # equal to a system record's id kept that row's "true" under the caller's
-    # text. Every reader compares == "true".
-    meta["auto_generated"] = "false"
-    # Nor is `from_file`. It marks a chunk the knowledge file sync wrote, and the
-    # sync's orphan prune deletes a source whose every chunk carries it once no
-    # file of that name is on disk - so a claimed stamp would put this document
-    # up for deletion at the next boot. Only app.ingest_sync writes it.
-    #
-    # Written "false", not just dropped (2026-10-29): the caller chooses the
-    # doc_id and add_document upserted, which on a stored id MERGED metadata -
-    # a doc_id equal to a file-synced chunk's kept that row's "true", and the
-    # prune deleted this text. Every reader compares == "true".
-    meta["from_file"] = "false"
-    meta["trust"] = _ingest_trust(current_user, meta.get("trust"))
-    # The PII verdict is written both ways (2026-10-29): the doc_id is the
-    # caller's and the upsert MERGED metadata, so clean text re-sent over an
-    # id flagged before kept its "true". With the scan off nothing is written,
-    # as on the upload. The injection verdict is the per-chunk gate's
-    # (database._gate_chunk), which writes it both ways itself.
-    if PII_SCAN_MODE != "off":
-        findings = scan_pii(text)
-        if findings:
-            if PII_SCAN_MODE == "redact":
-                text = redact_pii(text)
-            meta["pii_flagged"] = "true"
-            meta["pii_types"] = ",".join(f["type"] for f in findings)
-            log("pii_detected", source=meta.get("source", "?"), findings=findings, mode=PII_SCAN_MODE)
-        else:
-            meta["pii_flagged"] = "false"
-            meta["pii_types"] = ""
-    try:
-        add_document(request.doc_id, text, meta, department=request.department)
-    except QuarantinedContent as q:
-        return _write_quarantine_row(q.source, q.department, q.trust_tier,
-                                     q.text, q.findings)
+    # The read and the write are ONE step against every writer (2026-11-24),
+    # which closes the race between them. Until then a writer that landed the
+    # id between this read and the add_document below had its row replaced
+    # by the caller's text: the writers serialize per source
+    # (ingest_sync._source_lock), the system records took no lock, and a
+    # predicted id names no source this route could lock. Now the route holds
+    # database.store_write_lock from this read through its add_document, and
+    # every writer of chunk rows takes that same lock around its own write,
+    # so a writer's row lands before the read (and is refused here) or after
+    # the write (and replaces this one). Re-entrant: add_document takes it
+    # again on this thread. The hold spans the PII scan, the gate's scan and
+    # the one embed; a quarantine row is written after it is released.
+    # tests/test_ingest_ownership_race.py runs a real writer into the gap.
+    with store_write_lock():
+        held = chunk_metadata([request.doc_id], request.department).get(request.doc_id) or {}
+        if held.get("from_file") == "true" or held.get("auto_generated") == "true":
+            raise HTTPException(status_code=409,
+                                detail="That doc_id belongs to a knowledge file or a "
+                                       "system record; choose another id.")
+        text = request.text
+        meta = dict(request.metadata)
+        # `auto_generated` is not a caller's to claim. It is what marks content as a
+        # LIVE SYSTEM RECORD in the label the model reads, and what lifts a chunk to
+        # the front of the pool on status questions - so a caller who can set it can
+        # dress arbitrary text as the instance's own live truth, whatever trust tier
+        # the line below then assigns. Only app.system_records writes it.
+        #
+        # Written "false", not just dropped (2026-10-29), for the reason given for
+        # from_file below: the upsert MERGED metadata on a stored id, so a doc_id
+        # equal to a system record's id kept that row's "true" under the caller's
+        # text. Every reader compares == "true".
+        meta["auto_generated"] = "false"
+        # Nor is `from_file`. It marks a chunk the knowledge file sync wrote, and the
+        # sync's orphan prune deletes a source whose every chunk carries it once no
+        # file of that name is on disk - so a claimed stamp would put this document
+        # up for deletion at the next boot. Only app.ingest_sync writes it.
+        #
+        # Written "false", not just dropped (2026-10-29): the caller chooses the
+        # doc_id and add_document upserted, which on a stored id MERGED metadata -
+        # a doc_id equal to a file-synced chunk's kept that row's "true", and the
+        # prune deleted this text. Every reader compares == "true".
+        meta["from_file"] = "false"
+        meta["trust"] = _ingest_trust(current_user, meta.get("trust"))
+        # The PII verdict is written both ways (2026-10-29): the doc_id is the
+        # caller's and the upsert MERGED metadata, so clean text re-sent over an
+        # id flagged before kept its "true". With the scan off nothing is written,
+        # as on the upload. The injection verdict is the per-chunk gate's
+        # (database._gate_chunk), which writes it both ways itself.
+        if PII_SCAN_MODE != "off":
+            findings = scan_pii(text)
+            if findings:
+                if PII_SCAN_MODE == "redact":
+                    text = redact_pii(text)
+                meta["pii_flagged"] = "true"
+                meta["pii_types"] = ",".join(f["type"] for f in findings)
+                log("pii_detected", source=meta.get("source", "?"), findings=findings, mode=PII_SCAN_MODE)
+            else:
+                meta["pii_flagged"] = "false"
+                meta["pii_types"] = ""
+        quarantined = None
+        try:
+            add_document(request.doc_id, text, meta, department=request.department)
+        except QuarantinedContent as q:
+            quarantined = q
+    if quarantined is not None:
+        return _write_quarantine_row(quarantined.source, quarantined.department,
+                                     quarantined.trust_tier, quarantined.text,
+                                     quarantined.findings)
     increment("ingest_total")
     log("ingest", doc_id=request.doc_id, department=request.department)
     return {"status": "ingested", "doc_id": request.doc_id}

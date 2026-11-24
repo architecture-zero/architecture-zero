@@ -61,6 +61,7 @@ from app.database import (
     collection_metadata,
     _invalidate_lexical_index,
     _CHROMA_PATH,
+    store_write_lock,
 )
 
 log = logging.getLogger("chroma_maintenance")
@@ -313,25 +314,31 @@ def _maintain_collection(name: str, target: dict,
                     "(write-side corruption lever - see %s)",
                     name, _FORCE_REBUILD_FILE)
     if halted or force_rebuild:
-        client.delete_collection(name)
-        # get_or_create + upsert, NOT create + add. Routers are serving while
-        # this runs, and any read path can re-mint a collection through
-        # get_or_create_collection between the delete above and this line - in
-        # which case create_collection raises a uniqueness error, the export is
-        # dropped on the floor, and the collection keeps only what the racer
-        # wrote. Adopting the racer's collection is correct here rather than
-        # lossy, because every re-minter stamps this same parameter dict.
-        new_col = client.get_or_create_collection(name=name,
-                                                  metadata=dict(target))
-        for start in range(0, len(healthy), _PAGE):
-            batch = healthy[start:start + _PAGE]
-            new_col.upsert(
-                ids=[ids[i] for i in batch],
-                embeddings=[embs[ids[i]] for i in batch],
-                documents=[docs[i] for i in batch],
-                metadatas=[(metas[i] if metas[i] else {"source": "unknown"})
-                           for i in batch],
-            )
+        # The drop and the re-add under the store write lock (2026-11-24;
+        # database.store_write_lock says why): the re-add writes every row of
+        # the collection, the file sync's and the system records' among them,
+        # while routes are serving - /api/ingest's read of an id's owner and
+        # its write wait until the rebuild is whole. No embed here.
+        with store_write_lock():
+            client.delete_collection(name)
+            # get_or_create + upsert, NOT create + add. Routers are serving while
+            # this runs, and any read path can re-mint a collection through
+            # get_or_create_collection between the delete above and this line - in
+            # which case create_collection raises a uniqueness error, the export is
+            # dropped on the floor, and the collection keeps only what the racer
+            # wrote. Adopting the racer's collection is correct here rather than
+            # lossy, because every re-minter stamps this same parameter dict.
+            new_col = client.get_or_create_collection(name=name,
+                                                      metadata=dict(target))
+            for start in range(0, len(healthy), _PAGE):
+                batch = healthy[start:start + _PAGE]
+                new_col.upsert(
+                    ids=[ids[i] for i in batch],
+                    embeddings=[embs[ids[i]] for i in batch],
+                    documents=[docs[i] for i in batch],
+                    metadatas=[(metas[i] if metas[i] else {"source": "unknown"})
+                               for i in batch],
+                )
         res["rebuilt"] = True
         col = new_col
         count = col.count()

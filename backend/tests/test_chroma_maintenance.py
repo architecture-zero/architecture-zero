@@ -257,6 +257,67 @@ def test_a_racing_re_mint_during_a_rebuild_does_not_lose_records(store, monkeypa
     assert client.get_collection("kb_race").count() == 3, "records were lost to the race"
 
 
+def test_the_rebuild_drops_and_re_adds_under_the_store_write_lock(store, monkeypatch):
+    """The rebuild re-adds every row of a collection - a knowledge file's rows
+    among them - while routes serve, so it takes the store write lock
+    (2026-11-24, database.store_write_lock): /api/ingest's read of who holds
+    an id and its write cannot land between the drop and the re-add."""
+    import threading
+    from app import database
+
+    class _Probe:
+        def __init__(self):
+            self._lock = threading.RLock()
+            self.owner = None
+            self.depth = 0
+
+        def __enter__(self):
+            self._lock.acquire()
+            self.owner = threading.get_ident()
+            self.depth += 1
+            return self
+
+        def __exit__(self, *exc):
+            self.depth -= 1
+            if not self.depth:
+                self.owner = None
+            self._lock.release()
+            return False
+
+    probe = _Probe()
+    monkeypatch.setattr(database, "_STORE_WRITE_LOCK", probe)
+    client, path = store
+    _seed(client, "kb_locked", n=3)
+    seen = []
+    real_delete, real_goc = client.delete_collection, client.get_or_create_collection
+
+    def _delete(name):
+        seen.append(("delete_collection", probe.owner == threading.get_ident()))
+        return real_delete(name)
+
+    def _goc(name, **kw):
+        col = real_goc(name=name, **kw)
+        real_upsert = col.upsert
+
+        def _upsert(**k):
+            seen.append(("upsert", probe.owner == threading.get_ident()))
+            return real_upsert(**k)
+
+        col.upsert = _upsert
+        return col
+
+    monkeypatch.setattr(client, "delete_collection", _delete)
+    monkeypatch.setattr(client, "get_or_create_collection", _goc)
+    res = cm._maintain_collection(
+        "kb_locked", {"hnsw:space": "cosine", "hnsw:sync_threshold": 50,
+                      "hnsw:batch_size": 25}, _noop, client, force_rebuild=True)
+
+    assert res["rebuilt"] is True and res["status"] == "ok", res
+    assert seen == [("delete_collection", True), ("upsert", True)]
+    assert probe.owner is None, "the lock was not released"
+    assert client.get_collection("kb_locked").count() == 3
+
+
 def test_maintenance_is_idempotent(store):
     client, path = store
     _seed(client, "kb_idem")

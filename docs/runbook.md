@@ -402,7 +402,10 @@ Since v0.1.x, for a script or a client of your own:
   knowledge sync wrote (the sync deletes one once no file of its name is on
   disk), the second a system record. A `doc_id` that a knowledge file or a
   system record already holds is refused (409) and nothing is written; any
-  other existing id is replaced, as before.
+  other existing id is replaced, as before. The check and the write are one
+  step: a knowledge file or system record written to the same id at the same
+  moment lands either before the check, and the request is refused, or after
+  the write, and replaces it.
 
 ### Going back
 

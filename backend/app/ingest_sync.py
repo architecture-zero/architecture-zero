@@ -241,6 +241,9 @@ _ingest_locks_guard = threading.Lock()
 # prunes, the source delete, the quarantine release, the queued worker - takes
 # the global lock at all. Every holder runs off the event loop: a threadpool
 # route, the watcher's executor hop, the startup executor, the worker thread.
+# The store write lock (database.store_write_lock, 2026-11-24) comes LAST: it
+# is taken inside the write functions, under these locks or none, and nothing
+# that holds it takes a source lock or the upload lock.
 @contextlib.contextmanager
 def _source_lock(source: str):
     """A hold on one source's lock, for `with`. NEVER acquire it on the event
