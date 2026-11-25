@@ -1,4 +1,6 @@
-fastapi==0.162.7
+# fastapi 0.163.2 (2026-11-24): GHSA-f56c-v883-vx8r, a parameter-parsing DoS, is
+# a repository advisory the scan cannot see; tests/test_advisory_floors.py holds the floor.
+fastapi==0.163.2
 # starlette pinned on its own (2026-11-22): fastapi 0.162 asks only
 # starlette>=0.46.0, no ceiling, so the pin is what holds the line. 1.10.0
 # clears the seven findings 0.41.3 carried (ROADMAP's FastAPI line).
